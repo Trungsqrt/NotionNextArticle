@@ -1,0 +1,1004 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   wabi-sabi-theme.css
+   ───────────────────────────────────────────────────────────────────────────
+   Japanese Minimalist "Matcha & Wabi-Sabi" override stylesheet for
+   react-notion-x (NotionNext). Applies on top of:
+     • react-notion-x/build/third-party/collection.css
+     • react-notion-x/build/third-party/prism.css
+     • react-notion-x/src/styles.css (react-notion-x defaults)
+
+   RULES:
+   • Does NOT alter any JS, data props, or RecordMap logic.
+   • All overrides are CSS-only and target stable react-notion-x class names.
+   • Light mode: default. Dark mode: activated via `.dark` on <html> element.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 1. DESIGN TOKENS — CSS Custom Properties
+   ─────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Backgrounds */
+  --ws-bg-primary:        #FAF8F5;
+  --ws-bg-secondary:      #F7F5F0;
+  --ws-bg-tertiary:       #F2EEE6;
+  --ws-bg-callout:        #F2F4EE;
+  --ws-bg-code:           #181916;
+  --ws-bg-hover:          rgba(122, 139, 105, 0.07);
+  --ws-bg-highlight:      rgba(122, 139, 105, 0.12);
+  --ws-bg-yellow:         rgba(122, 139, 105, 0.10);
+  --ws-bg-blue:           rgba(100, 120, 160, 0.08);
+  --ws-bg-red:            rgba(180, 90, 80, 0.08);
+  --ws-bg-purple:         rgba(140, 100, 160, 0.08);
+  --ws-bg-pink:           rgba(180, 110, 130, 0.08);
+  --ws-bg-orange:         rgba(190, 130, 80, 0.08);
+  --ws-bg-green:          rgba(90, 140, 100, 0.08);
+  --ws-bg-gray:           rgba(120, 120, 120, 0.06);
+
+  /* Text */
+  --ws-text-primary:      #2C2A29;
+  --ws-text-secondary:    #524E47;
+  --ws-text-tertiary:     #7A756E;
+  --ws-text-muted:        #A8A49D;
+  --ws-text-accent:       #4A6741;
+
+  /* Accent — Matcha */
+  --ws-matcha-primary:    #7A8B69;
+  --ws-matcha-light:      #8E9B7B;
+  --ws-matcha-muted:      #AFC9A3;
+  --ws-matcha-faint:      #E6EBE0;
+
+  /* Borders */
+  --ws-border-soft:       #EAE6DF;
+  --ws-border-medium:     #DDD8CE;
+  --ws-border-strong:     #C8C1B4;
+
+  /* Typography rhythm */
+  --ws-leading-body:      1.85;
+  --ws-leading-heading:   1.35;
+  --ws-tracking-body:     0.01em;
+  --ws-tracking-heading:  -0.01em;
+
+  /* Radii */
+  --ws-radius-sm:         4px;
+  --ws-radius-md:         8px;
+  --ws-radius-lg:         12px;
+  --ws-radius-card:       10px;
+
+  /* Transitions */
+  --ws-transition-fast:   150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --ws-transition-base:   250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --ws-transition-slow:   400ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Shadows */
+  --ws-shadow-sm:   0 1px 3px rgba(44, 42, 41, 0.06), 0 1px 2px rgba(44, 42, 41, 0.03);
+  --ws-shadow-md:   0 4px 12px rgba(44, 42, 41, 0.08), 0 2px 4px rgba(44, 42, 41, 0.04);
+  --ws-shadow-lg:   0 8px 24px rgba(44, 42, 41, 0.10), 0 4px 8px rgba(44, 42, 41, 0.05);
+}
+
+/* Dark Mode token overrides */
+.dark {
+  --ws-bg-primary:        #1A1B18;
+  --ws-bg-secondary:      #1F201C;
+  --ws-bg-tertiary:       #242520;
+  --ws-bg-callout:        #1F221B;
+  --ws-bg-code:           #111310;
+  --ws-bg-hover:          rgba(74, 87, 61, 0.18);
+  --ws-bg-highlight:      rgba(74, 87, 61, 0.25);
+  --ws-bg-yellow:         rgba(74, 87, 61, 0.22);
+  --ws-bg-blue:           rgba(60, 80, 120, 0.18);
+  --ws-bg-red:            rgba(140, 60, 55, 0.18);
+  --ws-bg-purple:         rgba(100, 70, 120, 0.18);
+  --ws-bg-pink:           rgba(140, 75, 95, 0.18);
+  --ws-bg-orange:         rgba(150, 95, 50, 0.18);
+  --ws-bg-green:          rgba(55, 100, 65, 0.18);
+  --ws-bg-gray:           rgba(90, 90, 90, 0.15);
+
+  --ws-text-primary:      #D8DAD3;
+  --ws-text-secondary:    #BEC1B7;
+  --ws-text-tertiary:     #9DA096;
+  --ws-text-muted:        #7C7F76;
+  --ws-text-accent:       #AFC9A3;
+
+  --ws-matcha-primary:    #6A7B5A;
+  --ws-matcha-light:      #8E9B7B;
+  --ws-matcha-muted:      #4A573D;
+  --ws-matcha-faint:      #2A3323;
+
+  --ws-border-soft:       #292A27;
+  --ws-border-medium:     #323330;
+  --ws-border-strong:     #3D3E3A;
+
+  --ws-shadow-sm:   0 1px 3px rgba(0, 0, 0, 0.20), 0 1px 2px rgba(0, 0, 0, 0.15);
+  --ws-shadow-md:   0 4px 12px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.15);
+  --ws-shadow-lg:   0 8px 24px rgba(0, 0, 0, 0.30), 0 4px 8px rgba(0, 0, 0, 0.20);
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 2. NOTION PAGE WRAPPER & MAX-WIDTH
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Override react-notion-x default white background */
+.notion-page {
+  background-color: var(--ws-bg-primary) !important;
+  color: var(--ws-text-primary) !important;
+  font-family: 'Plus Jakarta Sans', Inter, system-ui, sans-serif !important;
+  font-size: 1rem !important;
+  line-height: var(--ws-leading-body) !important;
+  letter-spacing: var(--ws-tracking-body) !important;
+  padding-bottom: 4rem !important;
+}
+
+.notion-frame {
+  background-color: var(--ws-bg-primary) !important;
+}
+
+/* Content column — generous reading width */
+.notion-page-content {
+  max-width: 72ch !important;
+  margin-inline: auto !important;
+  padding-inline: 1.5rem !important;
+}
+
+/* Full-width override for galleries / databases */
+.notion-page-content .notion-collection-view-tabs-content {
+  max-width: none !important;
+  padding-inline: 0 !important;
+}
+
+/* Subtle page entry animation */
+.notion-page-content > * {
+  animation: ws-fade-in 0.4s ease-out both;
+}
+
+@keyframes ws-fade-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Stagger children */
+.notion-page-content > *:nth-child(1)  { animation-delay:  40ms; }
+.notion-page-content > *:nth-child(2)  { animation-delay:  80ms; }
+.notion-page-content > *:nth-child(3)  { animation-delay: 120ms; }
+.notion-page-content > *:nth-child(4)  { animation-delay: 160ms; }
+.notion-page-content > *:nth-child(5)  { animation-delay: 200ms; }
+.notion-page-content > *:nth-child(n+6){ animation-delay: 240ms; }
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 3. TYPOGRAPHY — Headings & Body Text
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* ── Page Title */
+.notion-title {
+  font-family: 'Noto Serif JP', Georgia, serif !important;
+  font-weight: 500 !important;
+  font-size: clamp(1.75rem, 4vw, 2.5rem) !important;
+  line-height: var(--ws-leading-heading) !important;
+  letter-spacing: -0.02em !important;
+  color: var(--ws-text-primary) !important;
+  margin-bottom: 2rem !important;
+}
+
+/* ── H1 */
+.notion-h1,
+.notion-h1 .notion-h-title {
+  font-family: 'Noto Serif JP', Georgia, serif !important;
+  font-weight: 500 !important;
+  font-size: 1.75rem !important;
+  line-height: 1.4 !important;
+  letter-spacing: -0.015em !important;
+  color: var(--ws-text-primary) !important;
+  margin-top: 2.5rem !important;
+  margin-bottom: 1rem !important;
+  padding-bottom: 0.5rem !important;
+  border-bottom: 1px solid var(--ws-border-soft) !important;
+  position: relative !important;
+}
+
+/* Matcha accent bar on H1 */
+.notion-h1::before {
+  content: '';
+  display: block;
+  width: 2.5rem;
+  height: 3px;
+  background: linear-gradient(90deg, var(--ws-matcha-primary), transparent);
+  border-radius: 2px;
+  margin-bottom: 0.75rem;
+}
+
+/* ── H2 */
+.notion-h2,
+.notion-h2 .notion-h-title {
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
+  font-weight: 600 !important;
+  font-size: 1.35rem !important;
+  line-height: 1.5 !important;
+  letter-spacing: -0.01em !important;
+  color: var(--ws-text-primary) !important;
+  margin-top: 2rem !important;
+  margin-bottom: 0.75rem !important;
+}
+
+/* ── H3 */
+.notion-h3,
+.notion-h3 .notion-h-title {
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
+  font-weight: 600 !important;
+  font-size: 1.1rem !important;
+  line-height: 1.55 !important;
+  letter-spacing: 0.01em !important;
+  color: var(--ws-text-secondary) !important;
+  margin-top: 1.5rem !important;
+  margin-bottom: 0.5rem !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.06em !important;
+}
+
+/* ── Body text / paragraphs */
+.notion-text {
+  line-height: var(--ws-leading-body) !important;
+  color: var(--ws-text-primary) !important;
+  font-size: 1rem !important;
+  margin-bottom: 0.75rem !important;
+}
+
+/* ── Links */
+.notion-link,
+.notion-text a {
+  color: var(--ws-text-accent) !important;
+  text-decoration: underline !important;
+  text-decoration-color: rgba(122, 139, 105, 0.40) !important;
+  text-underline-offset: 3px !important;
+  text-decoration-thickness: 1px !important;
+  transition: text-decoration-color var(--ws-transition-fast), color var(--ws-transition-fast) !important;
+}
+
+.notion-link:hover,
+.notion-text a:hover {
+  color: var(--ws-matcha-primary) !important;
+  text-decoration-color: var(--ws-matcha-primary) !important;
+}
+
+/* ── Inline code */
+.notion-inline-code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+  font-size: 0.875em !important;
+  background-color: var(--ws-bg-tertiary) !important;
+  color: #4A6741 !important;
+  border: 1px solid var(--ws-border-soft) !important;
+  border-radius: var(--ws-radius-sm) !important;
+  padding: 0.1em 0.45em !important;
+  font-weight: 500 !important;
+}
+
+.dark .notion-inline-code {
+  background-color: var(--ws-bg-tertiary) !important;
+  color: var(--ws-matcha-muted) !important;
+  border-color: var(--ws-border-soft) !important;
+}
+
+/* ── Bold */
+.notion-bold {
+  font-weight: 600 !important;
+  color: var(--ws-text-primary) !important;
+}
+
+/* ── Italic */
+.notion-italic {
+  font-style: italic !important;
+  color: var(--ws-text-secondary) !important;
+}
+
+/* ── Strikethrough */
+.notion-strikethrough {
+  text-decoration: line-through !important;
+  color: var(--ws-text-muted) !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 4. LISTS — Bulleted & Numbered
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-bulleted-list,
+.notion-numbered-list {
+  padding-left: 1.5rem !important;
+  margin-bottom: 0.5rem !important;
+  line-height: var(--ws-leading-body) !important;
+}
+
+.notion-bulleted-list-item::marker {
+  color: var(--ws-matcha-primary) !important;
+}
+
+.notion-numbered-list-item::marker {
+  color: var(--ws-matcha-light) !important;
+  font-weight: 600 !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+/* ── To-do list */
+.notion-to-do-item {
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 0.5rem !important;
+  margin-bottom: 0.35rem !important;
+}
+
+.notion-to-do-item input[type="checkbox"] {
+  accent-color: var(--ws-matcha-primary) !important;
+  width: 1rem !important;
+  height: 1rem !important;
+  margin-top: 0.3rem !important;
+  flex-shrink: 0 !important;
+  cursor: default !important;
+}
+
+.notion-to-do-item.notion-to-do-checked .notion-to-do-body {
+  text-decoration: line-through !important;
+  color: var(--ws-text-muted) !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 5. TOGGLE BLOCKS — Zen Accordion
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-toggle {
+  border: 1px solid var(--ws-border-soft) !important;
+  border-radius: var(--ws-radius-md) !important;
+  padding: 0 !important;
+  margin-bottom: 0.75rem !important;
+  overflow: hidden !important;
+  background-color: var(--ws-bg-secondary) !important;
+  transition:
+    border-color var(--ws-transition-base),
+    background-color var(--ws-transition-base),
+    box-shadow var(--ws-transition-base) !important;
+}
+
+.notion-toggle:hover {
+  border-color: var(--ws-matcha-primary) !important;
+  background-color: rgba(122, 139, 105, 0.04) !important;
+  box-shadow: var(--ws-shadow-sm) !important;
+}
+
+/* Toggle summary row (the clickable header) */
+.notion-toggle > summary,
+.notion-toggle summary {
+  display: flex !important;
+  align-items: center !important;
+  padding: 0.85rem 1.1rem !important;
+  cursor: pointer !important;
+  list-style: none !important;
+  font-weight: 500 !important;
+  font-size: 0.95rem !important;
+  color: var(--ws-text-primary) !important;
+  user-select: none !important;
+  gap: 0.6rem !important;
+}
+
+.notion-toggle > summary::-webkit-details-marker {
+  display: none !important;
+}
+
+/* Custom chevron icon */
+.notion-toggle > summary::before {
+  content: '›' !important;
+  font-size: 1.1rem !important;
+  color: var(--ws-matcha-primary) !important;
+  transition: transform var(--ws-transition-base) !important;
+  display: inline-block !important;
+  width: 1rem !important;
+  text-align: center !important;
+  flex-shrink: 0 !important;
+}
+
+.notion-toggle[open] > summary::before {
+  transform: rotate(90deg) !important;
+}
+
+/* Toggle body / content */
+.notion-toggle > summary ~ * {
+  padding: 0 1.1rem 0.9rem 2.6rem !important;
+  border-top: 1px solid var(--ws-border-soft) !important;
+}
+
+/* ── Dark mode toggle */
+.dark .notion-toggle {
+  background-color: var(--ws-bg-secondary) !important;
+  border-color: var(--ws-border-soft) !important;
+}
+
+.dark .notion-toggle:hover {
+  border-color: var(--ws-matcha-muted) !important;
+  background-color: rgba(74, 87, 61, 0.12) !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 6. CALLOUT BLOCKS — Japanese Note Cards
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-callout {
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 0.75rem !important;
+  padding: 1rem 1.25rem !important;
+  background-color: var(--ws-bg-callout) !important;
+  border: none !important;
+  border-left: 4px solid var(--ws-matcha-primary) !important;
+  border-radius: 0 var(--ws-radius-md) var(--ws-radius-md) 0 !important;
+  box-shadow: none !important;
+  margin-bottom: 1rem !important;
+  transition:
+    background-color var(--ws-transition-base),
+    border-color var(--ws-transition-base) !important;
+}
+
+.notion-callout:hover {
+  background-color: var(--ws-matcha-faint) !important;
+  border-left-color: var(--ws-matcha-light) !important;
+}
+
+.notion-callout-text {
+  flex: 1 !important;
+  font-size: 0.95rem !important;
+  line-height: 1.75 !important;
+  color: var(--ws-text-secondary) !important;
+}
+
+.notion-callout-emoji {
+  font-size: 1.2rem !important;
+  line-height: 1.6 !important;
+  flex-shrink: 0 !important;
+}
+
+/* Callout variant by emoji — color left border accordingly */
+/* (Users can choose emoji; we use broad rules for common icons) */
+
+.dark .notion-callout {
+  background-color: var(--ws-bg-callout) !important;
+  border-left-color: var(--ws-matcha-muted) !important;
+}
+
+.dark .notion-callout:hover {
+  background-color: rgba(74, 87, 61, 0.20) !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 7. CODE BLOCKS — Serene Terminal
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-code {
+  background-color: var(--ws-bg-code) !important;
+  border: 1px solid #292A27 !important;
+  border-radius: var(--ws-radius-md) !important;
+  margin-bottom: 1.25rem !important;
+  overflow: hidden !important;
+  box-shadow: var(--ws-shadow-md) !important;
+  position: relative !important;
+}
+
+/* Subtle "terminal dots" decoration */
+.notion-code::before {
+  content: '● ● ●';
+  display: block !important;
+  padding: 0.6rem 1rem !important;
+  font-size: 0.5rem !important;
+  letter-spacing: 0.4rem !important;
+  color: #3D3E3A !important;
+  border-bottom: 1px solid #292A27 !important;
+  background-color: #141512 !important;
+}
+
+.notion-code > pre {
+  margin: 0 !important;
+  padding: 1.25rem 1.5rem !important;
+  overflow-x: auto !important;
+  background: transparent !important;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+  font-size: 0.875rem !important;
+  line-height: 1.7 !important;
+}
+
+.notion-code code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+  font-size: inherit !important;
+  color: #D8DAD3 !important;
+  background: none !important;
+}
+
+/* Language label badge */
+.notion-code-copy-button {
+  position: absolute !important;
+  top: 0.5rem !important;
+  right: 0.75rem !important;
+  font-size: 0.7rem !important;
+  padding: 0.2rem 0.55rem !important;
+  background-color: rgba(122, 139, 105, 0.15) !important;
+  color: var(--ws-matcha-light) !important;
+  border: 1px solid rgba(122, 139, 105, 0.3) !important;
+  border-radius: var(--ws-radius-sm) !important;
+  cursor: pointer !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  transition: background-color var(--ws-transition-fast) !important;
+}
+
+.notion-code-copy-button:hover {
+  background-color: rgba(122, 139, 105, 0.25) !important;
+}
+
+/* Prism syntax color overrides — muted matcha palette */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: #5E6159 !important;
+  font-style: italic !important;
+}
+
+.token.punctuation {
+  color: #7C7F76 !important;
+}
+
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol,
+.token.deleted {
+  color: #AFC9A3 !important;  /* matcha muted */
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted {
+  color: #8DBF8D !important;  /* soft sage green */
+}
+
+.token.operator,
+.token.entity,
+.token.url,
+.language-css .token.string,
+.style .token.string {
+  color: #BEC1B7 !important;
+}
+
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+  color: #9DBFAF !important;  /* cool sage-teal */
+}
+
+.token.function,
+.token.class-name {
+  color: #C9D5A8 !important;  /* warm matcha */
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: #D5C9A8 !important;  /* warm sand */
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 8. QUOTE BLOCKS — Zen Haiku Pull Quotes
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-quote {
+  border: none !important;
+  border-left: 3px solid var(--ws-matcha-primary) !important;
+  padding: 0.75rem 1.25rem !important;
+  margin: 1.5rem 0 !important;
+  font-family: 'Noto Serif JP', Georgia, serif !important;
+  font-size: 1.05rem !important;
+  font-style: italic !important;
+  line-height: 1.8 !important;
+  color: var(--ws-text-secondary) !important;
+  background-color: var(--ws-bg-secondary) !important;
+  border-radius: 0 var(--ws-radius-sm) var(--ws-radius-sm) 0 !important;
+  position: relative !important;
+}
+
+.notion-quote::before {
+  content: '\201C';
+  position: absolute !important;
+  top: -0.4rem !important;
+  left: 0.9rem !important;
+  font-size: 3rem !important;
+  line-height: 1 !important;
+  color: var(--ws-matcha-muted) !important;
+  font-family: Georgia, serif !important;
+  opacity: 0.4 !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 9. DIVIDERS
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-hr,
+.notion-divider {
+  border: none !important;
+  height: 1px !important;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--ws-border-soft) 20%,
+    var(--ws-border-medium) 50%,
+    var(--ws-border-soft) 80%,
+    transparent 100%
+  ) !important;
+  margin: 2rem auto !important;
+  max-width: 80% !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 10. COLOR BACKGROUND BLOCKS — Muted Organic Washes
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Remap all Notion colour backgrounds to soft, muted washes */
+.notion-yellow_background  { background-color: var(--ws-bg-yellow) !important;  border-radius: var(--ws-radius-sm) !important; padding: 0.1em 0.25em !important; }
+.notion-blue_background    { background-color: var(--ws-bg-blue) !important;    border-radius: var(--ws-radius-sm) !important; padding: 0.1em 0.25em !important; }
+.notion-red_background     { background-color: var(--ws-bg-red) !important;     border-radius: var(--ws-radius-sm) !important; padding: 0.1em 0.25em !important; }
+.notion-purple_background  { background-color: var(--ws-bg-purple) !important;  border-radius: var(--ws-radius-sm) !important; padding: 0.1em 0.25em !important; }
+.notion-pink_background    { background-color: var(--ws-bg-pink) !important;    border-radius: var(--ws-radius-sm) !important; padding: 0.1em 0.25em !important; }
+.notion-orange_background  { background-color: var(--ws-bg-orange) !important;  border-radius: var(--ws-radius-sm) !important; padding: 0.1em 0.25em !important; }
+.notion-green_background   { background-color: var(--ws-bg-green) !important;   border-radius: var(--ws-radius-sm) !important; padding: 0.1em 0.25em !important; }
+.notion-gray_background    { background-color: var(--ws-bg-gray) !important;    border-radius: var(--ws-radius-sm) !important; padding: 0.1em 0.25em !important; }
+.notion-brown_background   { background-color: rgba(150, 110, 80, 0.08) !important; border-radius: var(--ws-radius-sm) !important; padding: 0.1em 0.25em !important; }
+
+/* Full-block background elements (not inline) */
+[class*="notion-"][class*="_background"].notion-row {
+  padding: 0.75rem 1rem !important;
+  border-radius: var(--ws-radius-md) !important;
+  margin-bottom: 0.5rem !important;
+}
+
+/* Text color overrides — more muted */
+.notion-yellow { color: #8A7A40 !important; }
+.dark .notion-yellow { color: #C9B87A !important; }
+
+.notion-blue   { color: #3D5A80 !important; }
+.dark .notion-blue   { color: #7FA5C0 !important; }
+
+.notion-red    { color: #8A3A35 !important; }
+.dark .notion-red    { color: #C07A75 !important; }
+
+.notion-purple { color: #6A4A85 !important; }
+.dark .notion-purple { color: #A88ABD !important; }
+
+.notion-pink   { color: #8A4A60 !important; }
+.dark .notion-pink   { color: #C08AA0 !important; }
+
+.notion-orange { color: #8A5A30 !important; }
+.dark .notion-orange { color: #C09A70 !important; }
+
+.notion-green  { color: #3A6A45 !important; }
+.dark .notion-green  { color: #7AAF85 !important; }
+
+.notion-gray   { color: #5E6159 !important; }
+.dark .notion-gray   { color: #9DA096 !important; }
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 11. GALLERY GRID & COLLECTION CARDS — Minimalist Bento Cards
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-gallery-grid {
+  display: grid !important;
+  gap: 1rem !important;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)) !important;
+  padding: 0.25rem 0 !important;
+}
+
+.notion-gallery-card,
+.notion-collection-card {
+  background-color: var(--ws-bg-secondary) !important;
+  border: 1px solid var(--ws-border-soft) !important;
+  border-radius: var(--ws-radius-card) !important;
+  overflow: hidden !important;
+  box-shadow: var(--ws-shadow-sm) !important;
+  transition:
+    border-color var(--ws-transition-base),
+    box-shadow var(--ws-transition-base),
+    transform var(--ws-transition-base) !important;
+  cursor: pointer !important;
+  text-decoration: none !important;
+}
+
+.notion-gallery-card:hover,
+.notion-collection-card:hover {
+  border-color: var(--ws-matcha-primary) !important;
+  box-shadow: var(--ws-shadow-md) !important;
+  transform: translateY(-2px) !important;
+}
+
+.notion-collection-card-cover {
+  aspect-ratio: 16 / 9 !important;
+  overflow: hidden !important;
+}
+
+.notion-collection-card-cover img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  transition: transform var(--ws-transition-slow) !important;
+}
+
+.notion-gallery-card:hover .notion-collection-card-cover img,
+.notion-collection-card:hover .notion-collection-card-cover img {
+  transform: scale(1.04) !important;
+}
+
+.notion-collection-card-body {
+  padding: 0.85rem 1rem !important;
+}
+
+.notion-collection-card-property {
+  font-size: 0.8rem !important;
+  color: var(--ws-text-tertiary) !important;
+  margin-top: 0.35rem !important;
+}
+
+/* Property tags */
+.notion-property-select-item,
+.notion-property-multi_select-item {
+  background-color: var(--ws-matcha-faint) !important;
+  color: var(--ws-text-accent) !important;
+  border: none !important;
+  border-radius: var(--ws-radius-pill, 9999px) !important;
+  padding: 0.15rem 0.5rem !important;
+  font-size: 0.75rem !important;
+  font-weight: 500 !important;
+}
+
+.dark .notion-property-select-item,
+.dark .notion-property-multi_select-item {
+  background-color: rgba(74, 87, 61, 0.3) !important;
+  color: var(--ws-matcha-light) !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 12. TABLE / DATABASE VIEW
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-table {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  width: 100% !important;
+  font-size: 0.9rem !important;
+  border-radius: var(--ws-radius-md) !important;
+  overflow: hidden !important;
+  border: 1px solid var(--ws-border-soft) !important;
+}
+
+.notion-table-th {
+  background-color: var(--ws-bg-tertiary) !important;
+  color: var(--ws-text-tertiary) !important;
+  font-size: 0.75rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  padding: 0.6rem 1rem !important;
+  border-bottom: 1px solid var(--ws-border-soft) !important;
+  border-right: 1px solid var(--ws-border-soft) !important;
+}
+
+.notion-table-td {
+  padding: 0.65rem 1rem !important;
+  border-bottom: 1px solid var(--ws-border-soft) !important;
+  border-right: 1px solid var(--ws-border-soft) !important;
+  color: var(--ws-text-primary) !important;
+  vertical-align: top !important;
+}
+
+.notion-table-row:hover .notion-table-td {
+  background-color: var(--ws-bg-hover) !important;
+}
+
+.notion-table-th:last-child,
+.notion-table-td:last-child {
+  border-right: none !important;
+}
+
+.notion-table-row:last-child .notion-table-td {
+  border-bottom: none !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 13. BREADCRUMBS & PAGE NAVIGATION
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-breadcrumb {
+  display: flex !important;
+  align-items: center !important;
+  gap: 0.35rem !important;
+  font-size: 0.8rem !important;
+  color: var(--ws-text-muted) !important;
+  margin-bottom: 1.5rem !important;
+}
+
+.notion-breadcrumb a {
+  color: var(--ws-text-tertiary) !important;
+  text-decoration: none !important;
+  transition: color var(--ws-transition-fast) !important;
+}
+
+.notion-breadcrumb a:hover {
+  color: var(--ws-matcha-primary) !important;
+}
+
+.notion-breadcrumb-separator {
+  color: var(--ws-border-strong) !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 14. PAGE COVER & ICON
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-page-cover-wrapper {
+  margin-bottom: 1.5rem !important;
+  border-radius: var(--ws-radius-lg) !important;
+  overflow: hidden !important;
+  max-height: 280px !important;
+}
+
+.notion-page-cover {
+  width: 100% !important;
+  height: 280px !important;
+  object-fit: cover !important;
+  filter: brightness(0.92) saturate(0.85) !important;
+}
+
+.notion-page-icon-wrapper {
+  margin-bottom: 1rem !important;
+}
+
+.notion-page-icon {
+  font-size: 2.5rem !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 15. COLLECTION HEADER (Database Title Bar)
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-collection-header {
+  display: flex !important;
+  align-items: center !important;
+  gap: 0.5rem !important;
+  margin-bottom: 1rem !important;
+}
+
+.notion-collection-title {
+  font-family: 'Noto Serif JP', serif !important;
+  font-size: 1.15rem !important;
+  font-weight: 500 !important;
+  color: var(--ws-text-primary) !important;
+}
+
+/* View tabs (Table / Gallery / Board) */
+.notion-collection-view-tabs-row {
+  border-bottom: 1px solid var(--ws-border-soft) !important;
+  margin-bottom: 1rem !important;
+  gap: 0 !important;
+}
+
+.notion-collection-view-tabs-row-tab {
+  font-size: 0.82rem !important;
+  font-weight: 500 !important;
+  color: var(--ws-text-tertiary) !important;
+  padding: 0.45rem 0.75rem !important;
+  border-bottom: 2px solid transparent !important;
+  transition: color var(--ws-transition-fast), border-color var(--ws-transition-fast) !important;
+  cursor: pointer !important;
+}
+
+.notion-collection-view-tabs-row-tab:hover {
+  color: var(--ws-matcha-primary) !important;
+}
+
+.notion-collection-view-tabs-row-tab.notion-collection-view-tabs-row-tab-active {
+  color: var(--ws-matcha-primary) !important;
+  border-bottom-color: var(--ws-matcha-primary) !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 16. LOADING SKELETON
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-block-loading {
+  background: linear-gradient(
+    90deg,
+    var(--ws-bg-secondary) 25%,
+    var(--ws-bg-tertiary)  50%,
+    var(--ws-bg-secondary) 75%
+  ) !important;
+  background-size: 200% 100% !important;
+  animation: ws-shimmer 1.5s ease-in-out infinite !important;
+  border-radius: var(--ws-radius-sm) !important;
+  height: 1rem !important;
+  margin-bottom: 0.5rem !important;
+}
+
+@keyframes ws-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 17. SUBTLE PAGE ASYMMETRY (Wabi-Sabi touch)
+       — very faint paper texture via radial gradient
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-page::after {
+  content: '';
+  position: fixed !important;
+  inset: 0 !important;
+  pointer-events: none !important;
+  z-index: 0 !important;
+  background: radial-gradient(
+    ellipse 70% 50% at 50% 100%,
+    rgba(122, 139, 105, 0.04) 0%,
+    transparent 70%
+  ) !important;
+}
+
+.dark .notion-page::after {
+  background: radial-gradient(
+    ellipse 70% 50% at 50% 100%,
+    rgba(74, 87, 61, 0.07) 0%,
+    transparent 70%
+  ) !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 18. RESPONSIVE ADJUSTMENTS
+   ─────────────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .notion-page-content {
+    padding-inline: 1rem !important;
+  }
+
+  .notion-title {
+    font-size: 1.6rem !important;
+  }
+
+  .notion-h1, .notion-h1 .notion-h-title {
+    font-size: 1.4rem !important;
+  }
+
+  .notion-gallery-grid {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)) !important;
+  }
+
+  .notion-code > pre {
+    padding: 1rem !important;
+    font-size: 0.82rem !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .notion-gallery-grid {
+    grid-template-columns: 1fr !important;
+  }
+}

@@ -1,0 +1,196 @@
+/**
+ * index.js — Home Page (Course Hub)
+ * ───────────────────────────────────
+ * Displays a grid of CourseCard components.
+ * In production: replace MOCK_COURSES with real data fetched from Notion
+ * via NotionNext's lib/notion.js / SiteDataApi.js.
+ *
+ * Data binding points are clearly marked with TODO comments.
+ */
+
+import Layout from '../components/Layout'
+import CourseCard from '../components/CourseCard'
+
+// ─────────────────────────────────────────────────────────────
+//  TODO: Replace with real Notion data via getStaticProps
+//  using NotionNext's lib (e.g. getAllPages, getDatabase)
+// ─────────────────────────────────────────────────────────────
+const MOCK_COURSES = [
+  {
+    slug: 'introduction-to-servicenow',
+    title: 'Introduction to ServiceNow Platform',
+    summary: 'A foundational overview of the ServiceNow platform, its architecture, and core modules used across enterprises.',
+    tags: ['Platform', 'Fundamentals'],
+    icon: '🏛️',
+    difficulty: 'Beginner',
+    duration: '30 min',
+    date: '2024-06-01',
+  },
+  {
+    slug: 'itsm-deep-dive',
+    title: 'ITSM Deep Dive: Incident & Change Management',
+    summary: 'Master Incident Management workflows, SLA configuration, and the Change Advisory Board process in ServiceNow.',
+    tags: ['ITSM', 'Incident', 'Change'],
+    icon: '⚙️',
+    difficulty: 'Intermediate',
+    duration: '1h 15min',
+    date: '2024-07-10',
+  },
+  {
+    slug: 'flow-designer-automation',
+    title: 'Flow Designer & Process Automation',
+    summary: 'Build powerful no-code automations using Flow Designer triggers, actions, and subflows with real-world examples.',
+    tags: ['Automation', 'Flow Designer'],
+    icon: '⚡',
+    difficulty: 'Intermediate',
+    duration: '55 min',
+    date: '2024-07-22',
+    completedAt: new Date('2024-08-01'),
+  },
+  {
+    slug: 'scoped-application-development',
+    title: 'Scoped Application Development',
+    summary: 'Learn to build and deploy scoped applications in ServiceNow: tables, forms, business rules, and client scripts.',
+    tags: ['Development', 'Scoped Apps'],
+    icon: '📦',
+    difficulty: 'Advanced',
+    duration: '2h 10min',
+    date: '2024-08-01',
+  },
+  {
+    slug: 'reporting-and-dashboards',
+    title: 'Reporting, Analytics & Dashboards',
+    summary: 'Create actionable reports, performance analytics dashboards, and scheduled email digests from Notion data.',
+    tags: ['Analytics', 'Reporting'],
+    icon: '📊',
+    difficulty: 'Beginner',
+    duration: '40 min',
+    date: '2024-08-03',
+  },
+  {
+    slug: 'integration-hub',
+    title: 'IntegrationHub: REST, SOAP & MID Server',
+    summary: 'Connect ServiceNow to external systems using spoke-based integrations, REST Message records, and MID Server configurations.',
+    tags: ['Integration', 'API', 'MID Server'],
+    icon: '🔗',
+    difficulty: 'Advanced',
+    duration: '1h 45min',
+    date: '2024-08-03',
+  },
+]
+
+// ─────────────────────────────────────────────────────────────
+//  TODO: Implement getStaticProps / getServerSideProps
+//  to fetch real data from NotionNext's Notion API layer
+// ─────────────────────────────────────────────────────────────
+export async function getStaticProps() {
+  // Example of how you'd plug in real data:
+  //
+  // const { getAllPosts } = require('../lib/notion')
+  // const posts = await getAllPosts({ filter: 'Published' })
+  // const courses = posts.map(post => ({
+  //   slug: post.slug,
+  //   title: post.title,
+  //   summary: post.summary,
+  //   tags: post.tags,
+  //   cover: post.pageCoverThumbnail,
+  //   icon: post.pageIcon,
+  //   difficulty: post.difficulty,
+  //   duration: post.duration,
+  //   date: post.date,
+  // }))
+
+  return {
+    props: {
+      courses: MOCK_COURSES,
+    },
+    revalidate: 60, // ISR: revalidate every 60s
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Page Component
+// ═══════════════════════════════════════════════════════════
+export default function HomePage({ courses }) {
+  return (
+    <Layout
+      showSidebar={false}
+      pageTitle="Knowledge Hub"
+      pageDescription="Explore ServiceNow courses, labs, and reference cards — curated with Zen intention."
+    >
+      <div className="max-w-screen-xl mx-auto px-4 md:px-8 py-10 md:py-14">
+
+        {/* ── Hero */}
+        <header className="mb-12 max-w-2xl animate-fade-in">
+          <div className="flex items-center gap-2 mb-4">
+            <span className="text-matcha-500 dark:text-matcha-400 font-semibold text-[0.75rem] uppercase tracking-widest">
+              ✦ &nbsp;ServiceNow Academy
+            </span>
+          </div>
+          <h1 className="font-serif font-medium text-3xl md:text-4xl text-ink-700 dark:text-sage-100 leading-tight mb-4 text-balance">
+            Master ServiceNow with{' '}
+            <span className="text-matcha-500 dark:text-matcha-400">calm clarity</span>
+          </h1>
+          <p className="text-[1rem] leading-relaxed text-ink-400 dark:text-sage-400 max-w-prose">
+            A serene knowledge space for IT professionals navigating ServiceNow's vast ecosystem.
+            Curated lessons, labs, and reference notes — structured for deep learning.
+          </p>
+        </header>
+
+        {/* ── Filter bar (visual stub — wire up filtering to Notion tags) */}
+        <div
+          className="flex flex-wrap items-center gap-2 mb-8 animate-fade-in"
+          style={{ animationDelay: '80ms' }}
+          role="group"
+          aria-label="Filter by category"
+        >
+          {['All', 'Fundamentals', 'ITSM', 'Development', 'Integration', 'Analytics', 'Automation'].map((filter, i) => (
+            <button
+              key={filter}
+              id={`home-filter-${filter.toLowerCase()}`}
+              type="button"
+              className={[
+                'px-3 py-1.5 rounded-pill text-[0.78rem] font-medium',
+                'border transition-all duration-200',
+                i === 0
+                  ? 'bg-matcha-500 dark:bg-matcha-700 text-white border-matcha-500 dark:border-matcha-700'
+                  : 'bg-rice-paper-200/80 dark:bg-tea-slate-200/50 text-ink-500 dark:text-sage-400 border-rice-paper-400/70 dark:border-tea-slate-50/60 hover:border-matcha-400/60 dark:hover:border-matcha-700/60 hover:text-matcha-500 dark:hover:text-matcha-300',
+              ].join(' ')}
+            >
+              {filter}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Course Grid */}
+        <section aria-label="Course catalog">
+          <div
+            className="grid gap-5"
+            style={{
+              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+            }}
+          >
+            {courses.map((course, index) => (
+              <div
+                key={course.slug}
+                style={{ animationDelay: `${index * 60 + 120}ms` }}
+              >
+                <CourseCard {...course} />
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ── Empty state */}
+        {courses.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-24 text-center">
+            <span className="text-5xl mb-4 opacity-60">茶</span>
+            <p className="text-ink-400 dark:text-sage-500 font-serif italic">
+              No lessons found. Begin by connecting your Notion database.
+            </p>
+          </div>
+        )}
+      </div>
+    </Layout>
+  )
+}
