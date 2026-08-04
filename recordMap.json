@@ -1,0 +1,402 @@
+{
+  "__version__": 3,
+  "block": {
+    "3b0ac39b-0efb-80eb-9f8d-e858429de794": {
+      "spaceId": "f91a30b4-dff9-4614-9c99-16199f64166c",
+      "value": {
+        "value": {
+          "id": "3b0ac39b-0efb-80eb-9f8d-e858429de794",
+          "version": 64,
+          "type": "collection_view_page",
+          "view_ids": [
+            "3b0ac39b-0efb-8001-aa88-000c435e6f50"
+          ],
+          "collection_id": "3b0ac39b-0efb-80e3-995d-000bb789f754",
+          "format": {
+            "site_id": "3b0ac39b-0efb-8011-96a2-0079319d54b7",
+            "collection_pointer": {
+              "id": "3b0ac39b-0efb-80e3-995d-000bb789f754",
+              "table": "collection",
+              "spaceId": "f91a30b4-dff9-4614-9c99-16199f64166c"
+            },
+            "collection_pointers": [
+              {
+                "id": "3b0ac39b-0efb-80e3-995d-000bb789f754",
+                "table": "collection",
+                "spaceId": "f91a30b4-dff9-4614-9c99-16199f64166c"
+              }
+            ]
+          },
+          "permissions": [
+            {
+              "role": "editor",
+              "type": "user_permission",
+              "user_id": "58887005-1544-462a-b2fd-59eeddc339a4"
+            },
+            {
+              "role": "reader",
+              "type": "public_permission",
+              "is_site": true,
+              "added_timestamp": 1785667699058
+            }
+          ],
+          "created_time": 1785663588533,
+          "last_edited_time": 1785683259329,
+          "parent_id": "f91a30b4-dff9-4614-9c99-16199f64166c",
+          "parent_table": "space",
+          "alive": true,
+          "space_id": "f91a30b4-dff9-4614-9c99-16199f64166c",
+          "crdt_format_version": 1,
+          "crdt_data": {
+            "title": {
+              "r": "ekuBaYbutO_yWVS29oMAug,\"start\",\"end\"",
+              "n": {
+                "ekuBaYbutO_yWVS29oMAug,\"start\",\"end\"": {
+                  "s": {
+                    "x": "ekuBaYbutO_yWVS29oMAug",
+                    "i": [
+                      {
+                        "t": "s"
+                      },
+                      {
+                        "t": "e"
+                      }
+                    ],
+                    "l": ""
+                  },
+                  "c": []
+                }
+              }
+            }
+          }
+        },
+        "role": "reader"
+      }
+    }
+  },
+  "collection_view": {
+    "3b0ac39b-0efb-8001-aa88-000c435e6f50": {
+      "spaceId": "f91a30b4-dff9-4614-9c99-16199f64166c",
+      "value": {
+        "value": {
+          "id": "3b0ac39b-0efb-8001-aa88-000c435e6f50",
+          "version": 49,
+          "type": "table",
+          "format": {
+            "table_properties": [
+              {
+                "width": 200,
+                "visible": true,
+                "property": "u>}q"
+              },
+              {
+                "width": 200,
+                "visible": true,
+                "property": "BrzA"
+              },
+              {
+                "width": 388,
+                "visible": true,
+                "property": "title"
+              },
+              {
+                "width": 200,
+                "visible": true,
+                "property": "GmTS"
+              },
+              {
+                "width": 226,
+                "visible": true,
+                "property": "D`?P"
+              },
+              {
+                "width": 200,
+                "visible": true,
+                "property": "q]<d"
+              },
+              {
+                "width": 200,
+                "visible": true,
+                "property": "Pbtv"
+              },
+              {
+                "width": 200,
+                "visible": true,
+                "property": "u{`o"
+              }
+            ],
+            "collection_pointer": {
+              "id": "3b0ac39b-0efb-80e3-995d-000bb789f754",
+              "table": "collection",
+              "spaceId": "f91a30b4-dff9-4614-9c99-16199f64166c"
+            },
+            "subitem_filter_scope": "parents_and_subitems",
+            "table_frozen_column_index": -1
+          },
+          "parent_id": "3b0ac39b-0efb-80eb-9f8d-e858429de794",
+          "parent_table": "block",
+          "alive": true,
+          "page_sort": [
+            "3b0ac39b-0efb-8077-aec9-f354d45db1da",
+            "3b0ac39b-0efb-80c5-b660-ce1f977572b6",
+            "3b0ac39b-0efb-80c6-aa54-c97f364c09dc",
+            "3b0ac39b-0efb-80ec-9544-d438be079d64",
+            "3b0ac39b-0efb-80cc-8abb-ce37430e0d81",
+            "3b0ac39b-0efb-80cb-b939-d01b6e4a2704",
+            "3b0ac39b-0efb-806b-97c4-fa90b50ca3ec",
+            "1b0ac39b-0efb-83ed-b8f0-01d69129f23f",
+            "c19ac39b-0efb-837f-996e-81718bcf507c",
+            "3b0ac39b-0efb-805f-87a5-e820c86f0c9c",
+            "464ac39b-0efb-82c3-83fe-016b14eee5b1",
+            "900ac39b-0efb-82af-aef4-01d70bf761e2",
+            "3b0ac39b-0efb-80d5-984b-d1cc556dd459"
+          ],
+          "space_id": "f91a30b4-dff9-4614-9c99-16199f64166c",
+          "created_time": 1785663588538,
+          "last_edited_time": 1785683261659,
+          "created_by_table": "notion_user",
+          "created_by_id": "58887005-1544-462a-b2fd-59eeddc339a4"
+        },
+        "role": "reader"
+      }
+    }
+  },
+  "collection": {
+    "3b0ac39b-0efb-80e3-995d-000bb789f754": {
+      "spaceId": "f91a30b4-dff9-4614-9c99-16199f64166c",
+      "value": {
+        "value": {
+          "id": "3b0ac39b-0efb-80e3-995d-000bb789f754",
+          "version": 121,
+          "name": [
+            [
+              "ServiceNow Wiki"
+            ]
+          ],
+          "schema": {
+            "BrzA": {
+              "name": "status",
+              "type": "select",
+              "options": [
+                {
+                  "id": "^eA@",
+                  "color": "green",
+                  "value": "Draft"
+                },
+                {
+                  "id": "LpQE",
+                  "color": "purple",
+                  "value": "Published"
+                }
+              ]
+            },
+            "D`?P": {
+              "name": "category",
+              "type": "select",
+              "options": [
+                {
+                  "id": "RASc",
+                  "color": "pink",
+                  "value": "CIS - Data Foundations"
+                },
+                {
+                  "id": "Ag^;",
+                  "color": "yellow",
+                  "value": "CSDM"
+                },
+                {
+                  "id": "\\<C<",
+                  "color": "red",
+                  "value": "CMDB"
+                }
+              ]
+            },
+            "GmTS": {
+              "name": "slug",
+              "type": "text"
+            },
+            "Pbtv": {
+              "name": "date",
+              "type": "date"
+            },
+            "q]<d": {
+              "name": "tags",
+              "type": "multi_select",
+              "options": [
+                {
+                  "id": "448d4f8c-5fc9-4263-b526-4ebb013fa6a0",
+                  "color": "orange",
+                  "value": "CMDB"
+                },
+                {
+                  "id": "8770d5cb-0745-44b1-9ff9-4b27284aae19",
+                  "color": "brown",
+                  "value": "CSDM"
+                }
+              ]
+            },
+            "u>}q": {
+              "name": "type",
+              "type": "select",
+              "options": [
+                {
+                  "id": "7167298c-4310-4db5-a042-72bcb1e78740",
+                  "color": "green",
+                  "value": "Post"
+                }
+              ]
+            },
+            "u{`o": {
+              "name": "summary",
+              "type": "text"
+            },
+            "title": {
+              "name": "title",
+              "type": "title"
+            }
+          },
+          "icon": "/icons/database_brown.svg",
+          "format": {
+            "ai_suggested_properties": [
+              {
+                "name": "Owning Team",
+                "type": "select",
+                "options": [
+                  {
+                    "id": "\\}L<",
+                    "color": "blue",
+                    "value": "IT Service Management"
+                  },
+                  {
+                    "id": "`s{S",
+                    "color": "brown",
+                    "value": "HR Service Delivery"
+                  },
+                  {
+                    "id": "[U@T",
+                    "color": "green",
+                    "value": "Customer Support"
+                  },
+                  {
+                    "id": "Lv`a",
+                    "color": "default",
+                    "value": "Finance Operations"
+                  }
+                ]
+              },
+              {
+                "name": "Related Incident Count",
+                "type": "number"
+              },
+              {
+                "name": "Risk Tier",
+                "type": "select",
+                "options": [
+                  {
+                    "id": "^l{t",
+                    "color": "brown",
+                    "value": "Low"
+                  },
+                  {
+                    "id": "o`L{",
+                    "color": "red",
+                    "value": "Medium"
+                  },
+                  {
+                    "id": "sKAr",
+                    "color": "pink",
+                    "value": "High"
+                  },
+                  {
+                    "id": "@zsn",
+                    "color": "default",
+                    "value": "Critical"
+                  }
+                ]
+              },
+              {
+                "name": "External Documentation Links",
+                "type": "url"
+              },
+              {
+                "name": "Owning Team",
+                "type": "select",
+                "options": [
+                  {
+                    "id": "tM>_",
+                    "color": "brown",
+                    "value": "IT Service Management"
+                  },
+                  {
+                    "id": "TswY",
+                    "color": "purple",
+                    "value": "HR Service Delivery"
+                  },
+                  {
+                    "id": ";bYD",
+                    "color": "pink",
+                    "value": "Customer Support"
+                  },
+                  {
+                    "id": "m\\Tq",
+                    "color": "yellow",
+                    "value": "Finance Operations"
+                  }
+                ]
+              },
+              {
+                "name": "Related Incident Count",
+                "type": "number"
+              },
+              {
+                "name": "Risk Tier",
+                "type": "select",
+                "options": [
+                  {
+                    "id": "n\\<G",
+                    "color": "orange",
+                    "value": "Low"
+                  },
+                  {
+                    "id": "b>l`",
+                    "color": "blue",
+                    "value": "Medium"
+                  },
+                  {
+                    "id": "OdBb",
+                    "color": "brown",
+                    "value": "High"
+                  },
+                  {
+                    "id": "Ubqf",
+                    "color": "red",
+                    "value": "Critical"
+                  }
+                ]
+              },
+              {
+                "name": "External Documentation Links",
+                "type": "url"
+              }
+            ]
+          },
+          "parent_id": "3b0ac39b-0efb-80eb-9f8d-e858429de794",
+          "parent_table": "block",
+          "alive": true,
+          "migrated": true,
+          "space_id": "f91a30b4-dff9-4614-9c99-16199f64166c",
+          "created_time": 1785663588538,
+          "last_edited_time": 1785682643495,
+          "created_by_table": "notion_user",
+          "created_by_id": "58887005-1544-462a-b2fd-59eeddc339a4",
+          "last_edited_by_table": "notion_user",
+          "last_edited_by_id": "58887005-1544-462a-b2fd-59eeddc339a4"
+        },
+        "role": "reader"
+      }
+    }
+  },
+  "notion_user": {},
+  "collection_query": {},
+  "signed_urls": {}
+}

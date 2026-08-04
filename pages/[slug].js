@@ -49,58 +49,53 @@ const Modal = dynamic(() =>
 )
 
 // ─────────────────────────────────────────────────────────────
-//  getStaticPaths — TODO: replace with real Notion page slugs
+//  getStaticPaths
 // ─────────────────────────────────────────────────────────────
 export async function getStaticPaths() {
-  // In production, fetch all published page slugs from Notion:
-  //
-  // const { getAllPosts } = require('../lib/notion')
-  // const posts = await getAllPosts({ filter: 'Published' })
-  // const paths = posts.map(post => ({ params: { slug: post.slug } }))
-  //
-  // return { paths, fallback: 'blocking' }
+  const { getAllPosts } = require('../lib/notion')
+  const posts = await getAllPosts()
+  const paths = posts.map(post => ({ params: { slug: post.slug } }))
 
   return {
-    paths: [],
+    paths,
     fallback: 'blocking',
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  getStaticProps — TODO: replace with real Notion data fetch
+//  getStaticProps
 // ─────────────────────────────────────────────────────────────
 export async function getStaticProps({ params }) {
   const { slug } = params
 
   try {
-    // In production, use NotionNext's lib to fetch recordMap:
-    //
-    // const { getPageBySlug, getTableOfContents } = require('../lib/notion')
-    // const page = await getPageBySlug(slug)
-    // if (!page) return { notFound: true }
-    //
-    // return {
-    //   props: {
-    //     recordMap:       page.recordMap,        // ← required by NotionRenderer
-    //     pageId:          page.id,
-    //     title:           page.title,
-    //     description:     page.summary,
-    //     tableOfContents: page.tableOfContents,  // from getPageTableOfContents()
-    //     modules:         [],                    // pass your course module array
-    //     currentSlug:     slug,
-    //   },
-    //   revalidate: 60,
-    // }
+    const { getPageBySlug } = require('../lib/notion')
+    const page = await getPageBySlug(slug)
+    
+    if (!page || !page.recordMap) {
+      return { notFound: true }
+    }
 
-    // ── Stub: return empty recordMap so the page renders without crashing
+    // Attempt to extract TOC if getPageTableOfContents is available in notion-utils
+    let tableOfContents = []
+    try {
+      const { getPageTableOfContents } = await import('notion-utils')
+      const block = Object.values(page.recordMap.block).find(b => b.value?.type === 'page')
+      if (block) {
+        tableOfContents = getPageTableOfContents(block.value, page.recordMap)
+      }
+    } catch (tocErr) {
+      console.warn('Could not extract TOC', tocErr)
+    }
+
     return {
       props: {
-        recordMap:       {},
-        pageId:          slug,
-        title:           'Lesson',
-        description:     '',
-        tableOfContents: [],
-        modules:         [],
+        recordMap:       page.recordMap,
+        pageId:          page.id,
+        title:           page.title || 'Lesson',
+        description:     page.summary || '',
+        tableOfContents: tableOfContents,
+        modules:         [], // TODO: populate from Notion or site config
         currentSlug:     slug,
       },
       revalidate: 60,

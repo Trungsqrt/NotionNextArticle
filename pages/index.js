@@ -12,101 +12,20 @@ import Layout from '../components/Layout'
 import CourseCard from '../components/CourseCard'
 
 // ─────────────────────────────────────────────────────────────
-//  TODO: Replace with real Notion data via getStaticProps
-//  using NotionNext's lib (e.g. getAllPages, getDatabase)
-// ─────────────────────────────────────────────────────────────
-const MOCK_COURSES = [
-  {
-    slug: 'introduction-to-servicenow',
-    title: 'Introduction to ServiceNow Platform',
-    summary: 'A foundational overview of the ServiceNow platform, its architecture, and core modules used across enterprises.',
-    tags: ['Platform', 'Fundamentals'],
-    icon: '🏛️',
-    difficulty: 'Beginner',
-    duration: '30 min',
-    date: '2024-06-01',
-  },
-  {
-    slug: 'itsm-deep-dive',
-    title: 'ITSM Deep Dive: Incident & Change Management',
-    summary: 'Master Incident Management workflows, SLA configuration, and the Change Advisory Board process in ServiceNow.',
-    tags: ['ITSM', 'Incident', 'Change'],
-    icon: '⚙️',
-    difficulty: 'Intermediate',
-    duration: '1h 15min',
-    date: '2024-07-10',
-  },
-  {
-    slug: 'flow-designer-automation',
-    title: 'Flow Designer & Process Automation',
-    summary: 'Build powerful no-code automations using Flow Designer triggers, actions, and subflows with real-world examples.',
-    tags: ['Automation', 'Flow Designer'],
-    icon: '⚡',
-    difficulty: 'Intermediate',
-    duration: '55 min',
-    date: '2024-07-22',
-    completedAt: new Date('2024-08-01'),
-  },
-  {
-    slug: 'scoped-application-development',
-    title: 'Scoped Application Development',
-    summary: 'Learn to build and deploy scoped applications in ServiceNow: tables, forms, business rules, and client scripts.',
-    tags: ['Development', 'Scoped Apps'],
-    icon: '📦',
-    difficulty: 'Advanced',
-    duration: '2h 10min',
-    date: '2024-08-01',
-  },
-  {
-    slug: 'reporting-and-dashboards',
-    title: 'Reporting, Analytics & Dashboards',
-    summary: 'Create actionable reports, performance analytics dashboards, and scheduled email digests from Notion data.',
-    tags: ['Analytics', 'Reporting'],
-    icon: '📊',
-    difficulty: 'Beginner',
-    duration: '40 min',
-    date: '2024-08-03',
-  },
-  {
-    slug: 'integration-hub',
-    title: 'IntegrationHub: REST, SOAP & MID Server',
-    summary: 'Connect ServiceNow to external systems using spoke-based integrations, REST Message records, and MID Server configurations.',
-    tags: ['Integration', 'API', 'MID Server'],
-    icon: '🔗',
-    difficulty: 'Advanced',
-    duration: '1h 45min',
-    date: '2024-08-03',
-  },
-]
-
-// ─────────────────────────────────────────────────────────────
-//  TODO: Implement getStaticProps / getServerSideProps
-//  to fetch real data from NotionNext's Notion API layer
+//  Data Fetching via Notion API
 // ─────────────────────────────────────────────────────────────
 export async function getStaticProps() {
-  // Example of how you'd plug in real data:
-  //
-  // const { getAllPosts } = require('../lib/notion')
-  // const posts = await getAllPosts({ filter: 'Published' })
-  // const courses = posts.map(post => ({
-  //   slug: post.slug,
-  //   title: post.title,
-  //   summary: post.summary,
-  //   tags: post.tags,
-  //   cover: post.pageCoverThumbnail,
-  //   icon: post.pageIcon,
-  //   difficulty: post.difficulty,
-  //   duration: post.duration,
-  //   date: post.date,
-  // }))
+  const { getAllPosts } = require('../lib/notion')
+  const courses = await getAllPosts()
 
   return {
     props: {
-      courses: MOCK_COURSES,
+      courses,
     },
     revalidate: 60, // ISR: revalidate every 60s
   }
 }
+
 
 // ═══════════════════════════════════════════════════════════
 //  Page Component

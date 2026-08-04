@@ -25,6 +25,17 @@ const nextConfig = {
   experimental: {
     optimizeCss: false,
   },
+
+  // Fix node dependency issues with pdf.js and keyv
+  serverExternalPackages: ['keyv'],
+  webpack: (config) => {
+    config.resolve.fallback = {
+      ...config.resolve.fallback,
+      canvas: false,
+    }
+    return config
+  },
+  turbopack: {},
 }
 
 module.exports = nextConfig
