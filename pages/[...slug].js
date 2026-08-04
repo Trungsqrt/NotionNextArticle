@@ -44,6 +44,11 @@ export async function getStaticPaths() {
 }
 
 export async function getStaticProps({ params }) {
+  const param = Array.isArray(params.slug) ? params.slug.join('/') : params.slug || '';
+  if (/\.(ico|png|jpg|jpeg|svg|css|js|txt|map|json|xml)$/i.test(param)) {
+    return { notFound: true };
+  }
+
   const slugArray = params.slug || []
   const lastSlug = slugArray[slugArray.length - 1]
   if (!lastSlug) return { notFound: true }
@@ -109,10 +114,7 @@ export default function LessonPage({
             previewImages
             showTableOfContents={false}
             minTableOfContentsItems={3}
-            mapPageUrl={(notionPageId) => {
-              const id = (notionPageId || "").replace(/-/g, "")
-              return id ? `/${id}` : "/"
-            }}
+            mapPageUrl={(pageId) => (pageId ? `/${pageId.replace(/-/g, '')}` : '')}
             components={{ Code, Collection, Equation, Pdf, Modal }}
           />
         ) : (
