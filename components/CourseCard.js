@@ -110,6 +110,7 @@ function CardCover({ src, icon, title }) {
           src={src}
           alt={`Cover image for ${title || 'lesson'}`}
           fill
+          unoptimized
           className="object-cover transition-transform duration-500 group-hover:scale-[1.03]"
           sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
         />
