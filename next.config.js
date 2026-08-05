@@ -13,20 +13,11 @@ const nextConfig = {
     ],
   },
 
-  // Transpile react-notion-x packages so Next.js can handle their ESM exports
-  transpilePackages: [
-    'react-notion-x',
-    'notion-client',
-    'notion-types',
-    'notion-utils',
-  ],
-
   // Experimental: optimise CSS loading
   experimental: {
     optimizeCss: false,
   },
 
-  // Fix node dependency issues with pdf.js and keyv
   serverExternalPackages: ['keyv'],
   webpack: (config) => {
     config.resolve.fallback = {

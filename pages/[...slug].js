@@ -1,40 +1,4 @@
-/**
- * [...slug].js - Catch-all Article/Lesson Page
- * Handles both flat (/cis-df) and hierarchical (/cis-df/introduction-to-cmdb) routes.
- */
-
-import dynamic from "next/dynamic"
 import Layout from "../components/Layout"
-
-const NotionRenderer = dynamic(
-  () => import("react-notion-x").then(m => m.NotionRenderer),
-  { ssr: false }
-)
-
-const Code = dynamic(
-  () => import("react-notion-x/build/third-party/code").then(m => m.Code),
-  { ssr: false }
-)
-
-const Collection = dynamic(
-  () => import("react-notion-x/build/third-party/collection").then(m => m.Collection),
-  { ssr: false, loading: () => null }
-)
-
-const Equation = dynamic(
-  () => import("react-notion-x/build/third-party/equation").then(m => m.Equation),
-  { ssr: false }
-)
-
-const Pdf = dynamic(
-  () => import("react-notion-x/build/third-party/pdf").then(m => m.Pdf),
-  { ssr: false }
-)
-
-const Modal = dynamic(
-  () => import("react-notion-x/build/third-party/modal").then(m => m.Modal),
-  { ssr: false }
-)
 
 export async function getStaticPaths() {
   const { getAllPosts } = require("../lib/notion")
@@ -57,24 +21,14 @@ export async function getStaticProps({ params }) {
     const { getPageBySlug } = require("../lib/notion")
     const page = await getPageBySlug(lastSlug)
 
-    if (!page || !page.recordMap) return { notFound: true }
-
-    let tableOfContents = []
-    try {
-      const { getPageTableOfContents } = await import("notion-utils")
-      const block = Object.values(page.recordMap.block).find(b => b.value?.type === "page")
-      if (block) tableOfContents = getPageTableOfContents(block.value, page.recordMap)
-    } catch (tocErr) {
-      console.warn("Could not extract TOC:", tocErr.message)
-    }
+    if (!page || !page.html) return { notFound: true }
 
     return {
       props: {
-        recordMap: page.recordMap,
+        html: page.html,
         pageId: page.id,
         title: page.title || "Lesson",
         description: page.summary || "",
-        tableOfContents,
         modules: [],
         currentSlug: slugArray.join("/"),
       },
@@ -87,11 +41,10 @@ export async function getStaticProps({ params }) {
 }
 
 export default function LessonPage({
-  recordMap,
+  html,
   pageId,
   title,
   description,
-  tableOfContents,
   modules,
   currentSlug,
 }) {
@@ -100,22 +53,14 @@ export default function LessonPage({
       showSidebar
       pageTitle={title}
       pageDescription={description}
-      tableOfContents={tableOfContents}
       modules={modules}
       currentSlug={currentSlug}
     >
       <div className="notion-viewport">
-        {recordMap && Object.keys(recordMap).length > 0 ? (
-          <NotionRenderer
-            recordMap={recordMap}
-            fullPage
-            darkMode={false}
-            rootPageId={pageId}
-            previewImages
-            showTableOfContents={false}
-            minTableOfContentsItems={3}
-            mapPageUrl={(pageId) => (pageId ? `/${pageId.replace(/-/g, '')}` : '')}
-            components={{ Code, Collection, Equation, Pdf, Modal }}
+        {html ? (
+          <div
+            className="prose prose-neutral max-w-none wabi-sabi-theme px-6 py-10"
+            dangerouslySetInnerHTML={{ __html: html }}
           />
         ) : (
           <div className="max-w-content mx-auto px-6 py-16 text-center">
