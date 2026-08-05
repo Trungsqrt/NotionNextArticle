@@ -1,7 +1,7 @@
 import Layout from "../components/Layout"
+import { getAllPosts, getPageBySlug } from "../lib/notion"
 
 export async function getStaticPaths() {
-  const { getAllPosts } = require("../lib/notion")
   const posts = await getAllPosts()
   const paths = posts.map(post => ({ params: { slug: [post.slug] } }))
   return { paths, fallback: "blocking" }
@@ -18,7 +18,6 @@ export async function getStaticProps({ params }) {
   if (!lastSlug) return { notFound: true }
 
   try {
-    const { getPageBySlug } = require("../lib/notion")
     const page = await getPageBySlug(lastSlug)
 
     if (!page || !page.html) return { notFound: true }

@@ -10,12 +10,12 @@
 
 import Layout from '../components/Layout'
 import CourseCard from '../components/CourseCard'
+import { getAllPosts } from '../lib/notion'
 
 // ─────────────────────────────────────────────────────────────
 //  Data Fetching via Notion API
 // ─────────────────────────────────────────────────────────────
 export async function getStaticProps() {
-  const { getAllPosts } = require('../lib/notion')
   const courses = await getAllPosts()
 
   return {
