@@ -7,7 +7,68 @@ module.exports = {
     './pages/**/*.{js,ts,jsx,tsx,mdx}',
     './components/**/*.{js,ts,jsx,tsx,mdx}',
     './app/**/*.{js,ts,jsx,tsx,mdx}',
+    './lib/**/*.{js,ts}',
     './styles/**/*.css',
+  ],
+
+  // ── Safelist: classes used inside JS template strings in lib/notion.js ──
+  // These strings are not statically analysable by Tailwind's scanner in all
+  // build modes (Turbopack JIT), so we explicitly protect them from purging.
+  safelist: [
+    // Grid layout (child_database card grid)
+    'grid', 'grid-cols-1', 'gap-6', 'my-8', 'not-prose',
+    { pattern: /^sm:grid-cols-/, variants: ['sm'] },
+    { pattern: /^lg:grid-cols-/, variants: ['lg'] },
+    // Card shell — rounded-card is a custom class, the rest are standard
+    'rounded-card', 'shadow-zen-sm', 'shadow-zen',
+    'overflow-hidden', 'flex', 'flex-col', 'flex-1',
+    'relative', 'block',
+    // Aspect ratio cover
+    'aspect-[16/7]', 'flex-shrink-0',
+    // Card body
+    'p-4', 'gap-2.5',
+    // Tag chips
+    'rounded-pill', 'leading-none',
+    'bg-matcha-100/70', 'dark:bg-matcha-700/25',
+    'text-matcha-600', 'dark:text-matcha-300',
+    'border-matcha-200/60', 'dark:border-matcha-700/40',
+    // Meta row
+    'mt-auto', 'pt-2', 'justify-between',
+    'border-rice-paper-400/50', 'dark:border-tea-slate-50/30',
+    // Typography
+    'font-serif', 'line-clamp-2', 'leading-snug',
+    'text-ink-700', 'dark:text-sage-100',
+    'text-ink-400', 'dark:text-sage-500',
+    'text-ink-400', 'dark:text-sage-600',
+    // Read CTA
+    'text-matcha-500', 'dark:text-matcha-400',
+    'text-matcha-600', 'dark:text-matcha-300',
+    // Hover states
+    'hover:-translate-y-[3px]',
+    'hover:shadow-zen',
+    'hover:border-matcha-400/60', 'dark:hover:border-matcha-700/60',
+    'hover:text-matcha-600', 'dark:hover:text-matcha-300',
+    'hover:scale-[1.03]', 'group-hover:scale-[1.03]',
+    'group-hover:scale-110',
+    // Notion badge colors
+    'bg-stone-100', 'text-stone-700', 'border-stone-200/70',
+    'dark:bg-stone-800', 'dark:text-stone-300', 'dark:border-stone-700/60',
+    'bg-amber-50', 'text-amber-800', 'border-amber-200/70',
+    'dark:bg-amber-900/30', 'dark:text-amber-300', 'dark:border-amber-700/50',
+    'bg-green-50', 'text-green-700', 'border-green-200/70',
+    'dark:bg-green-900/30', 'dark:text-green-300', 'dark:border-green-700/50',
+    'bg-blue-50', 'text-blue-700', 'border-blue-200/70',
+    'dark:bg-blue-900/30', 'dark:text-blue-300', 'dark:border-blue-700/50',
+    'bg-purple-50', 'text-purple-700', 'border-purple-200/70',
+    'dark:bg-purple-900/30', 'dark:text-purple-300', 'dark:border-purple-700/50',
+    'bg-red-50', 'text-red-700', 'border-red-200/70',
+    'dark:bg-red-900/30', 'dark:text-red-300', 'dark:border-red-700/50',
+    'bg-orange-50', 'text-orange-700', 'border-orange-200/70',
+    'dark:bg-orange-900/30', 'dark:text-orange-300', 'dark:border-orange-700/50',
+    'bg-yellow-50', 'text-yellow-700', 'border-yellow-200/70',
+    'dark:bg-yellow-900/30', 'dark:text-yellow-300', 'dark:border-yellow-700/50',
+    'bg-pink-50', 'text-pink-700', 'border-pink-200/70',
+    'dark:bg-pink-900/30', 'dark:text-pink-300', 'dark:border-pink-700/50',
   ],
 
   theme: {

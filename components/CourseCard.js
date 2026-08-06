@@ -197,8 +197,6 @@ export default function CourseCard({
       {/* ── Card Cover / Hero */}
       <Link href={href} tabIndex="-1" aria-hidden="true" className="relative block">
         <CardCover src={cover} icon={icon} title={title} />
-        {/* Subtle gradient overlay at bottom of cover */}
-        <div className="absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-rice-paper-100/60 dark:from-tea-slate-300/60 to-transparent" />
       </Link>
 
       {/* ── Card Body */}
