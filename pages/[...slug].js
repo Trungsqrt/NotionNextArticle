@@ -1,3 +1,4 @@
+import Link from "next/link"
 import Layout from "../components/Layout"
 import { getAllPosts, getPageBySlug } from "../lib/notion"
 
@@ -33,6 +34,7 @@ export async function getStaticProps({ params }) {
         title: page.title || "Lesson",
         description: page.summary || "",
         cover: coverUrl,
+        category: page.category || "Documentation",
         modules: [],
         currentSlug: slugArray.join("/"),
       },
@@ -50,6 +52,7 @@ export default function LessonPage({
   title,
   description,
   cover,
+  category,
   modules,
   currentSlug,
 }) {
@@ -61,16 +64,37 @@ export default function LessonPage({
       modules={modules}
       currentSlug={currentSlug}
     >
-      <div className="notion-viewport max-w-4xl mx-auto px-4 sm:px-6 md:px-8 py-8 md:py-12">
-        {cover && (
+      {cover && (
+        <div className="w-full h-[30vh] min-h-[250px] overflow-hidden relative">
           <img
             src={cover}
             alt={title || "Cover Image"}
-            className="w-full h-64 object-cover rounded-2xl mb-8 shadow-zen-sm"
+            className="w-full h-full object-cover"
           />
-        )}
+        </div>
+      )}
+      <div className="notion-viewport max-w-4xl mx-auto px-4 sm:px-6 md:px-8 py-8 md:py-12">
         {/* Page Header */}
         <header className="mb-8 pb-6 border-b border-rice-paper-400/60 dark:border-tea-slate-50/40">
+          {/* Breadcrumbs */}
+          <nav aria-label="Breadcrumb" className="text-sm text-neutral-400 dark:text-neutral-500 mb-6 flex items-center gap-2 flex-wrap">
+            <Link href="/" className="hover:text-neutral-700 dark:hover:text-neutral-300 transition-colors">
+              Home
+            </Link>
+            <span>/</span>
+            {category && (
+              <>
+                <span className="hover:text-neutral-700 dark:hover:text-neutral-300 transition-colors">
+                  {category}
+                </span>
+                <span>/</span>
+              </>
+            )}
+            <span className="text-neutral-700 dark:text-neutral-200 font-medium truncate max-w-[250px]">
+              {title}
+            </span>
+          </nav>
+
           <h1 className="font-serif font-medium text-2xl sm:text-3xl md:text-4xl text-ink-700 dark:text-sage-100 leading-tight mb-3">
             {title}
           </h1>

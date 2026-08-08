@@ -83,7 +83,9 @@ module.exports = {
     // Toggle chevron animation
     'group-open:rotate-90', 'group-open:text-neutral-600',
     // List styling classes
-    'list-disc', 'list-decimal', 'list-outside', 'pl-6', 'space-y-2', 'my-4',
+    'list-disc', 'list-decimal', 'list-outside', 'pl-6', 'ml-6', 'pl-2', 'pl-1', 'space-y-1', 'space-y-2', 'my-4', 'marker:text-neutral-400',
+    // In-content & full-bleed cover image classes
+    'h-[30vh]', 'min-h-[250px]', 'rounded-2xl', 'shadow-sm', 'my-6',
   ],
 
   theme: {
