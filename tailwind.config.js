@@ -69,6 +69,21 @@ module.exports = {
     'dark:bg-yellow-900/30', 'dark:text-yellow-300', 'dark:border-yellow-700/50',
     'bg-pink-50', 'text-pink-700', 'border-pink-200/70',
     'dark:bg-pink-900/30', 'dark:text-pink-300', 'dark:border-pink-700/50',
+    // Toggle block dynamic background colors (getToggleColorClasses)
+    'bg-gray-100', 'border-gray-200', 'dark:bg-gray-800/60', 'dark:border-gray-700',
+    'bg-stone-100', 'border-stone-200', 'dark:bg-stone-800/60', 'dark:border-stone-700',
+    'bg-orange-50/80', 'border-orange-200/60', 'dark:bg-orange-900/30', 'dark:border-orange-800/50',
+    'bg-amber-50/80', 'border-amber-200/60', 'dark:bg-amber-900/30', 'dark:border-amber-800/50',
+    'bg-emerald-50/80', 'border-emerald-200/60', 'dark:bg-emerald-900/30', 'dark:border-emerald-800/50',
+    'bg-blue-50/80', 'border-blue-200/60', 'dark:bg-blue-900/30', 'dark:border-blue-800/50',
+    'bg-purple-50/80', 'border-purple-200/60', 'dark:bg-purple-900/30', 'dark:border-purple-800/50',
+    'bg-rose-50/80', 'border-rose-200/60', 'dark:bg-rose-900/30', 'dark:border-rose-800/50',
+    'bg-red-50/80', 'border-red-200/60', 'dark:bg-red-900/30', 'dark:border-red-800/50',
+    'bg-neutral-50/60', 'border-neutral-200/50', 'dark:bg-neutral-800/40', 'dark:border-neutral-700/60',
+    // Toggle chevron animation
+    'group-open:rotate-90', 'group-open:text-neutral-600',
+    // List styling classes
+    'list-disc', 'list-decimal', 'list-outside', 'pl-6', 'space-y-2', 'my-4',
   ],
 
   theme: {

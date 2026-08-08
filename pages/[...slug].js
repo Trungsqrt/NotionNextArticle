@@ -22,12 +22,17 @@ export async function getStaticProps({ params }) {
 
     if (!page || !page.html) return { notFound: true }
 
+    const coverUrl = typeof page.cover === 'string'
+      ? page.cover
+      : (page.cover?.external?.url || page.cover?.file?.url || null)
+
     return {
       props: {
         html: page.html,
         pageId: page.id,
         title: page.title || "Lesson",
         description: page.summary || "",
+        cover: coverUrl,
         modules: [],
         currentSlug: slugArray.join("/"),
       },
@@ -44,6 +49,7 @@ export default function LessonPage({
   pageId,
   title,
   description,
+  cover,
   modules,
   currentSlug,
 }) {
@@ -56,6 +62,13 @@ export default function LessonPage({
       currentSlug={currentSlug}
     >
       <div className="notion-viewport max-w-4xl mx-auto px-4 sm:px-6 md:px-8 py-8 md:py-12">
+        {cover && (
+          <img
+            src={cover}
+            alt={title || "Cover Image"}
+            className="w-full h-64 object-cover rounded-2xl mb-8 shadow-zen-sm"
+          />
+        )}
         {/* Page Header */}
         <header className="mb-8 pb-6 border-b border-rice-paper-400/60 dark:border-tea-slate-50/40">
           <h1 className="font-serif font-medium text-2xl sm:text-3xl md:text-4xl text-ink-700 dark:text-sage-100 leading-tight mb-3">
