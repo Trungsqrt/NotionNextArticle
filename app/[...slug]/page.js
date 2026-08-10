@@ -1,73 +1,70 @@
-import Link from "next/link"
-import Layout from "../components/Layout"
-import { getAllPosts, getPageBySlug } from "../lib/notion"
+import Link from 'next/link'
+import { notFound } from 'next/navigation'
+import { getAllPosts, getPageBySlug } from '../../lib/notion'
 
-export async function getStaticPaths() {
+export const revalidate = 60
+
+export async function generateStaticParams() {
   const posts = await getAllPosts()
-  const paths = posts.map(post => ({ params: { slug: [post.slug] } }))
-  return { paths, fallback: "blocking" }
+  return posts.map(post => ({
+    slug: [post.slug],
+  }))
 }
 
-export async function getStaticProps({ params }) {
-  const param = Array.isArray(params.slug) ? params.slug.join('/') : params.slug || '';
-  if (/\.(ico|png|jpg|jpeg|svg|css|js|txt|map|json|xml)$/i.test(param)) {
-    return { notFound: true };
-  }
-
-  const slugArray = params.slug || []
+export async function generateMetadata({ params }) {
+  const resolvedParams = await params
+  const slugArray = resolvedParams?.slug || []
   const lastSlug = slugArray[slugArray.length - 1]
-  if (!lastSlug) return { notFound: true }
+  if (!lastSlug) return { title: 'Lesson · ServiceNow Academy' }
 
   try {
     const page = await getPageBySlug(lastSlug)
-
-    if (!page || !page.html) return { notFound: true }
-
-    const coverUrl = typeof page.cover === 'string'
-      ? page.cover
-      : (page.cover?.external?.url || page.cover?.file?.url || null)
-
+    if (!page) return { title: 'Lesson · ServiceNow Academy' }
     return {
-      props: {
-        html: page.html,
-        pageId: page.id,
-        title: page.title || "Lesson",
-        description: page.summary || "",
-        cover: coverUrl,
-        category: page.category || "Documentation",
-        modules: [],
-        currentSlug: slugArray.join("/"),
-      },
-      revalidate: 60,
+      title: `${page.title || 'Lesson'} · ServiceNow Academy`,
+      description: page.summary || '',
     }
   } catch (err) {
-    console.error("Failed to fetch page for slug:", params.slug, err)
-    return { notFound: true }
+    return { title: 'Lesson · ServiceNow Academy' }
   }
 }
 
-export default function LessonPage({
-  html,
-  pageId,
-  title,
-  description,
-  cover,
-  category,
-  modules,
-  currentSlug,
-}) {
+export default async function ArticlePage({ params }) {
+  const resolvedParams = await params
+  const param = Array.isArray(resolvedParams?.slug) ? resolvedParams.slug.join('/') : resolvedParams?.slug || ''
+  if (/\.(ico|png|jpg|jpeg|svg|css|js|txt|map|json|xml)$/i.test(param)) {
+    notFound()
+  }
+
+  const slugArray = resolvedParams?.slug || []
+  const lastSlug = slugArray[slugArray.length - 1]
+  if (!lastSlug) notFound()
+
+  let page
+  try {
+    page = await getPageBySlug(lastSlug)
+  } catch (err) {
+    console.error("Failed to fetch page for slug:", resolvedParams?.slug, err)
+    notFound()
+  }
+
+  if (!page || !page.html) notFound()
+
+  const coverUrl = typeof page.cover === 'string'
+    ? page.cover
+    : (page.cover?.external?.url || page.cover?.file?.url || null)
+
+  const title = page.title || "Lesson"
+  const description = page.summary || ""
+  const category = page.category || "Documentation"
+  const html = page.html
+
   return (
-    <Layout
-      showSidebar
-      pageTitle={title}
-      pageDescription={description}
-      modules={modules}
-      currentSlug={currentSlug}
-    >
-      {cover && (
+    <>
+      {coverUrl && (
         <div className="w-full h-[30vh] min-h-[250px] overflow-hidden relative">
           <img
-            src={cover}
+            src={coverUrl}
             alt={title || "Cover Image"}
             className="w-full h-full object-cover"
           />
@@ -136,6 +133,6 @@ export default function LessonPage({
           </div>
         )}
       </div>
-    </Layout>
+    </>
   )
 }

@@ -105,7 +105,7 @@ function formatDate(date) {
 function CardCover({ src, icon, title }) {
   if (src) {
     return (
-      <div className="aspect-[16/7] overflow-hidden bg-rice-paper-200 dark:bg-tea-slate-200 flex-shrink-0">
+      <div className="relative aspect-[16/7] overflow-hidden bg-rice-paper-200 dark:bg-tea-slate-200 flex-shrink-0">
         <Image
           src={src}
           alt={`Cover image for ${title || 'lesson'}`}
