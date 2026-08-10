@@ -44,7 +44,7 @@ export default function Layout({
   return (
     <>
       {/* ── Outermost shell */}
-      <div className="min-h-screen bg-rice-paper-100 dark:bg-tea-slate-300 text-ink-700 dark:text-sage-200 transition-colors duration-300">
+      <div className="min-h-screen bg-rice-paper-100 dark:bg-tea-slate-300 text-ink-700 dark:text-sage-200 transition-colors duration-300 flex flex-col">
 
         {/* ── Fixed Header (always visible) */}
         <Header
@@ -53,7 +53,7 @@ export default function Layout({
         />
 
         {/* ── Below-header layout: Sidebar + Main */}
-        <div className="flex pt-14 min-h-[calc(100vh-3.5rem)]">
+        <div className="flex pt-14 min-h-[calc(100vh-3.5rem)] flex-1">
 
           {/* ── Left Sidebar */}
           {showSidebar && (
@@ -72,7 +72,7 @@ export default function Layout({
           <main
             id="main-content"
             className={[
-              'flex-1 min-w-0 w-full',
+              'flex-1 flex flex-col min-w-0 w-full',
               'transition-all duration-300',
             ].join(' ')}
             // Skip-to-main landmark for a11y
@@ -104,29 +104,29 @@ export default function Layout({
             )}
 
             {/* ── Page content */}
-            <div className="animate-fade-in">
+            <div className="flex-1 animate-fade-in">
               {children}
             </div>
+
+            {/* ── In-Content Minimal Footer */}
+            <footer
+              id="site-footer"
+              className="mt-16 py-8 border-t border-rice-paper-400/60 dark:border-tea-slate-50/40 text-center text-xs text-ink-400 dark:text-sage-500"
+            >
+              <div className="max-w-screen-xl mx-auto flex flex-col md:flex-row items-center justify-between gap-3 px-6">
+                <div className="flex items-center gap-2 text-[0.78rem]">
+                  <span className="text-matcha-400">✦</span>
+                  <span>{SITE_NAME}</span>
+                  <span className="text-rice-paper-500 dark:text-tea-slate-50">·</span>
+                  <span>Built with calm intention</span>
+                </div>
+                <p className="text-[0.72rem] text-ink-300 dark:text-sage-600">
+                  Powered by Notion & Next.js · Wabi-Sabi theme
+                </p>
+              </div>
+            </footer>
           </main>
         </div>
-
-        {/* ── Footer */}
-        <footer
-          id="site-footer"
-          className="border-t border-rice-paper-400/60 dark:border-tea-slate-50/40 py-8 px-6 mt-auto"
-        >
-          <div className="max-w-screen-xl mx-auto flex flex-col md:flex-row items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-[0.78rem] text-ink-400 dark:text-sage-500">
-              <span className="text-matcha-400">✦</span>
-              <span>{SITE_NAME}</span>
-              <span className="text-rice-paper-500 dark:text-tea-slate-50">·</span>
-              <span>Built with calm intention</span>
-            </div>
-            <p className="text-[0.72rem] text-ink-300 dark:text-sage-600">
-              Powered by Notion & Next.js · Wabi-Sabi theme
-            </p>
-          </div>
-        </footer>
       </div>
     </>
   )
