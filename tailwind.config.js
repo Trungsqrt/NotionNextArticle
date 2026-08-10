@@ -83,7 +83,12 @@ module.exports = {
     // Toggle chevron animation
     'group-open:rotate-90', 'group-open:text-neutral-600',
     // List styling classes
-    'list-disc', 'list-decimal', 'list-outside', 'pl-6', 'ml-6', 'pl-2', 'pl-1', 'space-y-1', 'space-y-2', 'my-4', 'marker:text-neutral-400',
+    'list-disc', 'list-decimal', 'list-outside', 'pl-6', 'ml-6', 'pl-2', 'sm:pl-4', 'pl-1', 'space-y-1', 'space-y-2', 'my-4', 'my-1.5', 'gap-2.5', 'mt-[2px]', 'select-none', 'shrink-0', 'whitespace-pre-wrap', 'min-w-[1.25rem]', 'text-right', 'font-mono', 'marker:text-neutral-400',
+    // Inline code, Quote, Callout classes
+    'text-rose-500', 'dark:text-rose-400', 'bg-rose-50/80', 'dark:bg-rose-900/30', 'px-1.5', 'py-0.5', 'rounded-md', 'text-[0.9em]',
+    'bg-stone-50/80', 'dark:bg-stone-800/40', 'pr-4', 'py-3', 'font-medium', 'rounded-r-card',
+    // Spacing & Multi-column layout classes
+    'mt-12', 'mb-6', 'mt-10', 'mb-4', 'mt-8', 'mb-3', 'my-5', 'flex-col', 'md:flex-row', 'gap-6', 'md:gap-8', 'flex-1', 'min-w-0', 'w-full', 'items-start',
     // In-content & full-bleed cover image classes
     'h-[30vh]', 'min-h-[250px]', 'rounded-2xl', 'shadow-sm', 'my-6',
   ],
