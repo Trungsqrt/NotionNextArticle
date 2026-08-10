@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * Layout.js — Master page layout wrapper
  * ────────────────────────────────────────
@@ -19,7 +21,6 @@
  */
 
 import { useState } from 'react'
-import Head from 'next/head'
 import Header from './Header'
 import Sidebar from './Sidebar'
 
@@ -40,30 +41,8 @@ export default function Layout({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
-  const headTitle = pageTitle
-    ? `${pageTitle} · ${SITE_NAME}`
-    : SITE_NAME
-
-  const headDescription = pageDescription || SITE_DESCRIPTION
-
   return (
     <>
-      {/* ── SEO Head */}
-      <Head>
-        <title>{headTitle}</title>
-        <meta name="description" content={headDescription} />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta charSet="utf-8" />
-        {/* Open Graph */}
-        <meta property="og:title" content={headTitle} />
-        <meta property="og:description" content={headDescription} />
-        <meta property="og:type" content="website" />
-        {/* Theme color for browser chrome */}
-        <meta name="theme-color" content="#FAF8F5" media="(prefers-color-scheme: light)" />
-        <meta name="theme-color" content="#1A1B18" media="(prefers-color-scheme: dark)" />
-        <link rel="icon" href="/favicon.ico" />
-      </Head>
-
       {/* ── Outermost shell */}
       <div className="min-h-screen bg-rice-paper-100 dark:bg-tea-slate-300 text-ink-700 dark:text-sage-200 transition-colors duration-300">
 

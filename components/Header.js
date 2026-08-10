@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * Header.js — Wabi-Sabi Matcha Navbar
  * ─────────────────────────────────────
@@ -9,7 +11,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/router'
+import { usePathname } from 'next/navigation'
 
 // ── Icon helpers (inline SVGs — no icon library dependency)
 const SearchIcon = () => (
@@ -85,7 +87,7 @@ const NAV_LINKS = [
 //  Header Component
 // ════════════════════════════════════════════════════════════
 export default function Header({ onMenuToggle, isMenuOpen }) {
-  const router = useRouter()
+  const pathname = usePathname() || ''
 
   // ── Dark mode state — persisted in localStorage
   const [isDark, setIsDark] = useState(false)
@@ -113,7 +115,7 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
   useEffect(() => {
     setSearchOpen(false)
     setSearchQuery('')
-  }, [router.asPath])
+  }, [pathname])
 
   // Close search on Escape
   useEffect(() => {
@@ -132,7 +134,7 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
   }, [])
 
   const isActive = (href) =>
-    href === '/' ? router.pathname === '/' : router.pathname.startsWith(href)
+    href === '/' ? pathname === '/' : pathname.startsWith(href)
 
   return (
     <>

@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * Sidebar.js — Wabi-Sabi Course Navigation Sidebar
  * ──────────────────────────────────────────────────
@@ -18,7 +20,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/router'
+import { usePathname } from 'next/navigation'
 
 // ── Icon helpers
 const ChevronIcon = ({ open }) => (
@@ -218,7 +220,7 @@ export default function Sidebar({
   completedLessons = 0,
   totalLessons = 0,
 }) {
-  const router = useRouter()
+  const pathname = usePathname() || ''
   const [activeId, setActiveId] = useState('')
 
   // Intersection Observer — highlight TOC item on scroll
@@ -243,7 +245,7 @@ export default function Sidebar({
     })
 
     return () => observer.disconnect()
-  }, [tableOfContents, router.asPath])
+  }, [tableOfContents, pathname])
 
   const totalItems = modules.reduce((acc, m) => acc + (m.items?.length || 0), 0)
   const effectiveTotalLessons = totalLessons || totalItems
