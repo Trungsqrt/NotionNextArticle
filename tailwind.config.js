@@ -165,7 +165,7 @@ module.exports = {
       fontFamily: {
         sans:  ['"Plus Jakarta Sans"', 'Inter', 'system-ui', 'sans-serif'],
         serif: ['"Noto Serif JP"', '"Georgia"', 'serif'],
-        mono:  ['"JetBrains Mono"', '"Fira Code"', 'monospace'],
+        mono:  ['"Fira Code"', 'monospace'],
       },
 
       fontSize: {
