@@ -91,6 +91,8 @@ module.exports = {
     'mt-12', 'mb-6', 'mt-10', 'mb-4', 'mt-8', 'mb-3', 'my-5', 'flex-col', 'md:flex-row', 'gap-6', 'md:gap-8', 'flex-1', 'min-w-0', 'w-full', 'items-start',
     // In-content & full-bleed cover image classes
     'h-[30vh]', 'min-h-[250px]', 'rounded-2xl', 'shadow-sm', 'my-6',
+    // Code block IDE renderer classes
+    'whitespace-pre-wrap', 'break-words', 'border-neutral-200/60', 'dark:border-neutral-800/60', 'hljs',
   ],
 
   theme: {
