@@ -3,56 +3,53 @@
 /**
  * NotionContent.js — Client-side Notion content renderer
  * ──────────────────────────────────────────────────────
- * Replaces interactive placeholder divs (data-notion-component) with
- * real React components (NotionCodeBlock, ZoomableImage) on the client.
  *
- * Strategy to avoid SSR/CSR hydration mismatch:
- *   1. On the server (or before mount), render a single dangerouslySetInnerHTML
- *      div so the server HTML and initial client HTML are identical.
- *   2. After mount (useEffect), parse the rendered DOM, find placeholder divs,
- *      and re-render as a React tree with real components swapped in.
+ * Architecture (why this works the way it does):
  *
- * This means interactive features (zoom, wrap toggle) are progressive
- * enhancements — the raw HTML is visible immediately and components
- * take over after hydration.
+ * Images are now rendered as plain <figure><img/></figure> HTML by notion.js,
+ * so they appear immediately — no component swap, no structure-breaking splits.
+ *
+ * Only `NotionCodeBlock` uses the data-notion-component placeholder pattern,
+ * and code blocks are always top-level blocks (never nested inside column/flex
+ * containers), so splitting the HTML string on them is safe — no open tags are
+ * ever broken mid-structure.
+ *
+ * Zoom is handled by a lightweight CSS-only lightbox triggered via event
+ * delegation on [data-notion-zoom] images after mount.
  */
 
 import { useState, useEffect, useMemo } from 'react'
 import NotionCodeBlock from './NotionCodeBlock'
-import ZoomableImage from './ZoomableImage'
 
-/** Parse the HTML string for data-notion-component markers, splitting it into
- *  alternating chunks of raw HTML and component descriptors. */
+// ── Regex that matches ONLY NotionCodeBlock placeholders ───────────────────
+const CODE_PLACEHOLDER_RE = /<div data-notion-component="NotionCodeBlock" data-props="([^"]*)"><\/div>/g
+
+/** Split HTML on NotionCodeBlock placeholders only. */
 function parseHtmlParts(html) {
   if (!html) return []
 
   const parts = []
-  // Match <div data-notion-component="..." data-props="..."></div>
-  const regex = /<div data-notion-component="([^"]+)" data-props="([^"]*)">\s*<\/div>/g
   let lastIndex = 0
   let match
 
-  while ((match = regex.exec(html)) !== null) {
+  CODE_PLACEHOLDER_RE.lastIndex = 0
+  while ((match = CODE_PLACEHOLDER_RE.exec(html)) !== null) {
     if (match.index > lastIndex) {
       parts.push({ type: 'html', content: html.slice(lastIndex, match.index) })
     }
-
     try {
-      // data-props is HTML-escaped, so we need to unescape it before parsing
-      const rawJson = match[2]
+      const raw = match[1]
         .replace(/&amp;/g, '&')
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
         .replace(/&quot;/g, '"')
         .replace(/&#039;/g, "'")
-      const props = JSON.parse(rawJson)
-      parts.push({ type: 'component', component: match[1], props })
+      const props = JSON.parse(raw)
+      parts.push({ type: 'code', props })
     } catch {
-      // If parsing fails, treat the whole match as raw HTML
       parts.push({ type: 'html', content: match[0] })
     }
-
-    lastIndex = regex.lastIndex
+    lastIndex = CODE_PLACEHOLDER_RE.lastIndex
   }
 
   if (lastIndex < html.length) {
@@ -62,31 +59,88 @@ function parseHtmlParts(html) {
   return parts
 }
 
+// ── Lightweight zoom lightbox ──────────────────────────────────────────────
+function useLightbox(containerRef) {
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    // Create overlay once
+    const overlay = document.createElement('div')
+    overlay.id = 'notion-zoom-overlay'
+    overlay.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:9999',
+      'background:rgba(0,0,0,0.82)', 'display:none',
+      'align-items:center', 'justify-content:center',
+      'cursor:zoom-out', 'padding:2rem',
+    ].join(';')
+
+    const zoomed = document.createElement('img')
+    zoomed.style.cssText = [
+      'max-width:100%', 'max-height:90vh',
+      'object-fit:contain', 'border-radius:0.75rem',
+      'box-shadow:0 25px 60px rgba(0,0,0,0.5)',
+    ].join(';')
+
+    overlay.appendChild(zoomed)
+    document.body.appendChild(overlay)
+
+    function open(img) {
+      zoomed.src = img.src
+      zoomed.alt = img.alt
+      overlay.style.display = 'flex'
+      document.body.style.overflow = 'hidden'
+    }
+    function close() {
+      overlay.style.display = 'none'
+      document.body.style.overflow = ''
+    }
+
+    function handleClick(e) {
+      const img = e.target.closest('[data-notion-zoom]')
+      if (img) open(img)
+    }
+
+    container.addEventListener('click', handleClick)
+    overlay.addEventListener('click', close)
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') close()
+    })
+
+    return () => {
+      container.removeEventListener('click', handleClick)
+      overlay.removeEventListener('click', close)
+      document.body.removeChild(overlay)
+    }
+  }, [containerRef])
+}
+
+// ── Main component ─────────────────────────────────────────────────────────
 export default function NotionContent({ html, className }) {
   const [mounted, setMounted] = useState(false)
+  const containerRef = useMemo(() => ({ current: null }), [])
+  const setRef = (el) => { containerRef.current = el }
 
-  useEffect(() => {
-    setMounted(true)
-  }, [])
+  useEffect(() => { setMounted(true) }, [])
+  useLightbox(containerRef)
 
   const parts = useMemo(() => parseHtmlParts(html), [html])
-  const hasComponents = parts.some(p => p.type === 'component')
+  const hasCode = parts.some(p => p.type === 'code')
 
-  // ── Before mount (SSR + initial client render) ──────────────────────────
-  // Render raw HTML — identical on server and client → no hydration mismatch.
-  if (!mounted || !hasComponents) {
+  // ── SSR + pre-mount: identical server/client output, no hydration mismatch
+  if (!mounted || !hasCode) {
     return (
       <div
+        ref={setRef}
         className={className}
         dangerouslySetInnerHTML={{ __html: html }}
       />
     )
   }
 
-  // ── After mount (client only) ───────────────────────────────────────────
-  // Replace placeholder divs with real React components.
+  // ── After mount: swap NotionCodeBlock placeholders with real component
   return (
-    <div className={className}>
+    <div ref={setRef} className={className}>
       {parts.map((part, i) => {
         if (part.type === 'html') {
           return (
@@ -97,31 +151,16 @@ export default function NotionContent({ html, className }) {
             />
           )
         }
-
-        if (part.type === 'component') {
-          if (part.component === 'NotionCodeBlock') {
-            return (
-              <NotionCodeBlock
-                key={i}
-                codeText={part.props.codeText}
-                language={part.props.language}
-                caption={part.props.caption}
-              />
-            )
-          }
-
-          if (part.component === 'ZoomableImage') {
-            return (
-              <ZoomableImage
-                key={i}
-                src={part.props.src}
-                alt={part.props.alt}
-                caption={part.props.caption}
-              />
-            )
-          }
+        if (part.type === 'code') {
+          return (
+            <NotionCodeBlock
+              key={i}
+              codeText={part.props.codeText}
+              language={part.props.language}
+              caption={part.props.caption}
+            />
+          )
         }
-
         return null
       })}
     </div>

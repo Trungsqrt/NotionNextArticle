@@ -10,8 +10,6 @@
 
 /* Import the Wabi-Sabi Notion theme overrides */
 @import './wabi-sabi-theme.css';
-/* Import Gruvbox code syntax highlighting theme */
-@import './gruvbox-theme.css';
 
 /* Tailwind directives */
 @tailwind base;
