@@ -37,7 +37,7 @@ A 36 KB, 18-section stylesheet that fully transforms `react-notion-x` blocks wit
 
 #### [Header.js](file:///d:/Dev/Workspace/NotionNextArticle/components/Header.js)
 - `backdrop-blur-md` frosted glass, `h-14`, scroll shadow
-- Matcha leaf SVG brand mark + `SN Academy` serif wordmark
+- Matcha leaf SVG brand mark + `SN Space` serif wordmark
 - Desktop nav with active matcha chip highlight
 - Expanding search bar (click to open, Escape to close)
 - 🌙/☀ dark mode toggle — persists to `localStorage`, no flash (via `_document.js` inline script)

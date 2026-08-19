@@ -70,16 +70,16 @@ const MatchaLeaf = () => (
       fill="rgba(122,139,105,0.85)"
       stroke="none"
     />
-    <path d="M12 22L12 8" stroke="rgba(74,87,61,0.6)" strokeWidth="1.5" strokeLinecap="round"/>
-    <path d="M12 14C12 14 9 12 8 9" stroke="rgba(74,87,61,0.4)" strokeWidth="1" strokeLinecap="round"/>
+    <path d="M12 22L12 8" stroke="rgba(74,87,61,0.6)" strokeWidth="1.5" strokeLinecap="round" />
+    <path d="M12 14C12 14 9 12 8 9" stroke="rgba(74,87,61,0.4)" strokeWidth="1" strokeLinecap="round" />
   </svg>
 )
 
 // ── Nav links definition
 const NAV_LINKS = [
-  { href: '/',           label: 'Home' },
-  { href: '/modules',   label: 'Modules' },
-  { href: '/labs',      label: 'Labs' },
+  { href: '/', label: 'Home' },
+  { href: '/modules', label: 'Modules' },
+  { href: '/labs', label: 'Labs' },
   { href: '/resources', label: 'Resources' },
 ]
 
@@ -164,7 +164,7 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
             </span>
             <span className="font-serif font-medium text-[0.92rem] tracking-wide text-ink-700 dark:text-sage-200 leading-none">
               <span className="text-matcha-500 dark:text-matcha-400">SN</span>
-              {' '}Academy
+              {' '}Space
             </span>
           </Link>
 

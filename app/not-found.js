@@ -1,7 +1,7 @@
 import Link from 'next/link'
 
 export const metadata = {
-  title: 'Page Not Found · ServiceNow Academy',
+  title: 'Page Not Found · ServiceNow Space',
   description: 'This page could not be found.',
 }
 
