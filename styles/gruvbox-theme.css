@@ -3,7 +3,7 @@
 
 /* Override pre/code defaults to ensure word wrapping and font inherit */
 pre.hljs {
-  font-family: 'Fira Code', monospace;
+  font-family: var(--font-mono), monospace;
 }
 
 pre.hljs code {

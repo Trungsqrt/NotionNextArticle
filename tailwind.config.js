@@ -97,6 +97,12 @@ module.exports = {
 
   theme: {
     extend: {
+      fontFamily: {
+        sans:  ['var(--font-sans)', 'Inter', 'system-ui', 'sans-serif'],
+        serif: ['var(--font-serif)', 'Georgia', 'serif'],
+        mono:  ['var(--font-mono)', 'monospace'],
+      },
+
       // ─────────────────────────────────────────
       //  Wabi-Sabi & Matcha Color Palette
       // ─────────────────────────────────────────

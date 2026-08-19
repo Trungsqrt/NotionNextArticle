@@ -124,7 +124,7 @@
 .notion-page {
   background-color: var(--ws-bg-primary) !important;
   color: var(--ws-text-primary) !important;
-  font-family: 'Plus Jakarta Sans', Inter, system-ui, sans-serif !important;
+  font-family: var(--font-sans) !important;
   font-size: 1rem !important;
   line-height: var(--ws-leading-body) !important;
   letter-spacing: var(--ws-tracking-body) !important;
@@ -173,7 +173,7 @@
 
 /* ── Page Title */
 .notion-title {
-  font-family: 'Noto Serif JP', Georgia, serif !important;
+  font-family: var(--font-serif) !important;
   font-weight: 500 !important;
   font-size: clamp(1.75rem, 4vw, 2.5rem) !important;
   line-height: var(--ws-leading-heading) !important;
@@ -185,7 +185,7 @@
 /* ── H1 */
 .notion-h1,
 .notion-h1 .notion-h-title {
-  font-family: 'Noto Serif JP', Georgia, serif !important;
+  font-family: var(--font-serif) !important;
   font-weight: 500 !important;
   font-size: 1.75rem !important;
   line-height: 1.4 !important;
@@ -212,7 +212,7 @@
 /* ── H2 */
 .notion-h2,
 .notion-h2 .notion-h-title {
-  font-family: 'Plus Jakarta Sans', sans-serif !important;
+  font-family: var(--font-sans) !important;
   font-weight: 600 !important;
   font-size: 1.35rem !important;
   line-height: 1.5 !important;
@@ -225,7 +225,7 @@
 /* ── H3 */
 .notion-h3,
 .notion-h3 .notion-h-title {
-  font-family: 'Plus Jakarta Sans', sans-serif !important;
+  font-family: var(--font-sans) !important;
   font-weight: 600 !important;
   font-size: 1.1rem !important;
   line-height: 1.55 !important;
@@ -264,7 +264,7 @@
 
 /* ── Inline code */
 .notion-inline-code {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+  font-family: var(--font-mono) !important;
   font-size: 0.875em !important;
   background-color: var(--ws-bg-tertiary) !important;
   color: #4A6741 !important;
@@ -501,13 +501,13 @@
   padding: 1.25rem 1.5rem !important;
   overflow-x: auto !important;
   background: transparent !important;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+  font-family: var(--font-mono) !important;
   font-size: 0.875rem !important;
   line-height: 1.7 !important;
 }
 
 .notion-code code {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+  font-family: var(--font-mono) !important;
   font-size: inherit !important;
   color: #D8DAD3 !important;
   background: none !important;
@@ -525,7 +525,7 @@
   border: 1px solid rgba(122, 139, 105, 0.3) !important;
   border-radius: var(--ws-radius-sm) !important;
   cursor: pointer !important;
-  font-family: 'JetBrains Mono', monospace !important;
+  font-family: var(--font-mono) !important;
   transition: background-color var(--ws-transition-fast) !important;
 }
 
@@ -600,7 +600,7 @@
   border-left: 3px solid var(--ws-matcha-primary) !important;
   padding: 0.75rem 1.25rem !important;
   margin: 1.5rem 0 !important;
-  font-family: 'Noto Serif JP', Georgia, serif !important;
+  font-family: var(--font-serif) !important;
   font-size: 1.05rem !important;
   font-style: italic !important;
   line-height: 1.8 !important;
@@ -618,7 +618,7 @@
   font-size: 3rem !important;
   line-height: 1 !important;
   color: var(--ws-matcha-muted) !important;
-  font-family: Georgia, serif !important;
+  font-family: var(--font-serif) !important;
   opacity: 0.4 !important;
 }
 
@@ -886,7 +886,7 @@
 }
 
 .notion-collection-title {
-  font-family: 'Noto Serif JP', serif !important;
+  font-family: var(--font-serif) !important;
   font-size: 1.15rem !important;
   font-weight: 500 !important;
   color: var(--ws-text-primary) !important;
