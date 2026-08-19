@@ -16,17 +16,17 @@ export async function generateMetadata({ params }) {
   const resolvedParams = await params
   const slugArray = resolvedParams?.slug || []
   const lastSlug = slugArray[slugArray.length - 1]
-  if (!lastSlug) return { title: 'Lesson · ServiceNow Academy' }
+  if (!lastSlug) return { title: 'Lesson · ServiceNow Space' }
 
   try {
     const page = await getPageBySlug(lastSlug)
-    if (!page) return { title: 'Lesson · ServiceNow Academy' }
+    if (!page) return { title: 'Lesson · ServiceNow Space' }
     return {
-      title: `${page.title || 'Lesson'} · ServiceNow Academy`,
+      title: `${page.title || 'Lesson'} · ServiceNow Space`,
       description: page.summary || '',
     }
   } catch (err) {
-    return { title: 'Lesson · ServiceNow Academy' }
+    return { title: 'Lesson · ServiceNow Space' }
   }
 }
 

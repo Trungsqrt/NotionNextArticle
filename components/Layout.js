@@ -23,6 +23,7 @@
 import { useState } from 'react'
 import Header from './Header'
 import Sidebar from './Sidebar'
+import ReadingProgress from './ReadingProgress'
 
 const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || 'ServiceNow Knowledge Hub'
 const SITE_DESCRIPTION = process.env.NEXT_PUBLIC_SITE_DESCRIPTION || 'A serene learning space for mastering ServiceNow.'
@@ -51,6 +52,9 @@ export default function Layout({
           onMenuToggle={() => setMobileMenuOpen(v => !v)}
           isMenuOpen={mobileMenuOpen}
         />
+
+        {/* ── Reading progress bar + back-to-top */}
+        <ReadingProgress />
 
         {/* ── Below-header layout: Sidebar + Main */}
         <div className="flex pt-14 min-h-[calc(100vh-3.5rem)] flex-1">
@@ -121,7 +125,7 @@ export default function Layout({
                   <span>Built with calm intention</span>
                 </div>
                 <p className="text-[0.72rem] text-ink-300 dark:text-sage-600">
-                  Powered by Notion & Next.js · Wabi-Sabi theme
+                  Powered by Trungsqrt
                 </p>
               </div>
             </footer>

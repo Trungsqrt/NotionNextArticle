@@ -147,17 +147,17 @@ function ModuleGroup({ module, currentSlug, defaultOpen }) {
                     'border-l-2',
                     isActive
                       ? [
-                          'border-matcha-500 dark:border-matcha-700',
-                          'bg-matcha-50/70 dark:bg-matcha-700/20',
-                          'text-matcha-500 dark:text-matcha-300 font-medium',
-                        ].join(' ')
+                        'border-matcha-500 dark:border-matcha-700',
+                        'bg-matcha-50/70 dark:bg-matcha-700/20',
+                        'text-matcha-500 dark:text-matcha-300 font-medium',
+                      ].join(' ')
                       : [
-                          'border-rice-paper-400/50 dark:border-tea-slate-50/30',
-                          'text-ink-500 dark:text-sage-400',
-                          'hover:bg-rice-paper-300/50 dark:hover:bg-tea-slate-200/30',
-                          'hover:text-ink-700 dark:hover:text-sage-200',
-                          'hover:border-matcha-300 dark:hover:border-matcha-800',
-                        ].join(' '),
+                        'border-rice-paper-400/50 dark:border-tea-slate-50/30',
+                        'text-ink-500 dark:text-sage-400',
+                        'hover:bg-rice-paper-300/50 dark:hover:bg-tea-slate-200/30',
+                        'hover:text-ink-700 dark:hover:text-sage-200',
+                        'hover:border-matcha-300 dark:hover:border-matcha-800',
+                      ].join(' '),
                   ].join(' ')}
                   aria-current={isActive ? 'page' : undefined}
                 >
@@ -287,7 +287,7 @@ export default function Sidebar({
         {/* ── Header strip */}
         <div className="px-3 pt-5 pb-3 border-b border-rice-paper-400/50 dark:border-tea-slate-50/40 flex-shrink-0">
           <h2 className="text-[0.7rem] font-semibold uppercase tracking-widest text-matcha-500 dark:text-matcha-700 mb-0.5">
-            ServiceNow Academy
+            ServiceNow Space
           </h2>
           <p className="text-[0.78rem] text-ink-500 dark:text-sage-400 leading-tight">
             Knowledge Hub

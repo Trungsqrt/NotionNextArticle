@@ -2,7 +2,7 @@ import '../styles/globals.css'
 import Layout from '../components/Layout'
 
 export const metadata = {
-  title: 'ServiceNow Academy',
+  title: 'ServiceNow Space',
   description: 'A serene knowledge space',
 }
 
