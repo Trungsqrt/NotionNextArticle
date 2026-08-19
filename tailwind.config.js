@@ -16,9 +16,7 @@ module.exports = {
   // build modes (Turbopack JIT), so we explicitly protect them from purging.
   safelist: [
     // Grid layout (child_database card grid)
-    'grid', 'grid-cols-1', 'gap-6', 'my-8', 'not-prose',
-    { pattern: /^sm:grid-cols-/, variants: ['sm'] },
-    { pattern: /^lg:grid-cols-/, variants: ['lg'] },
+    'grid', 'grid-cols-1', 'grid-cols-2', 'grid-cols-3', 'sm:grid-cols-2', 'sm:grid-cols-3', 'lg:grid-cols-3', 'lg:grid-cols-4', 'gap-6', 'my-8', 'not-prose',
     // Card shell — rounded-card is a custom class, the rest are standard
     'rounded-card', 'shadow-zen-sm', 'shadow-zen',
     'overflow-hidden', 'flex', 'flex-col', 'flex-1',
@@ -90,7 +88,11 @@ module.exports = {
     // Spacing & Multi-column layout classes
     'mt-12', 'mb-6', 'mt-10', 'mb-4', 'mt-8', 'mb-3', 'my-5', 'flex-col', 'md:flex-row', 'gap-6', 'md:gap-8', 'flex-1', 'min-w-0', 'w-full', 'items-start',
     // In-content & full-bleed cover image classes
-    'h-[30vh]', 'min-h-[250px]', 'rounded-2xl', 'shadow-sm', 'my-6',
+    'h-[30vh]', 'min-h-[250px]', 'rounded-2xl', 'shadow-sm', 'my-6', 'my-4',
+    // Image zoom classes (emitted from notion.js image renderer)
+    'notion-zoomable', 'cursor-zoom-in',
+    // Code block IDE renderer classes
+    'whitespace-pre-wrap', 'break-words', 'border-neutral-200/60', 'dark:border-neutral-800/60', 'hljs',
   ],
 
   theme: {

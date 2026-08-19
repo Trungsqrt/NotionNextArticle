@@ -1,0 +1,114 @@
+/* Import Gruvbox Light theme for default Light Mode */
+@import 'highlight.js/styles/base16/gruvbox-light-medium.css';
+
+/* Override pre/code defaults to ensure word wrapping and font inherit */
+pre.hljs {
+  font-family: 'Fira Code', monospace;
+}
+
+pre.hljs code {
+  background: transparent !important;
+  padding: 0 !important;
+  font-family: inherit !important;
+  font-size: inherit !important;
+}
+
+/* Gruvbox Dark theme overrides for Dark Mode */
+.dark .hljs {
+  color: #d5c4a1;
+  background: #282828;
+}
+
+.dark .hljs::selection,
+.dark .hljs ::selection {
+  background-color: #504945;
+  color: #d5c4a1;
+}
+
+.dark .hljs-comment {
+  color: #665c54;
+}
+
+.dark .hljs-tag {
+  color: #bdae93;
+}
+
+.dark .hljs-subst,
+.dark .hljs-punctuation,
+.dark .hljs-operator {
+  color: #d5c4a1;
+}
+
+.dark .hljs-operator {
+  opacity: 0.7;
+}
+
+.dark .hljs-bullet,
+.dark .hljs-variable,
+.dark .hljs-template-variable,
+.dark .hljs-selector-tag,
+.dark .hljs-name,
+.dark .hljs-deletion {
+  color: #fb4934;
+}
+
+.dark .hljs-symbol,
+.dark .hljs-number,
+.dark .hljs-link,
+.dark .hljs-attr,
+.dark .hljs-variable.constant_,
+.dark .hljs-literal {
+  color: #fe8019;
+}
+
+.dark .hljs-title,
+.dark .hljs-class .hljs-title,
+.dark .hljs-title.class_ {
+  color: #fabd2f;
+}
+
+.dark .hljs-strong {
+  font-weight: bold;
+  color: #fabd2f;
+}
+
+.dark .hljs-code,
+.dark .hljs-addition,
+.dark .hljs-title.class_.inherited__,
+.dark .hljs-string {
+  color: #b8bb26;
+}
+
+.dark .hljs-built_in,
+.dark .hljs-doctag,
+.dark .hljs-quote,
+.dark .hljs-keyword.hljs-atrule,
+.dark .hljs-regexp {
+  color: #8ec07c;
+}
+
+.dark .hljs-function .hljs-title,
+.dark .hljs-attribute,
+.ruby .dark .hljs-property,
+.dark .hljs-title.function_,
+.dark .hljs-section {
+  color: #83a598;
+}
+
+.dark .hljs-type,
+.dark .hljs-template-tag,
+.diff .dark .hljs-meta,
+.dark .hljs-keyword {
+  color: #d3869b;
+}
+
+.dark .hljs-emphasis {
+  color: #d3869b;
+  font-style: italic;
+}
+
+.dark .hljs-meta,
+.dark .hljs-meta .hljs-keyword,
+.dark .hljs-meta .hljs-string {
+  color: #d65d0e;
+}

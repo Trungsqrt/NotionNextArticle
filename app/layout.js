@@ -1,5 +1,4 @@
 import '../styles/globals.css'
-import 'highlight.js/styles/github-dark.css'
 import Layout from '../components/Layout'
 
 export const metadata = {
@@ -9,7 +8,7 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" className="scroll-smooth" suppressHydrationWarning>
+    <html lang="en" className="scroll-smooth" style={{ scrollBehavior: 'smooth' }} suppressHydrationWarning>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
