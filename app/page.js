@@ -1,7 +1,8 @@
 import CourseFilter from '../components/CourseFilter'
 import { getAllPosts } from '../lib/notion'
 
-export const revalidate = 60
+// Cache and revalidate homepage in background every 1 hour (3600 seconds)
+export const revalidate = 3600
 
 export const metadata = {
   title: 'Knowledge Hub · ServiceNow Space',

@@ -3,13 +3,21 @@ import { getAllPosts, getPageBySlug } from '../../lib/notion'
 import Breadcrumbs from '../../components/Breadcrumbs'
 import NotionContent from '../../components/NotionContent'
 
-export const revalidate = 60
+// Cache and revalidate in background every 1 hour (3600 seconds)
+export const revalidate = 3600
+// Allow dynamic fallback rendering for newly added articles not yet built
+export const dynamicParams = true
 
 export async function generateStaticParams() {
-  const posts = await getAllPosts()
-  return posts.map(post => ({
-    slug: [post.slug],
-  }))
+  try {
+    const posts = await getAllPosts() // Fetch all published articles
+    return posts.map(post => ({
+      slug: post.slug ? [post.slug] : [post.id],
+    }))
+  } catch (error) {
+    console.error('Error generating static params:', error)
+    return []
+  }
 }
 
 export async function generateMetadata({ params }) {
