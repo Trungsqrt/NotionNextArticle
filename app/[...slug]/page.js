@@ -5,6 +5,7 @@ import NotionContent from '../../components/NotionContent'
 
 // Cache and revalidate in background every 1 hour (3600 seconds)
 export const revalidate = 3600
+export const fetchCache = 'force-cache' // Strictly force Next.js to cache all fetches
 // Allow dynamic fallback rendering for newly added articles not yet built
 export const dynamicParams = true
 
