@@ -3,6 +3,7 @@ import { getAllPosts } from '../lib/notion'
 
 // Cache and revalidate homepage in background every 1 hour (3600 seconds)
 export const revalidate = 3600
+export const fetchCache = 'force-cache' // Strictly force Next.js to cache all fetches
 
 export const metadata = {
   title: 'Knowledge Hub · ServiceNow Space',
