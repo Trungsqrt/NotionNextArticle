@@ -1,6 +1,7 @@
 import '../styles/globals.css'
 import Layout from '../components/Layout'
 import { Plus_Jakarta_Sans, Noto_Serif_JP, Fira_Code } from 'next/font/google'
+import Script from 'next/script'
 
 // ── Font initialisation (module-level, as required by next/font) ─────────────
 const plusJakarta = Plus_Jakarta_Sans({
@@ -36,21 +37,12 @@ export default function RootLayout({ children }) {
       suppressHydrationWarning
     >
       <head>
-        <script
-          async
-          suppressHydrationWarning
-          dangerouslySetInnerHTML={{
-            __html: `
-              (function() {
-                try {
-                  var saved = localStorage.getItem('ws-theme');
-                  var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-                  var dark = saved ? saved === 'dark' : prefersDark;
-                  if (dark) document.documentElement.classList.add('dark');
-                } catch(e) {}
-              })();
-            `,
-          }}
+        {/* Runs before React hydration to set the dark/light class on <html>
+            without flash-of-wrong-theme. Using src= (not dangerouslySetInnerHTML)
+            is the only reliable way to use beforeInteractive in App Router. */}
+        <Script
+          src="/theme-init.js"
+          strategy="beforeInteractive"
         />
       </head>
       <body>

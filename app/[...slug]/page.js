@@ -1,6 +1,5 @@
 import { notFound } from 'next/navigation'
 import { getAllPosts, getPageBySlug } from '../../lib/notion'
-import Breadcrumbs from '../../components/Breadcrumbs'
 import NotionContent from '../../components/NotionContent'
 
 // Cache and revalidate in background every 1 hour (3600 seconds)
@@ -66,9 +65,7 @@ export default async function ArticlePage({ params }) {
 
   const title = page.title || "Lesson"
   const description = page.summary || ""
-  const category = page.category || "Documentation"
   const html = page.html
-  const icon = page.icon || null
 
   return (
     <>
@@ -84,8 +81,6 @@ export default async function ArticlePage({ params }) {
       <div className="notion-viewport max-w-4xl mx-auto px-4 sm:px-6 md:px-8 py-8 md:py-12">
         {/* Page Header */}
         <header className="mb-8 pb-6 border-b border-rice-paper-400/60 dark:border-tea-slate-50/40">
-          {/* Dynamic Breadcrumbs */}
-          <Breadcrumbs pageTitle={title} category={category} icon={icon} />
 
           <h1 className="font-serif font-medium text-2xl sm:text-3xl md:text-4xl text-ink-700 dark:text-sage-100 leading-tight mb-3">
             {title}
