@@ -185,6 +185,33 @@ function ModuleGroup({ module, currentSlug, defaultOpen }) {
   )
 }
 
+// ── Subtle 2px bottom border reading progress indicator
+function HeaderReadingProgress() {
+  const [progress, setProgress] = useState(0)
+
+  useEffect(() => {
+    function onScroll() {
+      const scrollTop = window.scrollY
+      const docHeight = document.documentElement.scrollHeight - window.innerHeight
+      const pct = docHeight > 0 ? Math.min(100, Math.max(0, (scrollTop / docHeight) * 100)) : 0
+      setProgress(pct)
+    }
+
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+
+  return (
+    <div className="absolute -bottom-[1px] left-0 right-0 h-[2px] bg-transparent overflow-hidden pointer-events-none">
+      <div
+        className="h-full bg-gradient-to-r from-matcha-400 via-matcha-500 to-matcha-600 dark:from-matcha-500 dark:via-matcha-400 dark:to-matcha-300 transition-all duration-100 ease-out shadow-[0_0_6px_rgba(122,139,105,0.5)]"
+        style={{ width: `${progress}%` }}
+      />
+    </div>
+  )
+}
+
 // ── Thin progress bar
 function ModuleProgress({ completed, total }) {
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0
@@ -285,13 +312,16 @@ export default function Sidebar({
         ].join(' ')}
       >
         {/* ── Header strip */}
-        <div className="px-3 pt-5 pb-3 border-b border-rice-paper-400/50 dark:border-tea-slate-50/40 flex-shrink-0">
+        <div className="relative px-3 pt-5 pb-3 border-b border-rice-paper-400/50 dark:border-tea-slate-50/40 flex-shrink-0">
           <h2 className="text-[0.7rem] font-semibold uppercase tracking-widest text-matcha-500 dark:text-matcha-700 mb-0.5">
             ServiceNow Space
           </h2>
           <p className="text-[0.78rem] text-ink-500 dark:text-sage-400 leading-tight">
             Knowledge Hub
           </p>
+
+          {/* ── Live reading scroll progress indicator integrated directly as bottom border */}
+          <HeaderReadingProgress />
         </div>
 
         {/* ── Progress bar (shown when course modules are provided) */}

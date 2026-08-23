@@ -80,69 +80,53 @@ export default async function ArticlePage({ params }) {
           />
         </div>
       )}
-      <div className="notion-viewport max-w-[90rem] mx-auto px-4 sm:px-6 md:px-8 py-8 md:py-12">
-        {/* Two-column layout: article + TOC sidebar */}
-        <div className="flex flex-col xl:flex-row xl:items-start gap-8 xl:gap-12">
-
-          {/* Main article column */}
-          <article className="flex-1 min-w-0 max-w-4xl mx-auto xl:mx-0">
-            {/* Page Header */}
-            <header className="mb-8 pb-6 border-b border-rice-paper-400/60 dark:border-tea-slate-50/40">
-              <h1 className="font-serif font-medium text-2xl sm:text-3xl md:text-4xl text-ink-700 dark:text-sage-100 leading-tight mb-3">
-                {title}
-              </h1>
-              {description && (
-                <p className="text-[1rem] leading-relaxed text-ink-400 dark:text-sage-400 max-w-prose">
-                  {description}
-                </p>
-              )}
-            </header>
-
-            {/* Content Body */}
-            {html ? (
-              <NotionContent
-                html={html}
-                className={[
-                  'prose prose-neutral dark:prose-invert max-w-none wabi-sabi-theme',
-                  'prose-headings:font-serif prose-headings:font-medium prose-headings:text-ink-700 dark:prose-headings:text-sage-100',
-                  'prose-h1:text-2xl md:prose-h1:text-3xl prose-h1:border-b prose-h1:border-rice-paper-400/60 dark:prose-h1:border-tea-slate-50/40 prose-h1:pb-3 prose-h1:mb-6 prose-h1:mt-8',
-                  'prose-h2:text-xl md:prose-h2:text-2xl prose-h2:mt-8 prose-h2:mb-4',
-                  'prose-h3:text-lg prose-h3:mt-6 prose-h3:mb-3',
-                  'prose-p:text-ink-700 dark:prose-p:text-sage-200 prose-p:leading-relaxed prose-p:my-4 prose-p:text-[0.98rem]',
-                  'prose-a:text-matcha-600 dark:prose-a:text-matcha-300 prose-a:no-underline hover:prose-a:underline',
-                  'prose-strong:text-ink-700 dark:prose-strong:text-sage-100 prose-strong:font-semibold',
-                  'prose-ul:my-4 prose-ol:my-4 prose-li:my-1.5 prose-li:text-ink-700 dark:prose-li:text-sage-200 prose-li:text-[0.98rem]',
-                  'prose-code:text-matcha-700 dark:prose-code:text-matcha-300 prose-code:bg-rice-paper-300/50 dark:prose-code:bg-tea-slate-200/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none',
-                  'prose-blockquote:border-l-3 prose-blockquote:border-matcha-500 prose-blockquote:pl-4 prose-blockquote:italic prose-blockquote:text-ink-500 dark:prose-blockquote:text-sage-300',
-                ].join(' ')}
-              />
-            ) : (
-              <div className="max-w-content mx-auto px-6 py-16 text-center">
-                <span className="block text-5xl mb-6 opacity-50">📖</span>
-                <h1 className="font-serif text-2xl text-ink-600 dark:text-sage-200 mb-3">
-                  {title || "Lesson"}
-                </h1>
-                <p className="text-ink-400 dark:text-sage-500 text-[0.9rem] leading-relaxed">
-                  Connect your Notion database via{" "}
-                  <code className="notion-inline-code">.env.local</code> to render content here.
-                </p>
-              </div>
+      <div className="notion-viewport max-w-[90rem] mx-auto px-4 sm:px-6 md:px-8 py-8 md:py-12 flex items-start justify-center gap-8 relative">
+        <article className="flex-1 max-w-4xl mx-auto min-w-0">
+          {/* Page Header */}
+          <header className="mb-8 pb-6 border-b border-rice-paper-400/60 dark:border-tea-slate-50/40">
+            <h1 className="font-serif font-medium text-2xl sm:text-3xl md:text-4xl text-ink-700 dark:text-sage-100 leading-tight mb-3">
+              {title}
+            </h1>
+            {description && (
+              <p className="text-[1rem] leading-relaxed text-ink-400 dark:text-sage-400 max-w-prose">
+                {description}
+              </p>
             )}
-          </article>
+          </header>
 
-          {/* Sticky TOC sidebar — hidden below xl breakpoint */}
-          {blocks.length > 0 && (
-            <aside
-              className="hidden xl:block xl:w-60 2xl:w-72 shrink-0"
-              aria-label="Article table of contents"
-            >
-              <div className="rounded-xl border border-rice-paper-400/60 dark:border-tea-slate-50/30 bg-rice-paper-50/80 dark:bg-tea-slate-300/60 backdrop-blur-sm p-4 shadow-zen-sm">
-                <TableOfContents blocks={blocks} />
-              </div>
-            </aside>
+          {/* Content Body */}
+          {html ? (
+            <NotionContent
+              html={html}
+              className={[
+                'prose prose-neutral dark:prose-invert max-w-none wabi-sabi-theme',
+                'prose-headings:font-serif prose-headings:font-medium prose-headings:text-ink-700 dark:prose-headings:text-sage-100',
+                'prose-h1:text-2xl md:prose-h1:text-3xl prose-h1:border-b prose-h1:border-rice-paper-400/60 dark:prose-h1:border-tea-slate-50/40 prose-h1:pb-3 prose-h1:mb-6 prose-h1:mt-8',
+                'prose-h2:text-xl md:prose-h2:text-2xl prose-h2:mt-8 prose-h2:mb-4',
+                'prose-h3:text-lg prose-h3:mt-6 prose-h3:mb-3',
+                'prose-p:text-ink-700 dark:prose-p:text-sage-200 prose-p:leading-relaxed prose-p:my-4 prose-p:text-[0.98rem]',
+                'prose-a:text-matcha-600 dark:prose-a:text-matcha-300 prose-a:no-underline hover:prose-a:underline',
+                'prose-strong:text-ink-700 dark:prose-strong:text-sage-100 prose-strong:font-semibold',
+                'prose-ul:my-4 prose-ol:my-4 prose-li:my-1.5 prose-li:text-ink-700 dark:prose-li:text-sage-200 prose-li:text-[0.98rem]',
+                'prose-code:text-matcha-700 dark:prose-code:text-matcha-300 prose-code:bg-rice-paper-300/50 dark:prose-code:bg-tea-slate-200/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none',
+                'prose-blockquote:border-l-3 prose-blockquote:border-matcha-500 prose-blockquote:pl-4 prose-blockquote:italic prose-blockquote:text-ink-500 dark:prose-blockquote:text-sage-300',
+              ].join(' ')}
+            />
+          ) : (
+            <div className="max-w-content mx-auto px-6 py-16 text-center">
+              <span className="block text-5xl mb-6 opacity-50">📖</span>
+              <h1 className="font-serif text-2xl text-ink-600 dark:text-sage-200 mb-3">
+                {title || "Lesson"}
+              </h1>
+              <p className="text-ink-400 dark:text-sage-500 text-[0.9rem] leading-relaxed">
+                Connect your Notion database via{" "}
+                <code className="notion-inline-code">.env.local</code> to render content here.
+              </p>
+            </div>
           )}
+        </article>
 
-        </div>
+        <TableOfContents blocks={blocks} />
       </div>
     </>
   )

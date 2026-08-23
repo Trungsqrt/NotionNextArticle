@@ -25,6 +25,7 @@
 
   html {
     scroll-behavior: smooth;
+    scroll-padding-top: 120px;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
@@ -85,6 +86,25 @@
     outline: 2px solid #7a8b69;
     outline-offset: 2px;
     border-radius: 4px;
+  }
+
+  /* Heading jump temporary background highlight */
+  @keyframes heading-jump-highlight {
+    0% {
+      background-color: rgba(122, 139, 105, 0.32);
+    }
+    60% {
+      background-color: rgba(122, 139, 105, 0.18);
+    }
+    100% {
+      background-color: transparent;
+    }
+  }
+
+  .heading-highlight-flash,
+  :target {
+    animation: heading-jump-highlight 1.8s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+    border-radius: 6px;
   }
 }
 

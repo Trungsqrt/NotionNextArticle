@@ -55,23 +55,6 @@ export default function ReadingProgress() {
 
   return (
     <>
-      {/* ── Reading progress bar ─────────────────────────────────────────── */}
-      <div
-        role="progressbar"
-        aria-label="Reading progress"
-        aria-valuenow={Math.round(progress)}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        style={{ opacity: visible ? 1 : 0, transition: 'opacity 0.4s ease' }}
-        className="fixed top-14 left-0 right-0 z-40 h-[3px] bg-rice-paper-300/60 dark:bg-tea-slate-100/20"
-      >
-        {/* Matcha gradient fill */}
-        <div
-          style={{ width: `${progress}%`, transition: 'width 0.1s linear' }}
-          className="h-full bg-gradient-to-r from-matcha-400 via-matcha-500 to-matcha-600 dark:from-matcha-500 dark:via-matcha-400 dark:to-matcha-300 rounded-r-full shadow-[0_0_6px_0_rgba(122,139,105,0.5)]"
-        />
-      </div>
-
       {/* ── Back-to-top button ───────────────────────────────────────────── */}
       <button
         id="back-to-top"
