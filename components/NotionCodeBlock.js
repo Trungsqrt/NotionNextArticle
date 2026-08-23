@@ -8,15 +8,80 @@
  * via customStyle and a scoped <style> injection — the outer Tailwind wrapper
  * owns all visual chrome.
  *
+ * If language === 'mermaid', the block is rendered as an SVG diagram using
+ * the mermaid npm package (v11 async API).
+ *
  * Props:
  *   codeText  — The raw code text string
- *   language  — Language identifier (e.g., "javascript", "python", "css")
+ *   language  — Language identifier (e.g., "javascript", "python", "mermaid")
  *   caption   — Optional caption HTML string
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useId } from 'react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+
+// ── Mermaid diagram renderer ───────────────────────────────────────────────
+function MermaidChart({ code }) {
+  const containerRef = useRef(null)
+  const [svg, setSvg] = useState('')
+  const [error, setError] = useState(null)
+  const chartId = useId().replace(/:/g, '_')
+
+  useEffect(() => {
+    if (!code) return
+    let cancelled = false
+
+    async function render() {
+      try {
+        const mermaid = (await import('mermaid')).default
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: document.documentElement.classList.contains('dark') ? 'dark' : 'neutral',
+          securityLevel: 'loose',
+          fontFamily: 'inherit',
+        })
+        const { svg: renderedSvg } = await mermaid.render(`mermaid-${chartId}`, code)
+        if (!cancelled) setSvg(renderedSvg)
+      } catch (err) {
+        if (!cancelled) setError(String(err?.message || err))
+      }
+    }
+
+    render()
+    return () => { cancelled = true }
+  // Re-render if code or theme changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, chartId])
+
+  if (error) {
+    return (
+      <div className="my-8 p-4 rounded-xl border border-red-200/80 dark:border-red-800/60 bg-red-50/80 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm font-mono">
+        <span className="font-semibold">Mermaid error: </span>{error}
+      </div>
+    )
+  }
+
+  if (!svg) {
+    return (
+      <div className="my-8 flex items-center justify-center py-12 text-neutral-400 dark:text-neutral-600">
+        <svg className="animate-spin mr-2" width="18" height="18" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+        <span className="text-sm">Rendering diagram…</span>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="my-8 flex justify-center items-center p-6 rounded-xl border border-neutral-200/60 dark:border-neutral-700/60 bg-white dark:bg-neutral-900/40 overflow-x-auto shadow-sm"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  )
+}
 
 export default function NotionCodeBlock({ codeText, language, caption }) {
   const [isWrapped, setIsWrapped] = useState(false)
@@ -49,6 +114,21 @@ export default function NotionCodeBlock({ codeText, language, caption }) {
 
   const langLabel = (language || 'plain text').toUpperCase()
   const normalizedLang = (language || 'text').toLowerCase()
+
+  // ── Mermaid: render as diagram ────────────────────────────────────────────
+  if (normalizedLang === 'mermaid') {
+    return (
+      <div className="not-prose my-6">
+        <MermaidChart code={codeText || ''} />
+        {caption && (
+          <div
+            className="mt-1 text-center text-xs text-neutral-400 dark:text-neutral-500 italic"
+            dangerouslySetInnerHTML={{ __html: caption }}
+          />
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="not-prose my-6 group/code relative rounded-xl border border-neutral-200/80 dark:border-neutral-800/80 bg-neutral-50 dark:bg-[#1d2021] overflow-hidden shadow-sm">
