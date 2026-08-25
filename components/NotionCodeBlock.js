@@ -82,6 +82,18 @@ function MermaidChart({ code, isDark }) {
 export default function NotionCodeBlock({ codeText, language, caption }) {
   const [isWrapped, setIsWrapped] = useState(false)
   const [isCopied, setIsCopied] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [contentHeight, setContentHeight] = useState(300)
+  const contentRef = useRef(null)
+  
+  const lineCount = (codeText || '').split('\n').length
+  const isLong = lineCount > 10
+
+  useEffect(() => {
+    if (contentRef.current) {
+      setContentHeight(contentRef.current.scrollHeight)
+    }
+  }, [codeText, isWrapped, isExpanded])
   
   // Independent theme state: null = follow site theme, 'dark' | 'light' = user manual choice for this block
   const [localTheme, setLocalTheme] = useState(null)
@@ -276,35 +288,67 @@ export default function NotionCodeBlock({ codeText, language, caption }) {
       </div>
 
       {/* ── Code body ──────────────────────────────────────────────── */}
-      <div className="p-4 notion-code-block text-sm font-mono leading-relaxed overflow-x-auto">
-        <SyntaxHighlighter
-          language={normalizedLang}
-          style={isDark ? oneDark : oneLight}
-          PreTag="div"
-          wrapLines={true}
-          wrapLongLines={isWrapped}
-          customStyle={{
-            backgroundColor: 'transparent',
-            background:      'none',
-            border:          'none',
-            boxShadow:       'none',
-            padding:         0,
-            margin:          0,
-            fontSize:        'inherit',
-            lineHeight:      'inherit',
-            fontFamily:      'inherit',
-          }}
-          codeTagProps={{
-            style: {
+      <div 
+        ref={contentRef}
+        className="relative overflow-hidden transition-[max-height] duration-700 ease-in-out"
+        style={{ maxHeight: isLong && !isExpanded ? 300 : (contentHeight > 300 ? contentHeight : 5000) }}
+      >
+        <div className="p-4 notion-code-block text-sm font-mono leading-relaxed overflow-x-auto">
+          <SyntaxHighlighter
+            language={normalizedLang}
+            style={isDark ? oneDark : oneLight}
+            PreTag="div"
+            wrapLines={true}
+            wrapLongLines={isWrapped}
+            customStyle={{
               backgroundColor: 'transparent',
               background:      'none',
-              fontFamily:      'inherit',
+              border:          'none',
+              boxShadow:       'none',
+              padding:         0,
+              margin:          0,
               fontSize:        'inherit',
-            },
-          }}
-        >
-          {codeText || ''}
-        </SyntaxHighlighter>
+              lineHeight:      'inherit',
+              fontFamily:      'inherit',
+            }}
+            codeTagProps={{
+              style: {
+                backgroundColor: 'transparent',
+                background:      'none',
+                fontFamily:      'inherit',
+                fontSize:        'inherit',
+              },
+            }}
+          >
+            {codeText || ''}
+          </SyntaxHighlighter>
+        </div>
+
+        {/* ── Expand Overlay (Fades out smoothly) ───────────────────── */}
+        {isLong && (
+          <div className={`absolute bottom-0 left-0 w-full h-32 flex items-end justify-center pb-4 bg-gradient-to-t transition-opacity duration-700 ease-in-out ${
+            isExpanded ? 'opacity-0 pointer-events-none' : 'opacity-100'
+          } ${
+            isDark 
+              ? 'from-[#1d2021]/95 via-[#1d2021]/60 to-transparent' 
+              : 'from-[#fafafa]/95 via-[#fafafa]/60 to-transparent'
+          }`}>
+            <button
+              type="button"
+              onClick={() => setIsExpanded(true)}
+              className={`group flex items-center gap-2 px-5 py-2 rounded-full text-xs font-serif italic tracking-wider transition-all duration-300 ease-out backdrop-blur-sm hover:-translate-y-0.5 hover:shadow-sm ${
+                isDark
+                  ? 'text-neutral-400 hover:text-matcha-300 bg-[#282828]/50 border border-neutral-700/50 hover:border-matcha-700/50 hover:bg-[#282828]/80'
+                  : 'text-neutral-500 hover:text-matcha-700 bg-white/50 border border-neutral-200/60 hover:border-matcha-300/60 hover:bg-white/80'
+              }`}
+            >
+              <span>Expand code</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="transition-transform duration-300 group-hover:translate-y-0.5 opacity-70">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── Optional caption ───────────────────────────────────────── */}

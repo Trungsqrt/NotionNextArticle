@@ -2,10 +2,10 @@ import { notFound } from 'next/navigation'
 import { getAllPosts, getPageBySlug } from '../../lib/notion'
 import NotionContent from '../../components/NotionContent'
 import TableOfContents from '../../components/TableOfContents'
+import ArticleCover from '../../components/ArticleCover'
 
-// Cache and revalidate in background every 1 hour (3600 seconds)
+// Revalidate in background every 1 hour (3600 seconds)
 export const revalidate = 3600
-export const fetchCache = 'force-cache' // Strictly force Next.js to cache all fetches
 // Allow dynamic fallback rendering for newly added articles not yet built
 export const dynamicParams = true
 
@@ -72,13 +72,7 @@ export default async function ArticlePage({ params }) {
   return (
     <>
       {coverUrl && (
-        <div className="w-full h-[30vh] min-h-[250px] overflow-hidden relative">
-          <img
-            src={coverUrl}
-            alt={title || "Cover Image"}
-            className="w-full h-full object-cover"
-          />
-        </div>
+        <ArticleCover src={coverUrl} title={title} icon={page.icon} />
       )}
       <div className="notion-viewport max-w-[90rem] mx-auto px-4 sm:px-6 md:px-8 py-8 md:py-12 flex items-start justify-center gap-8 relative">
         <article className="flex-1 max-w-4xl mx-auto min-w-0">
