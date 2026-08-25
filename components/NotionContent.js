@@ -12,6 +12,7 @@
 import { useEffect, useRef } from 'react'
 import parse from 'html-react-parser'
 import NotionCodeBlock from './NotionCodeBlock'
+import NotionToggleBlock from './NotionToggleBlock'
 
 // ── Lightweight zoom lightbox ──────────────────────────────────────────────
 function useLightbox(containerRef) {
@@ -77,19 +78,53 @@ function useLightbox(containerRef) {
   }, [containerRef])
 }
 
+// ── Image error fallback handler ──────────────────────────────────────────
+function useImageErrorFallback(containerRef) {
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    function handleError(e) {
+      if (e.target && e.target.tagName === 'IMG') {
+        const img = e.target
+        img.style.display = 'none'
+        const figure = img.closest('figure')
+        if (figure && !figure.querySelector('.notion-img-fallback')) {
+          const fallback = document.createElement('div')
+          fallback.className = 'notion-img-fallback w-full py-8 px-4 flex flex-col items-center justify-center text-center text-ink-400 dark:text-sage-400 bg-rice-paper-200/50 dark:bg-tea-slate-200/50 rounded-xl border border-rice-paper-400/40 dark:border-tea-slate-50/20'
+          fallback.innerHTML = `
+            <svg class="w-7 h-7 mb-2 opacity-40 text-matcha-600 dark:text-matcha-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5" />
+              <circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5" />
+              <path d="m21 15-5-5L5 21" stroke-width="1.5" />
+            </svg>
+            <span class="text-xs font-mono opacity-70">Image unavailable</span>
+          `
+          figure.insertBefore(fallback, img)
+        }
+      }
+    }
+
+    container.addEventListener('error', handleError, true)
+    return () => {
+      container.removeEventListener('error', handleError, true)
+    }
+  }, [containerRef])
+}
+
 // ── Main component ─────────────────────────────────────────────────────────
 export default function NotionContent({ html, className }) {
   const containerRef = useRef(null)
   useLightbox(containerRef)
+  useImageErrorFallback(containerRef)
 
   if (!html) return null
 
   const parseOptions = {
     replace: (domNode) => {
-      if (
-        domNode.attribs &&
-        domNode.attribs['data-notion-component'] === 'NotionCodeBlock'
-      ) {
+      if (!domNode.attribs) return
+
+      if (domNode.attribs['data-notion-component'] === 'NotionCodeBlock') {
         try {
           const rawProps = domNode.attribs['data-props']
           if (rawProps) {
@@ -105,6 +140,24 @@ export default function NotionContent({ html, className }) {
         } catch (err) {
           console.error('Failed to parse NotionCodeBlock props:', err)
         }
+      } else if (domNode.attribs['data-notion-component'] === 'NotionToggleBlock') {
+        try {
+          const rawProps = domNode.attribs['data-props']
+          if (rawProps) {
+            const props = JSON.parse(rawProps)
+            return (
+              <NotionToggleBlock
+                blockId={props.blockId}
+                titleHtml={props.titleHtml}
+                color={props.color}
+                dynamicClasses={props.dynamicClasses}
+                hasChildren={props.hasChildren}
+              />
+            )
+          }
+        } catch (err) {
+          console.error('Failed to parse NotionToggleBlock props:', err)
+        }
       }
     },
   }
@@ -115,3 +168,4 @@ export default function NotionContent({ html, className }) {
     </div>
   )
 }
+

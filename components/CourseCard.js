@@ -20,8 +20,10 @@
  * IMPORTANT: Accepts any extra props (spread) without breaking.
  */
 
+'use client'
+
+import { useState } from 'react'
 import Link from 'next/link'
-import Image from 'next/image'
 
 // ── Icon helpers
 const ClockIcon = () => (
@@ -103,16 +105,23 @@ function formatDate(date) {
 
 // ── Cover image fallback (organic matcha gradient)
 function CardCover({ src, icon, title }) {
-  if (src) {
+  const [imgError, setImgError] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
+
+  if (src && !imgError) {
     return (
-      <div className="relative aspect-[16/7] overflow-hidden bg-rice-paper-200 dark:bg-tea-slate-200 flex-shrink-0">
-        <Image
+      <div className={`relative aspect-[16/7] overflow-hidden flex-shrink-0 bg-rice-paper-200 dark:bg-tea-slate-800 ${isLoading ? 'animate-pulse' : ''}`}>
+        <img
           src={src}
           alt={`Cover image for ${title || 'lesson'}`}
-          fill
-          unoptimized
-          className="object-cover transition-transform duration-500 group-hover:scale-[1.03]"
-          sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+          loading="lazy"
+          decoding="async"
+          onLoad={() => setIsLoading(false)}
+          onError={() => {
+            setImgError(true)
+            setIsLoading(false)
+          }}
+          className={`w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.03] ${isLoading ? 'scale-105 blur-md opacity-0' : 'scale-100 blur-0 opacity-100'}`}
         />
       </div>
     )
@@ -120,7 +129,7 @@ function CardCover({ src, icon, title }) {
 
   return (
     <div
-      className="aspect-[16/7] overflow-hidden flex-shrink-0 flex items-center justify-center"
+      className="aspect-[16/7] overflow-hidden flex-shrink-0 flex items-center justify-center bg-rice-paper-200 dark:bg-tea-slate-200"
       style={{
         background: 'linear-gradient(135deg, rgba(122,139,105,0.12) 0%, rgba(174,201,163,0.18) 60%, rgba(234,230,223,0.10) 100%)',
       }}
