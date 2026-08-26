@@ -422,6 +422,223 @@ const STILL_LIFE_ITEMS = [
       </svg>
     ),
   },
+
+  // ── 9. Mount Fuji & Morning Mist (Phú Sĩ Tuyết Đỉnh & Sương Mù) ───────────
+  {
+    id: 'zen-fuji',
+    kanji: '岳',
+    kanjiTitle: '富士 · Mount Fuji',
+    title: 'Snow-Capped Peak',
+    subtitle: 'Steadfast & Eternal',
+    quote: 'Mountains do not seek praise; they stand unwavering through every storm.',
+    author: 'Fuji Contemplation',
+    renderSvg: () => (
+      <svg viewBox="0 0 200 240" className="w-full max-w-[170px] mx-auto overflow-visible select-none" aria-hidden="true">
+        <circle cx="100" cy="115" r="65" fill="url(#zenGlow)" opacity="0.35" />
+
+        {/* Rising Red Sun (Hinomaru) */}
+        <circle cx="138" cy="85" r="28" className="fill-rose-500/20 dark:fill-rose-500/15" />
+
+        {/* Mount Fuji Base Mountain Silhouette */}
+        <path
+          d="M20 200 C45 185 75 125 90 90 L110 90 C125 125 155 185 180 200 Z"
+          className="fill-rice-paper-300 dark:fill-tea-slate-100 stroke-matcha-600/40 dark:stroke-matcha-400/40"
+          strokeWidth="1.8"
+        />
+
+        {/* Snow Cap on Mount Fuji Peak */}
+        <path
+          d="M90 90 L110 90 L118 112 Q112 120 106 114 Q100 126 94 116 Q88 122 82 112 Z"
+          className="fill-rice-paper-50 dark:fill-sage-100 stroke-rice-paper-400 dark:stroke-tea-slate-50"
+          strokeWidth="1.2"
+        />
+
+        {/* Rolling Clouds / Morning Mist bands */}
+        <path d="M15 175 Q60 165 110 175 T185 170" stroke="currentColor" strokeWidth="1.2" strokeOpacity="0.2" fill="none" />
+        <path d="M30 188 Q80 178 130 188 T170 185" stroke="currentColor" strokeWidth="1.2" strokeOpacity="0.25" fill="none" />
+        <path d="M5 198 Q55 192 100 198 T195 195" stroke="currentColor" strokeWidth="1" strokeOpacity="0.18" fill="none" />
+
+        {/* Japanese Hanko seal stamp */}
+        <g transform="translate(35, 60)">
+          <rect width="18" height="18" rx="3" className="fill-rose-700/80 dark:fill-rose-600/70" />
+          <text x="9" y="13" textAnchor="middle" fill="#ffffff" fontSize="10" fontFamily="serif" fontWeight="bold">岳</text>
+        </g>
+      </svg>
+    ),
+  },
+
+  // ── 10. Yin-Yang Koi Fish (Cá Chép Âm Dương & Tĩnh Thủy) ───────────────────
+  {
+    id: 'zen-koi',
+    kanji: '流',
+    kanjiTitle: '錦鯉 · Yin-Yang Koi',
+    title: 'Flow & Harmony',
+    subtitle: 'Adaptability of Water',
+    quote: 'Water adapts to any vessel, yet effortlessly carves through stone.',
+    author: 'Tao of Water',
+    renderSvg: () => (
+      <svg viewBox="0 0 200 240" className="w-full max-w-[170px] mx-auto overflow-visible select-none" aria-hidden="true">
+        <circle cx="100" cy="120" r="70" fill="url(#zenGlow)" opacity="0.35" />
+
+        {/* Water Ripple Circles */}
+        <circle cx="100" cy="120" r="62" fill="none" stroke="currentColor" strokeWidth="1" strokeOpacity="0.12" strokeDasharray="4 4" />
+        <circle cx="100" cy="120" r="45" fill="none" stroke="currentColor" strokeWidth="1" strokeOpacity="0.15" />
+
+        {/* Floating Lotus Leaf */}
+        <path
+          d="M130 65 C145 55 165 65 160 85 C155 100 135 95 125 80 Z"
+          className="fill-matcha-500/25 dark:fill-matcha-400/20 stroke-matcha-600/40"
+          strokeWidth="1.2"
+        />
+
+        {/* Koi 1 (Matcha / Dark ink) */}
+        <path
+          d="M80 80 C60 100 65 140 90 155 C98 145 92 120 100 105 C108 90 95 72 80 80 Z"
+          className="fill-matcha-700/80 dark:fill-matcha-400/80"
+        />
+        {/* Koi 1 Tail Fin */}
+        <path d="M68 85 Q50 70 45 80 Q55 92 72 90 Z" className="fill-matcha-600/60 dark:fill-matcha-300/60" />
+        <path d="M72 80 Q65 60 75 62 Q78 72 76 80 Z" className="fill-matcha-600/60 dark:fill-matcha-300/60" />
+
+        {/* Koi 2 (Amber / Bright ink) */}
+        <path
+          d="M120 160 C140 140 135 100 110 85 C102 95 108 120 100 135 C92 150 105 168 120 160 Z"
+          className="fill-amber-600/75 dark:fill-amber-400/70"
+        />
+        {/* Koi 2 Tail Fin */}
+        <path d="M132 155 Q150 170 155 160 Q145 148 128 150 Z" className="fill-amber-500/60 dark:fill-amber-300/60" />
+        <path d="M128 160 Q135 180 125 178 Q122 168 124 160 Z" className="fill-amber-500/60 dark:fill-amber-300/60" />
+
+        {/* Japanese Hanko seal stamp */}
+        <g transform="translate(150, 160)">
+          <rect width="18" height="18" rx="3" className="fill-rose-700/80 dark:fill-rose-600/70" />
+          <text x="9" y="13" textAnchor="middle" fill="#ffffff" fontSize="10" fontFamily="serif" fontWeight="bold">流</text>
+        </g>
+      </svg>
+    ),
+  },
+
+  // ── 11. Chasen Bamboo Whisk (Chổi Đánh Trà Tre & Matcha Bọt Mịn) ──────────
+  {
+    id: 'zen-chasen',
+    kanji: '筅',
+    kanjiTitle: '茶筅 · Chasen Whisk',
+    title: 'Bamboo Whisk',
+    subtitle: 'Precision & Ritual',
+    quote: 'Whisking tea requires rhythm, presence, and calm intention.',
+    author: 'Sen no Rikyū',
+    renderSvg: () => (
+      <svg viewBox="0 0 200 240" className="w-full max-w-[170px] mx-auto overflow-visible select-none" aria-hidden="true">
+        <circle cx="100" cy="120" r="65" fill="url(#zenGlow)" opacity="0.35" />
+
+        {/* Powdered Matcha Base Spread */}
+        <ellipse cx="100" cy="195" rx="55" ry="12" className="fill-matcha-500/30 dark:fill-matcha-400/20" />
+        <ellipse cx="100" cy="193" rx="35" ry="7" className="fill-matcha-600/40 dark:fill-matcha-500/30" />
+
+        {/* Chashaku Bamboo Tea Scoop lying across */}
+        <path
+          d="M45 182 Q85 178 120 185 Q145 188 160 178"
+          fill="none"
+          className="stroke-amber-800/70 dark:stroke-amber-500/70"
+          strokeWidth="3.5"
+          strokeLinecap="round"
+        />
+
+        {/* Chasen Bamboo Handle (Upper tube) */}
+        <rect
+          x="88"
+          y="45"
+          width="24"
+          height="45"
+          rx="3"
+          className="fill-amber-100 dark:fill-tea-slate-100 stroke-amber-800/60 dark:stroke-amber-500/60"
+          strokeWidth="1.8"
+        />
+        {/* Bamboo Node Ring */}
+        <line x1="86" y1="62" x2="114" y2="62" className="stroke-amber-900/80 dark:stroke-amber-400" strokeWidth="2.5" />
+
+        {/* Black Thread Knot (Chasen knot band) */}
+        <rect x="86" y="88" width="28" height="6" rx="2" className="fill-ink-800 dark:fill-tea-slate-50" />
+
+        {/* Flared Bamboo Tines (Curved fine whiskers) */}
+        <path
+          d="M87 94 C70 120 52 155 65 180 C80 155 92 120 96 94"
+          className="fill-amber-50/80 dark:fill-tea-slate-100/80 stroke-amber-800/50"
+          strokeWidth="1.2"
+        />
+        <path
+          d="M113 94 C130 120 148 155 135 180 C120 155 108 120 104 94"
+          className="fill-amber-50/80 dark:fill-tea-slate-100/80 stroke-amber-800/50"
+          strokeWidth="1.2"
+        />
+        <path
+          d="M96 94 C92 125 85 160 100 182 C115 160 108 125 104 94"
+          className="fill-amber-100/90 dark:fill-tea-slate-50 stroke-amber-700/60"
+          strokeWidth="1.2"
+        />
+
+        {/* Japanese Hanko seal stamp */}
+        <g transform="translate(145, 55)">
+          <rect width="18" height="18" rx="3" className="fill-rose-700/80 dark:fill-rose-600/70" />
+          <text x="9" y="13" textAnchor="middle" fill="#ffffff" fontSize="10" fontFamily="serif" fontWeight="bold">筅</text>
+        </g>
+      </svg>
+    ),
+  },
+
+  // ── 12. Temple Bonshō Bell & Maple Leaf (Chuông Chùa & Lá Phong Thu) ───────
+  {
+    id: 'zen-bell',
+    kanji: '響',
+    kanjiTitle: '梵鐘 · Temple Bell',
+    title: 'Sacred Resonance',
+    subtitle: 'Clarity in Silence',
+    quote: 'The bell tolls and fades, yet the silence left behind echoes forever.',
+    author: 'Matsuo Bashō',
+    renderSvg: () => (
+      <svg viewBox="0 0 200 240" className="w-full max-w-[170px] mx-auto overflow-visible select-none" aria-hidden="true">
+        <circle cx="100" cy="115" r="65" fill="url(#zenGlow)" opacity="0.35" />
+
+        {/* Sound Wave Resonance Radii */}
+        <circle cx="100" cy="120" r="55" fill="none" stroke="currentColor" strokeWidth="1" strokeOpacity="0.12" strokeDasharray="3 4" />
+        <circle cx="100" cy="120" r="72" fill="none" stroke="currentColor" strokeWidth="1" strokeOpacity="0.08" strokeDasharray="2 4" />
+
+        {/* Temple Wooden Eave Beam */}
+        <rect x="40" y="38" width="120" height="8" rx="2" className="fill-ink-800 dark:fill-tea-slate-50" />
+        <rect x="94" y="46" width="12" height="12" className="fill-ink-700 dark:fill-tea-slate-100" />
+        <ellipse cx="100" cy="58" rx="7" ry="4" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-matcha-500" />
+
+        {/* Bonshō Bronze Bell Silhouette */}
+        <path
+          d="M72 70 C72 65 128 65 128 70 L132 145 C132 155 125 162 100 162 C75 162 68 155 68 145 Z"
+          className="fill-rice-paper-300 dark:fill-tea-slate-100 stroke-ink-700/80 dark:stroke-tea-slate-50"
+          strokeWidth="2"
+        />
+
+        {/* Relief Bands & Studs (Ryūzu dots) on Bell */}
+        <line x1="70" y1="95" x2="130" y2="95" className="stroke-ink-700/60 dark:stroke-tea-slate-50" strokeWidth="1.5" />
+        <line x1="69" y1="130" x2="131" y2="130" className="stroke-ink-700/60 dark:stroke-tea-slate-50" strokeWidth="1.5" />
+        <circle cx="85" cy="112" r="2.5" className="fill-matcha-600 dark:fill-matcha-400" />
+        <circle cx="100" cy="112" r="2.5" className="fill-matcha-600 dark:fill-matcha-400" />
+        <circle cx="115" cy="112" r="2.5" className="fill-matcha-600 dark:fill-matcha-400" />
+
+        {/* Falling Autumn Momiji Maple Leaf */}
+        <g transform="translate(140, 150) rotate(15)">
+          <path
+            d="M0 12 L-10 0 L-4 -4 L0 -14 L4 -4 L10 0 Z"
+            className="fill-rose-600/70 dark:fill-rose-500/70"
+          />
+          <line x1="0" y1="12" x2="0" y2="20" className="stroke-rose-700" strokeWidth="1" />
+        </g>
+
+        {/* Japanese Hanko seal stamp */}
+        <g transform="translate(35, 60)">
+          <rect width="18" height="18" rx="3" className="fill-rose-700/80 dark:fill-rose-600/70" />
+          <text x="9" y="13" textAnchor="middle" fill="#ffffff" fontSize="10" fontFamily="serif" fontWeight="bold">響</text>
+        </g>
+      </svg>
+    ),
+  },
 ]
 
 export default function ZenStillLife({ currentSlug = '' }) {
