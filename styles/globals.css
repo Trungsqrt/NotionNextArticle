@@ -24,6 +24,7 @@
   }
 
   html {
+    font-size: 17px;
     scroll-behavior: smooth;
     scroll-padding-top: 120px;
     -webkit-font-smoothing: antialiased;
@@ -34,11 +35,16 @@
   body {
     @apply bg-rice-paper-100 text-ink-700 font-sans;
     @apply transition-colors duration-300;
+    font-weight: 430;
     min-height: 100vh;
   }
 
   .dark body {
     @apply bg-tea-slate-300 text-sage-200;
+  }
+
+  strong, b, .font-semibold {
+    font-weight: 600;
   }
 
   /* Scrollbar — thin & organic */
@@ -140,5 +146,20 @@
     text-decoration-color: rgba(122, 139, 105, 0.5);
     text-underline-offset: 3px;
     text-decoration-thickness: 1px;
+  }
+
+  /* Smooth accordion fold-down animation for Toggle */
+  details .toggle-content-wrapper {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  details[open] .toggle-content-wrapper {
+    grid-template-rows: 1fr;
+  }
+
+  .toggle-content-inner {
+    overflow: hidden;
   }
 }
