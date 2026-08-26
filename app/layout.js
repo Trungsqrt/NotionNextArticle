@@ -25,6 +25,12 @@ const firaCode = Fira_Code({
 export const metadata = {
   title: 'ServiceNow Space',
   description: 'A serene knowledge space',
+  icons: {
+    icon: [
+      { url: '/favicon.ico' },
+      { url: '/icon.svg', type: 'image/svg+xml' },
+    ],
+  },
 }
 
 export default function RootLayout({ children }) {

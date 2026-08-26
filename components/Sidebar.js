@@ -21,6 +21,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import ZenStillLife from './ZenStillLife'
 
 // ── Icon helpers
 const ChevronIcon = ({ open }) => (
@@ -335,7 +336,12 @@ export default function Sidebar({
         )}
 
         {/* ── Scrollable content */}
-        <div className="flex-1 overflow-y-auto overscroll-contain py-3 px-1.5">
+        <div className="flex-1 overflow-y-auto overscroll-contain py-3 px-1.5 flex flex-col">
+
+          {/* Zen Still Life Artwork — displayed when sidebar has no module tree */}
+          {modules.length === 0 && tableOfContents.length === 0 && (
+            <ZenStillLife currentSlug={currentSlug || pathname} />
+          )}
 
           {/* Module tree (primary course nav) */}
           {modules.length > 0 && (
