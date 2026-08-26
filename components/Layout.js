@@ -20,7 +20,7 @@
  * IMPORTANT: Does NOT modify any NotionNext data props or recordMap.
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Header from './Header'
 import Sidebar from './Sidebar'
 import ReadingProgress from './ReadingProgress'
@@ -41,6 +41,39 @@ export default function Layout({
 }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+
+  // ── Auto-append source attribution when copying non-code text ──────────────
+  useEffect(() => {
+    function handleCopy(e) {
+      const selection = window.getSelection()
+      if (!selection || selection.isCollapsed) return
+
+      // Check if selection is inside a code block or inline code
+      const isInsideCode = (node) => {
+        if (!node) return false
+        const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement
+        return !!el?.closest('pre, code, .notion-code-block, [data-notion-component="NotionCodeBlock"], .notion-inline-code')
+      }
+
+      if (isInsideCode(selection.anchorNode) || isInsideCode(selection.focusNode)) {
+        return // Keep clean copy for code blocks and snippets
+      }
+
+      const text = selection.toString().trim()
+      if (!text) return
+
+      // Append attribution to copied text
+      const fullText = selection.toString() + '\n\n— Trungsqrt · ServiceNow Knowledge Hub'
+
+      if (e.clipboardData) {
+        e.preventDefault()
+        e.clipboardData.setData('text/plain', fullText)
+      }
+    }
+
+    document.addEventListener('copy', handleCopy)
+    return () => document.removeEventListener('copy', handleCopy)
+  }, [])
 
   return (
     <>
