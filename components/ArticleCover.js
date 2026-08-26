@@ -15,10 +15,34 @@ import { useState } from 'react'
  *   title — String: Lesson / Page title for alt text
  *   icon  — String: Optional emoji icon for fallback state
  */
+function renderArticleIcon(icon) {
+  if (!icon) return null
+  if (typeof icon === 'string') {
+    if (icon.startsWith('http') || icon.startsWith('/')) {
+      return <img src={icon} alt="" className="w-14 h-14 object-contain" />
+    }
+    return <span className="text-5xl select-none opacity-80">{icon}</span>
+  }
+  if (typeof icon === 'object') {
+    if (icon.type === 'emoji' && icon.value) {
+      return <span className="text-5xl select-none opacity-80">{icon.value}</span>
+    }
+    if ((icon.type === 'file' || icon.type === 'external') && icon.value) {
+      return <img src={icon.value} alt="" className="w-14 h-14 object-contain" />
+    }
+    if (icon.value && typeof icon.value === 'string') {
+      return <span className="text-5xl select-none opacity-80">{icon.value}</span>
+    }
+  }
+  return null
+}
+
 export default function ArticleCover({ src, title = 'Cover Image', icon = null }) {
   const [imgError, setImgError] = useState(false)
 
   if (!src && !icon) return null
+
+  const renderedIcon = renderArticleIcon(icon)
 
   return (
     <div className="w-full h-[30vh] min-h-[250px] max-h-[380px] overflow-hidden relative bg-rice-paper-200 dark:bg-tea-slate-200">
@@ -39,8 +63,8 @@ export default function ArticleCover({ src, title = 'Cover Image', icon = null }
           }}
           aria-hidden="true"
         >
-          {icon ? (
-            <span className="text-5xl select-none opacity-80">{icon}</span>
+          {renderedIcon ? (
+            renderedIcon
           ) : (
             <svg width="80" height="80" viewBox="0 0 60 60" fill="none" opacity="0.35" aria-hidden="true">
               <path

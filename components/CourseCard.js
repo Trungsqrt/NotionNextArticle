@@ -103,6 +103,41 @@ function formatDate(date) {
   })
 }
 
+// ── Icon renderer helper
+function renderCardIcon(icon) {
+  if (!icon) return null
+  if (typeof icon === 'string') {
+    if (icon.startsWith('http') || icon.startsWith('/')) {
+      return <img src={icon} alt="" className="w-10 h-10 object-contain" />
+    }
+    return (
+      <span className="text-4xl select-none transition-transform duration-300 group-hover:scale-110">
+        {icon}
+      </span>
+    )
+  }
+  if (typeof icon === 'object') {
+    if (icon.type === 'emoji' && icon.value) {
+      return (
+        <span className="text-4xl select-none transition-transform duration-300 group-hover:scale-110">
+          {icon.value}
+        </span>
+      )
+    }
+    if ((icon.type === 'file' || icon.type === 'external') && icon.value) {
+      return <img src={icon.value} alt="" className="w-10 h-10 object-contain" />
+    }
+    if (icon.value && typeof icon.value === 'string') {
+      return (
+        <span className="text-4xl select-none transition-transform duration-300 group-hover:scale-110">
+          {icon.value}
+        </span>
+      )
+    }
+  }
+  return null
+}
+
 // ── Cover image fallback (organic matcha gradient)
 function CardCover({ src, icon, title }) {
   const [imgError, setImgError] = useState(false)
@@ -127,30 +162,28 @@ function CardCover({ src, icon, title }) {
     )
   }
 
+  const renderedIcon = renderCardIcon(icon)
+
   return (
     <div
       className="aspect-[16/7] overflow-hidden flex-shrink-0 flex items-center justify-center bg-rice-paper-200 dark:bg-tea-slate-200"
       style={{
-        background: 'linear-gradient(135deg, rgba(122,139,105,0.12) 0%, rgba(174,201,163,0.18) 60%, rgba(234,230,223,0.10) 100%)',
+        background: 'linear-gradient(135deg, rgba(122,139,105,0.14) 0%, rgba(174,201,163,0.20) 60%, rgba(234,230,223,0.12) 100%)',
       }}
       aria-hidden="true"
     >
-      {icon ? (
-        <span className="text-4xl select-none transition-transform duration-300 group-hover:scale-110">
-          {icon}
-        </span>
+      {renderedIcon ? (
+        renderedIcon
       ) : (
-        /* Wabi-sabi organic blob decoration */
-        <svg width="60" height="60" viewBox="0 0 60 60" fill="none" opacity="0.3" aria-hidden="true">
-          <path
-            d="M30 8 C40 8 52 16 52 30 C52 44 44 52 30 52 C16 52 8 44 8 30 C8 16 20 8 30 8 Z"
-            fill="rgba(122,139,105,0.5)"
-          />
-          <path
-            d="M30 16 C36 16 44 22 44 30 C44 38 38 44 30 44 C22 44 16 38 16 30 C16 22 24 16 30 16 Z"
-            fill="rgba(175,201,163,0.6)"
-          />
-        </svg>
+        <div className="flex flex-col items-center justify-center transition-transform duration-300 group-hover:scale-110">
+          <div className="w-11 h-11 rounded-full bg-matcha-500/15 dark:bg-matcha-400/20 flex items-center justify-center text-matcha-600 dark:text-matcha-300 shadow-sm">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z" />
+              <path d="M6 6h10" />
+              <path d="M6 10h10" />
+            </svg>
+          </div>
+        </div>
       )}
     </div>
   )

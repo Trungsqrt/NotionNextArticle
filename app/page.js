@@ -10,7 +10,20 @@ export const metadata = {
 }
 
 export default async function Home() {
-  const courses = await getAllPosts()
+  const allPosts = await getAllPosts()
+
+  // ── Filter courses for homepage ──────────────────────────────────────────
+  // 1. Only Published status (exclude Draft / Archived / Hidden)
+  // 2. Only top-level courses (exclude child sub-lessons that have a parent course)
+  const publishedCourses = allPosts.filter(c => {
+    const status = (c.status || '').toLowerCase()
+    if (status === 'draft' || status === 'archived' || status === 'hidden') return false
+    if (c.parentTitle && c.parentTitle.trim() !== '') return false
+    return true
+  })
+
+  // Fallback to allPosts if published filter yields nothing
+  const courses = publishedCourses.length > 0 ? publishedCourses : allPosts
 
   // ── Extract filter options from live Notion data ──────────────────────────
   // Categories — category is now extracted in notion.js; fall back to tags[0] for safety
