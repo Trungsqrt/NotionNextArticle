@@ -141,22 +141,17 @@ function renderCardIcon(icon) {
 // ── Cover image fallback (organic matcha gradient)
 function CardCover({ src, icon, title }) {
   const [imgError, setImgError] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
 
   if (src && !imgError) {
     return (
-      <div className={`relative aspect-[16/7] overflow-hidden flex-shrink-0 bg-rice-paper-200 dark:bg-tea-slate-800 ${isLoading ? 'animate-pulse' : ''}`}>
+      <div className="relative aspect-[16/7] overflow-hidden flex-shrink-0 bg-rice-paper-200 dark:bg-tea-slate-800">
         <img
           src={src}
           alt={`Cover image for ${title || 'lesson'}`}
           loading="lazy"
           decoding="async"
-          onLoad={() => setIsLoading(false)}
-          onError={() => {
-            setImgError(true)
-            setIsLoading(false)
-          }}
-          className={`w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.03] ${isLoading ? 'scale-105 blur-md opacity-0' : 'scale-100 blur-0 opacity-100'}`}
+          onError={() => setImgError(true)}
+          className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.03]"
         />
       </div>
     )
