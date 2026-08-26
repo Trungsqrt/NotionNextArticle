@@ -241,22 +241,21 @@ export default function ZenStillLife({ currentSlug = '' }) {
   const [activeItem, setActiveItem] = useState(STILL_LIFE_ITEMS[0])
   const [mounted, setMounted] = useState(false)
 
+  // Pure random pick on every single page load / route navigation
   useEffect(() => {
-    // Pick deterministic or randomized artwork per slug
-    let index = 0
-    if (currentSlug) {
-      let hash = 0
-      for (let i = 0; i < currentSlug.length; i++) {
-        hash = (hash << 5) - hash + currentSlug.charCodeAt(i)
-        hash |= 0
-      }
-      index = Math.abs(hash) % STILL_LIFE_ITEMS.length
-    } else {
-      index = Math.floor(Math.random() * STILL_LIFE_ITEMS.length)
-    }
-    setActiveItem(STILL_LIFE_ITEMS[index])
+    const randomIndex = Math.floor(Math.random() * STILL_LIFE_ITEMS.length)
+    setActiveItem(STILL_LIFE_ITEMS[randomIndex])
     setMounted(true)
   }, [currentSlug])
+
+  // Click to cycle to a different artwork
+  const handleCycle = () => {
+    setActiveItem((prev) => {
+      const currentIndex = STILL_LIFE_ITEMS.findIndex(item => item.id === prev.id)
+      const nextIndex = (currentIndex + 1) % STILL_LIFE_ITEMS.length
+      return STILL_LIFE_ITEMS[nextIndex]
+    })
+  }
 
   if (!mounted) {
     // Return placeholder during SSR hydration
@@ -266,10 +265,14 @@ export default function ZenStillLife({ currentSlug = '' }) {
   }
 
   return (
-    <div className="h-full flex flex-col justify-between p-4 animate-fade-in select-none">
+    <div 
+      onClick={handleCycle}
+      title="Click to cycle Zen Still Life"
+      className="h-full flex flex-col justify-between p-4 animate-fade-in select-none cursor-pointer group"
+    >
       {/* ── Top Header of Still Life Card */}
       <div className="text-center pt-2">
-        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[0.68rem] font-serif tracking-wider bg-matcha-100/60 dark:bg-matcha-900/30 text-matcha-700 dark:text-matcha-300 border border-matcha-200/50 dark:border-matcha-800/40">
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[0.68rem] font-serif tracking-wider bg-matcha-100/60 dark:bg-matcha-900/30 text-matcha-700 dark:text-matcha-300 border border-matcha-200/50 dark:border-matcha-800/40 transition-colors group-hover:border-matcha-400 dark:group-hover:border-matcha-600">
           <span className="text-[0.6rem]">✦</span> {activeItem.kanjiTitle}
         </span>
       </div>
