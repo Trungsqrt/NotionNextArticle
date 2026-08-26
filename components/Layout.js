@@ -21,6 +21,7 @@
  */
 
 import { useState, useEffect } from 'react'
+import { usePathname } from 'next/navigation'
 import Header from './Header'
 import Sidebar from './Sidebar'
 import ReadingProgress from './ReadingProgress'
@@ -39,6 +40,10 @@ export default function Layout({
   pageTitle = '',
   pageDescription = '',
 }) {
+  const pathname = usePathname() || ''
+  const isHomePage = pathname === '/'
+  const shouldShowSidebar = showSidebar && !isHomePage
+
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
@@ -93,7 +98,7 @@ export default function Layout({
         <div className="flex pt-14 min-h-[calc(100vh-3.5rem)] flex-1">
 
           {/* ── Left Sidebar */}
-          {showSidebar && (
+          {shouldShowSidebar && (
             <Sidebar
               tableOfContents={tableOfContents}
               modules={modules}
@@ -116,7 +121,7 @@ export default function Layout({
             tabIndex={-1}
           >
             {/* Mobile sidebar toggle button (shown when sidebar exists) */}
-            {showSidebar && (
+            {shouldShowSidebar && (
               <button
                 id="mobile-sidebar-toggle"
                 type="button"
