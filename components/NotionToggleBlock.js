@@ -9,11 +9,11 @@ export default function NotionToggleBlock({ blockId, titleHtml, color, dynamicCl
   const [childrenHtml, setChildrenHtml] = useState("")
   const [error, setError] = useState(false)
 
-  const handleToggle = async (e) => {
-    const currentlyOpen = e.target.open
-    setIsOpen(currentlyOpen)
+  const handleToggleClick = async () => {
+    const nextState = !isOpen
+    setIsOpen(nextState)
 
-    if (currentlyOpen && hasChildren && !childrenHtml && !isLoading && !error) {
+    if (nextState && hasChildren && !childrenHtml && !isLoading && !error) {
       setIsLoading(true)
       try {
         const res = await fetch(`/api/notion/children?blockId=${blockId}`)
@@ -34,32 +34,59 @@ export default function NotionToggleBlock({ blockId, titleHtml, color, dynamicCl
   }
 
   return (
-    <details 
-      className={`my-3 rounded-lg border p-3 group transition-colors ${dynamicClasses || 'bg-neutral-50/60 dark:bg-neutral-800/40 border-neutral-200/50 dark:border-neutral-700/60'}`}
-      onToggle={handleToggle}
+    <div 
+      className={`my-3.5 rounded-xl border p-3.5 transition-colors duration-200 shadow-2xs ${dynamicClasses || 'bg-rice-paper-100 dark:bg-tea-slate-300 border-rice-paper-400/70 dark:border-tea-slate-50/60'}`}
     >
-      <summary className="font-medium cursor-pointer select-none text-neutral-800 dark:text-neutral-200 flex items-center gap-2">
-        <span className="text-neutral-400 group-open:text-neutral-600 transition-transform group-open:rotate-90">▸</span>
-        <span dangerouslySetInnerHTML={{ __html: titleHtml || "Toggle" }} />
-      </summary>
+      <button
+        type="button"
+        onClick={handleToggleClick}
+        className="w-full text-left font-medium cursor-pointer select-none text-ink-800 dark:text-sage-100 flex items-center gap-2.5 group focus:outline-none"
+        aria-expanded={isOpen}
+      >
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`text-matcha-600 dark:text-matcha-400 transition-transform duration-300 ease-out shrink-0 ${
+            isOpen ? 'rotate-90' : 'rotate-0'
+          }`}
+          aria-hidden="true"
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        <span className="leading-snug" dangerouslySetInnerHTML={{ __html: titleHtml || "Toggle" }} />
+      </button>
       
-      <div className="mt-3 pl-6 border-l border-neutral-300 dark:border-neutral-600 text-sm text-neutral-700 dark:text-neutral-300">
-        {!hasChildren ? (
-          <div className="italic opacity-50">Empty toggle</div>
-        ) : isLoading ? (
-          <div className="flex items-center gap-2 py-2 text-neutral-400">
-            <svg className="animate-spin h-4 w-4 text-matcha-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <span>Loading...</span>
+      <div 
+        className={`grid transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ${
+          isOpen ? 'grid-rows-[1fr] opacity-100 mt-3' : 'grid-rows-[0fr] opacity-0 mt-0 pointer-events-none'
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div className="pl-5 border-l-2 border-matcha-400/40 dark:border-matcha-700/40 text-[0.95rem] text-ink-700 dark:text-sage-200">
+            {!hasChildren ? (
+              <div className="italic opacity-50 text-xs py-1">Empty toggle</div>
+            ) : isLoading ? (
+              <div className="flex items-center gap-2 py-2 text-ink-400 dark:text-sage-500 text-xs">
+                <svg className="animate-spin h-3.5 w-3.5 text-matcha-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>Loading...</span>
+              </div>
+            ) : error ? (
+              <div className="text-red-500 py-2 text-xs">Failed to load content.</div>
+            ) : (
+              childrenHtml && <NotionContent html={childrenHtml} />
+            )}
           </div>
-        ) : error ? (
-          <div className="text-red-500 py-2 text-xs">Failed to load content.</div>
-        ) : (
-          childrenHtml && <NotionContent html={childrenHtml} />
-        )}
+        </div>
       </div>
-    </details>
+    </div>
   )
 }
