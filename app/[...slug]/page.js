@@ -25,7 +25,9 @@ export async function generateMetadata({ params }) {
   const resolvedParams = await params
   const slugArray = resolvedParams?.slug || []
   const lastSlug = slugArray[slugArray.length - 1]
-  if (!lastSlug) return { title: 'Lesson · ServiceNow Space' }
+  if (!lastSlug || /\.(ico|png|jpg|jpeg|svg|css|js|txt|map|json|xml)$/i.test(lastSlug)) {
+    return { title: 'ServiceNow Space' }
+  }
 
   try {
     const page = await getPageBySlug(lastSlug)
