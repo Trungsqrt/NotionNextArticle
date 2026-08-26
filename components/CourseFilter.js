@@ -207,7 +207,7 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
             style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}
           >
             {filteredCourses.map((course, index) => (
-              <div key={course.slug} style={{ animationDelay: `${index * 50 + 60}ms` }}>
+              <div key={course.id || `${course.slug}-${index}`} style={{ animationDelay: `${index * 50 + 60}ms` }}>
                 <CourseCard {...course} />
               </div>
             ))}
