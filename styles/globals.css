@@ -35,7 +35,7 @@
   body {
     @apply bg-rice-paper-100 text-ink-700 font-sans;
     @apply transition-colors duration-300;
-    font-weight: 430;
+    font-weight: 450;
     min-height: 100vh;
   }
 
@@ -43,7 +43,9 @@
     @apply bg-tea-slate-300 text-sage-200;
   }
 
-  strong, b, .font-semibold {
+  strong,
+  b,
+  .font-semibold {
     font-weight: 600;
   }
 
@@ -99,9 +101,11 @@
     0% {
       background-color: rgba(122, 139, 105, 0.32);
     }
+
     60% {
       background-color: rgba(122, 139, 105, 0.18);
     }
+
     100% {
       background-color: transparent;
     }
@@ -165,9 +169,17 @@
 
   /* Custom dropdown animation */
   @keyframes dropdownIn {
-    from { opacity: 0; transform: translateY(-6px) scale(0.97); }
-    to   { opacity: 1; transform: translateY(0)    scale(1);    }
+    from {
+      opacity: 0;
+      transform: translateY(-6px) scale(0.97);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
   }
+
   .animate-dropdown {
     animation: dropdownIn 0.15s cubic-bezier(0.16, 1, 0.3, 1) both;
     transform-origin: top center;

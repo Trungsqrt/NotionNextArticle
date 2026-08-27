@@ -21,20 +21,62 @@ export async function generateStaticParams() {
   }
 }
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
+const AUTHOR_NAME = 'Jun Mai - Trungsqrt'
+
 export async function generateMetadata({ params }) {
   const resolvedParams = await params
   const slugArray = resolvedParams?.slug || []
   const lastSlug = slugArray[slugArray.length - 1]
   if (!lastSlug || /\.(ico|png|jpg|jpeg|svg|css|js|txt|map|json|xml)$/i.test(lastSlug)) {
-    return { title: 'ServiceNow Space' }
+    return { title: 'ServiceNow Space · Knowledge Hub' }
   }
 
   try {
     const page = await getPageBySlug(lastSlug)
     if (!page) return { title: 'Lesson · ServiceNow Space' }
+
+    const pageTitle = page.title || 'Lesson'
+    const pageDesc = page.summary || `Deep dive into ${pageTitle} — curated ServiceNow architecture guides and notes by ${AUTHOR_NAME}.`
+    const coverUrl = typeof page.cover === 'string'
+      ? page.cover
+      : (page.cover?.external?.url || page.cover?.file?.url || `${SITE_URL}/icon.svg`)
+
+    const ogImages = coverUrl ? [{ url: coverUrl, alt: pageTitle }] : [{ url: `${SITE_URL}/icon.svg`, width: 512, height: 512, alt: pageTitle }]
+
     return {
-      title: `${page.title || 'Lesson'} · ServiceNow Space`,
-      description: page.summary || '',
+      title: `${pageTitle} · ServiceNow Knowledge Hub`,
+      description: pageDesc,
+      keywords: [
+        ...(page.tags || []),
+        page.category || 'ServiceNow',
+        'ServiceNow Architecture',
+        'ServiceNow Knowledge Hub',
+        AUTHOR_NAME,
+      ],
+      authors: [{ name: AUTHOR_NAME, url: SITE_URL }],
+      alternates: {
+        canonical: `/${lastSlug}`,
+      },
+      openGraph: {
+        type: 'article',
+        title: `${pageTitle} · ServiceNow Knowledge Hub`,
+        description: pageDesc,
+        url: `${SITE_URL}/${lastSlug}`,
+        siteName: 'ServiceNow Knowledge Hub',
+        publishedTime: page.date ? new Date(page.date).toISOString() : undefined,
+        modifiedTime: page.date ? new Date(page.date).toISOString() : undefined,
+        authors: [AUTHOR_NAME],
+        tags: page.tags || [],
+        images: ogImages,
+      },
+      twitter: {
+        card: 'summary_large_image',
+        title: pageTitle,
+        description: pageDesc,
+        creator: '@trungsqrt',
+        images: coverUrl ? [coverUrl] : [`${SITE_URL}/icon.svg`],
+      },
     }
   } catch (err) {
     return { title: 'Lesson · ServiceNow Space' }
@@ -71,8 +113,80 @@ export default async function ArticlePage({ params }) {
   const html = page.html
   const blocks = page.blocks || []
 
+  // ── JSON-LD Structured Data Schema (TechArticle + BreadcrumbList) ──────
+  const articleJsonLd = {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'TechArticle',
+        '@id': `${SITE_URL}/${lastSlug}#article`,
+        isPartOf: {
+          '@id': `${SITE_URL}/#website`,
+        },
+        headline: title,
+        description: description || `ServiceNow architecture and technical guide for ${title}.`,
+        image: coverUrl ? [coverUrl] : [`${SITE_URL}/icon.svg`],
+        datePublished: page.date ? new Date(page.date).toISOString() : undefined,
+        dateModified: page.date ? new Date(page.date).toISOString() : undefined,
+        author: {
+          '@type': 'Person',
+          name: AUTHOR_NAME,
+          url: SITE_URL,
+        },
+        publisher: {
+          '@type': 'Organization',
+          name: 'ServiceNow Knowledge Hub',
+          url: SITE_URL,
+          logo: {
+            '@type': 'ImageObject',
+            url: `${SITE_URL}/icon.svg`,
+          },
+        },
+        mainEntityOfPage: {
+          '@type': 'WebPage',
+          '@id': `${SITE_URL}/${lastSlug}`,
+        },
+        keywords: [
+          ...(page.tags || []),
+          page.category || 'ServiceNow',
+          AUTHOR_NAME,
+        ].join(', '),
+      },
+      {
+        '@type': 'BreadcrumbList',
+        '@id': `${SITE_URL}/${lastSlug}#breadcrumb`,
+        itemListElement: [
+          {
+            '@type': 'ListItem',
+            position: 1,
+            name: 'Home',
+            item: SITE_URL,
+          },
+          {
+            '@type': 'ListItem',
+            position: 2,
+            name: page.category || 'Lessons',
+            item: `${SITE_URL}/#${encodeURIComponent(page.category || 'lessons')}`,
+          },
+          {
+            '@type': 'ListItem',
+            position: 3,
+            name: title,
+            item: `${SITE_URL}/${lastSlug}`,
+          },
+        ],
+      },
+    ],
+  }
+
   return (
     <>
+      {/* ── Rich JSON-LD Schema for Google & AI Search ── */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
+      />
+
       {coverUrl && (
         <ArticleCover src={coverUrl} title={title} icon={page.icon} />
       )}

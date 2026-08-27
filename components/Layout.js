@@ -68,7 +68,7 @@ export default function Layout({
       if (!text) return
 
       // Append attribution to copied text
-      const fullText = selection.toString() + '\n\n— Trungsqrt · ServiceNow Knowledge Hub'
+      const fullText = selection.toString() + '\n\n— Jun Mai - Trungsqrt · ServiceNow Knowledge Hub'
 
       if (e.clipboardData) {
         e.preventDefault()
@@ -163,7 +163,7 @@ export default function Layout({
                   <span>Built with calm intention</span>
                 </div>
                 <p className="text-[0.72rem] text-ink-300 dark:text-sage-600">
-                  Powered by Trungsqrt
+                  Curated by Jun Mai - Trungsqrt
                 </p>
               </div>
             </footer>

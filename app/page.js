@@ -4,9 +4,21 @@ import { getAllPosts } from '../lib/notion'
 // Revalidate homepage in background every 1 hour (3600 seconds)
 export const revalidate = 3600
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
+const AUTHOR_NAME = 'Jun Mai - Trungsqrt'
+
 export const metadata = {
-  title: 'Knowledge Hub · ServiceNow Space',
-  description: 'Explore ServiceNow courses, labs, and reference cards — curated with Zen intention.',
+  title: 'ServiceNow Space · Knowledge Hub',
+  description: 'Explore curated ServiceNow architecture notes, CSDM/CMDB labs, and reference cards by Jun Mai - Trungsqrt.',
+  alternates: {
+    canonical: '/',
+  },
+  openGraph: {
+    title: 'ServiceNow Knowledge Hub · Jun Mai - Trungsqrt',
+    description: 'Master ServiceNow with calm clarity — curated lessons, labs, and reference notes.',
+    url: SITE_URL,
+    type: 'website',
+  },
 }
 
 export default async function Home() {
@@ -36,8 +48,32 @@ export default async function Home() {
     courses.flatMap(c => c.tags || c.Tags || []).filter(Boolean)
   )].sort()
 
+  // ── JSON-LD Structured Data for Course Catalog (ItemList Schema) ────────
+  const catalogJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    name: 'ServiceNow Courses & Architecture Guides',
+    description: 'Curated lessons and reference cards for ServiceNow professionals',
+    numberOfItems: courses.length,
+    itemListElement: courses.map((course, index) => {
+      const slug = course.slug || course.id
+      return {
+        '@type': 'ListItem',
+        position: index + 1,
+        name: course.title,
+        url: `${SITE_URL}/${slug}`,
+        description: course.summary || undefined,
+      }
+    }),
+  }
+
   return (
     <div className="max-w-screen-xl mx-auto px-4 md:px-8 py-10 md:py-14">
+      {/* ── Structured Data Schema for Course Collection */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(catalogJsonLd) }}
+      />
 
       {/* ── Hero */}
       <header className="mb-12 max-w-2xl animate-fade-in">
