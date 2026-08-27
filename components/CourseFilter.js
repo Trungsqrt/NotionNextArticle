@@ -10,18 +10,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import CourseCard from './CourseCard'
 
-// ── Dropdown enter animation ──────────────────────────────────────────────────
-const DROPDOWN_STYLE = `
-  @keyframes dropdownIn {
-    from { opacity: 0; transform: translateY(-6px) scale(0.97); }
-    to   { opacity: 1; transform: translateY(0)    scale(1);    }
-  }
-  .animate-dropdown {
-    animation: dropdownIn 0.15s cubic-bezier(0.16, 1, 0.3, 1) both;
-    transform-origin: top center;
-  }
-`
-
 export default function CourseFilter({ initialCourses, uniqueCategories, uniqueTags }) {
   const [selectedCategory, setSelectedCategory] = useState('')
   const [selectedTag,      setSelectedTag]      = useState('')
@@ -100,9 +88,6 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
 
   return (
     <>
-      {/* Animation keyframes — injected once */}
-      <style dangerouslySetInnerHTML={{ __html: DROPDOWN_STYLE }} />
-
       {/* ── Filter bar — no overflow-hidden so menus float freely ─────────── */}
       <div className="flex flex-wrap gap-3 mb-8 items-center">
 

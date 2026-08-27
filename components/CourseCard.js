@@ -298,6 +298,7 @@ export default function CourseCard({
               <time
                 dateTime={new Date(date).toISOString()}
                 className="text-[0.72rem] text-ink-400 dark:text-sage-600"
+                suppressHydrationWarning
               >
                 {formatDate(date)}
               </time>

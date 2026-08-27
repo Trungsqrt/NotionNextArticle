@@ -41,7 +41,7 @@ export default function RootLayout({ children }) {
       style={{ scrollBehavior: 'smooth' }}
       suppressHydrationWarning
     >
-      <body>
+      <body suppressHydrationWarning>
         <Layout>{children}</Layout>
       </body>
     </html>
