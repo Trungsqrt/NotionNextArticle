@@ -1,8 +1,9 @@
 import { notFound } from 'next/navigation'
-import { getAllPosts, getPageBySlug } from '../../lib/notion'
+import { getAllPosts, getPageBySlug, getSiblingPages } from '../../lib/notion'
 import NotionContent from '../../components/NotionContent'
 import TableOfContents from '../../components/TableOfContents'
 import ArticleCover from '../../components/ArticleCover'
+import SiblingNavigation from '../../components/SiblingNavigation'
 
 // Revalidate in background every 1 hour (3600 seconds)
 export const revalidate = 3600
@@ -112,6 +113,10 @@ export default async function ArticlePage({ params }) {
   const description = page.summary || ""
   const html = page.html
   const blocks = page.blocks || []
+
+  // ── Sibling Pages (Previous / Next Article Navigation) ──────────────────
+  // Resolved on the server: only computed when the page belongs to a parent course/module.
+  const { prevPage, nextPage } = await getSiblingPages(page)
 
   // ── JSON-LD Structured Data Schema (TechArticle + BreadcrumbList) ──────
   const articleJsonLd = {
@@ -234,6 +239,9 @@ export default async function ArticlePage({ params }) {
               </p>
             </div>
           )}
+
+          {/* ── Sibling Article Navigation (Previous / Next) ── */}
+          <SiblingNavigation prevPage={prevPage} nextPage={nextPage} />
         </article>
 
         <TableOfContents blocks={blocks} />
