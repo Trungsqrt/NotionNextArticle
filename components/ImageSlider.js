@@ -1,123 +1,183 @@
 "use client"
 
 /**
- * ImageSlider.js — Wabi-Sabi image carousel component
- * ─────────────────────────────────────────────────────
+ * ImageSlider.js — Wabi-Sabi image carousel component (v3)
+ * ──────────────────────────────────────────────────────────
  * Renders a series of images sourced from a Notion [slider] toggle block.
- * Designed with a "wabi-sabi" aesthetic: muted palette, imperfect grain
- * texture, minimal chrome, and slow crossfade transitions.
+ *
+ * v3 fix — interaction completely broken inside prose wrapper:
+ *   - Root element changed from <figure> to <div> to escape Tailwind
+ *     Typography's `.prose figure` pointer-events / margin resets.
+ *   - Removed `select-none` from wrapper (was blocking interactions in
+ *     some browsers when combined with prose styles).
+ *   - All interactive descendants explicitly carry `pointer-events-auto`
+ *     so they can never be silently disabled by an ancestor rule.
+ *   - Lightbox rendered with React portal pattern (appended to body via
+ *     useEffect) so it fully escapes overflow:hidden / z-index ancestors.
  *
  * Props:
  *   images — Array<{ url: string, caption: string }>
- *
- * Fixes applied (v2):
- *   - Inactive image layers now have pointer-events-none so they do not
- *     block clicks on the navigation chevron buttons below them.
- *   - Slide counter moved to top-LEFT so it doesn't collide with the
- *     next-image button on the top-right.
- *   - Aspect ratio changed to 16/10 for a compact cinematic feel.
- *   - Click-to-zoom lightbox added: clicking the current image opens a
- *     full-screen overlay so users can inspect fine details.
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 
 export default function ImageSlider({ images = [] }) {
-  // Index of the currently visible slide
   const [currentIndex, setCurrentIndex] = useState(0)
+  const [zoomed, setZoomed]             = useState(false)
+  // Track whether we are mounted (needed for createPortal on SSR)
+  const [mounted, setMounted]           = useState(false)
 
-  // Controls the full-screen zoom lightbox
-  const [zoomed, setZoomed] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
 
-  // --- Navigation helpers ---
+  // --- Navigation ---
 
-  /**
-   * Advance to the previous image, wrapping from first → last.
-   */
   const prev = useCallback(() => {
     setCurrentIndex(i => (i === 0 ? images.length - 1 : i - 1))
   }, [images.length])
 
-  /**
-   * Advance to the next image, wrapping from last → first.
-   */
   const next = useCallback(() => {
     setCurrentIndex(i => (i === images.length - 1 ? 0 : i + 1))
   }, [images.length])
 
-  /**
-   * Keyboard navigation:
-   *   ← / → — previous / next slide
-   *   Escape  — close zoom lightbox
-   */
+  // Keyboard: ←/→ navigate, Escape closes lightbox
   useEffect(() => {
-    function handleKey(e) {
-      if (zoomed && e.key === 'Escape') { setZoomed(false); return }
-      if (e.key === 'ArrowLeft') prev()
+    function onKey(e) {
+      if (e.key === 'Escape') { setZoomed(false); return }
+      if (e.key === 'ArrowLeft')  prev()
       if (e.key === 'ArrowRight') next()
     }
-    window.addEventListener('keydown', handleKey)
-    return () => window.removeEventListener('keydown', handleKey)
-  }, [prev, next, zoomed])
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [prev, next])
 
-  // Lock body scroll while the lightbox is open
+  // Lock body scroll while lightbox is open
   useEffect(() => {
     document.body.style.overflow = zoomed ? 'hidden' : ''
     return () => { document.body.style.overflow = '' }
   }, [zoomed])
 
-  // Guard: nothing to render when no valid images were passed
   if (!images || images.length === 0) return null
-
   const current = images[currentIndex]
 
+  // ── Lightbox (portal to <body>) ──────────────────────────────────────────
+  // Rendered via createPortal so it escapes every overflow/z-index ancestor.
+  const lightbox = zoomed && mounted && createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Zoomed image"
+      // Fixed overlay covers full viewport, sits above everything (z-[9999])
+      style={{ position: 'fixed', inset: 0, zIndex: 9999,
+               background: 'rgba(0,0,0,0.88)', display: 'flex',
+               alignItems: 'center', justifyContent: 'center',
+               padding: '1.5rem', backdropFilter: 'blur(4px)',
+               cursor: 'zoom-out', pointerEvents: 'auto' }}
+      onClick={() => setZoomed(false)}
+    >
+      {/* Close button */}
+      <button
+        type="button"
+        aria-label="Close zoom"
+        onClick={() => setZoomed(false)}
+        style={{ position: 'absolute', top: '1rem', right: '1rem',
+                 width: '2.25rem', height: '2.25rem', borderRadius: '50%',
+                 display: 'flex', alignItems: 'center', justifyContent: 'center',
+                 background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.25)',
+                 color: 'rgba(255,255,255,0.85)', cursor: 'pointer',
+                 transition: 'background 0.2s', zIndex: 10,
+                 pointerEvents: 'auto' }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" strokeWidth="2"
+             strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <line x1="18" y1="6"  x2="6"  y2="18" />
+          <line x1="6"  y1="6"  x2="18" y2="18" />
+        </svg>
+      </button>
+
+      {/* Full-resolution image — click stops propagation so it doesn't close */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={current.url}
+        alt={current.caption || `Slide ${currentIndex + 1} of ${images.length}`}
+        style={{ maxWidth: '90vw', maxHeight: '88vh', objectFit: 'contain',
+                 borderRadius: '0.75rem', boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
+                 cursor: 'default', pointerEvents: 'auto' }}
+        onClick={e => e.stopPropagation()}
+      />
+
+      {/* Caption in lightbox */}
+      {current.caption && (
+        <p style={{ position: 'absolute', bottom: '1.25rem', left: '50%',
+                    transform: 'translateX(-50%)', fontStyle: 'italic',
+                    fontSize: '0.8rem', color: 'rgba(255,255,255,0.65)',
+                    textAlign: 'center', maxWidth: '60ch', padding: '0 1rem',
+                    pointerEvents: 'none' }}>
+          {current.caption}
+        </p>
+      )}
+    </div>,
+    document.body
+  )
+
+  // ── Main slider ──────────────────────────────────────────────────────────
   return (
     <>
-      {/* ── Main slider figure ────────────────────────────────────────────── */}
-      <figure
-        className="not-prose my-8 w-full select-none"
+      {/*
+        Root: <div> not <figure> — avoids Tailwind Typography's `.prose figure`
+        resets (margin, pointer-events side effects).
+        not-prose: prevents prose typography from cascading into slider children.
+        pointer-events-auto: explicitly re-enables interaction (prose may have
+        set a parent to pointer-events:none or similar).
+      */}
+      <div
+        className="not-prose my-8 w-full pointer-events-auto"
         aria-label={`Image slider, ${images.length} image${images.length !== 1 ? 's' : ''}`}
         role="region"
       >
-        {/* ── Image stage ─────────────────────────────────────────────────── */}
-        {/*
-          max-w-xl centres the slider on wider screens so it feels like a
-          focused gallery rather than a full-bleed hero. mx-auto centres it.
-        */}
-        <div className="relative mx-auto max-w-xl overflow-hidden rounded-xl border border-rice-paper-400/60 dark:border-tea-slate-50/20 bg-rice-paper-200 dark:bg-tea-slate-300 shadow-zen-sm">
 
-          {/* Wabi-sabi grain texture overlay.
-              pointer-events-none ensures it never intercepts clicks. */}
+        {/* ── Image stage ────────────────────────────────────────────────── */}
+        <div
+          className="relative mx-auto overflow-hidden rounded-xl border border-rice-paper-400/60 dark:border-tea-slate-50/20 bg-rice-paper-200 dark:bg-tea-slate-300 shadow-zen-sm"
+          style={{ maxWidth: '36rem' }} // ~576px — compact gallery width
+        >
+
+          {/* Grain texture overlay — pointer-events-none so it never blocks */}
           <div
-            className="absolute inset-0 z-10 pointer-events-none rounded-xl opacity-[0.03] mix-blend-multiply dark:mix-blend-screen"
             aria-hidden="true"
             style={{
+              position: 'absolute', inset: 0, zIndex: 10,
+              pointerEvents: 'none', borderRadius: 'inherit',
+              opacity: 0.03,
+              mixBlendMode: 'multiply',
               backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E")`,
               backgroundSize: '200px 200px',
             }}
           />
 
           {/* Image crossfade stack.
-              BUG FIX: inactive slides get pointer-events-none so they
-              cannot intercept clicks destined for the chevron buttons. */}
-          <div className="relative w-full aspect-[16/10]">
+              Inactive slides: pointer-events-none so they never intercept
+              clicks meant for the navigation buttons behind them. */}
+          <div style={{ position: 'relative', width: '100%', aspectRatio: '16/10' }}>
             {images.map((img, idx) => (
               <div
                 key={idx}
-                className={[
-                  'absolute inset-0 transition-opacity duration-500 ease-in-out',
-                  idx === currentIndex
-                    ? 'opacity-100 pointer-events-auto'    // active: receives clicks
-                    : 'opacity-0 pointer-events-none',     // inactive: fully inert
-                ].join(' ')}
                 aria-hidden={idx !== currentIndex}
+                style={{
+                  position: 'absolute', inset: 0,
+                  transition: 'opacity 0.5s ease-in-out',
+                  opacity: idx === currentIndex ? 1 : 0,
+                  // CRITICAL: inactive slides must not intercept pointer events
+                  pointerEvents: idx === currentIndex ? 'auto' : 'none',
+                }}
               >
-                {/* Click the image itself to open the zoom lightbox */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={img.url}
                   alt={img.caption || `Slide ${idx + 1} of ${images.length}`}
-                  className="w-full h-full object-cover cursor-zoom-in"
+                  style={{ width: '100%', height: '100%', objectFit: 'cover',
+                           cursor: 'zoom-in', display: 'block' }}
                   loading={idx === 0 ? 'eager' : 'lazy'}
                   decoding="async"
                   onClick={() => setZoomed(true)}
@@ -127,78 +187,127 @@ export default function ImageSlider({ images = [] }) {
             ))}
           </div>
 
-          {/* ── Previous chevron button ──────────────────────────────────────
-               Ghost style — barely visible at rest, matcha wash on hover.
-               z-30 ensures it sits above the image layers (z-0 for images,
-               z-10 for the grain overlay). */}
+          {/* ── Previous button ─────────────────────────────────────────────
+               z-index 30 sits above image layers (z auto) and grain (z 10).
+               All styles via inline style to fully bypass prose/Tailwind
+               specificity issues. */}
           {images.length > 1 && (
             <button
               type="button"
-              onClick={prev}
               aria-label="Previous image"
-              className="absolute left-2 top-1/2 -translate-y-1/2 z-30 w-8 h-8 rounded-full flex items-center justify-center bg-white/50 dark:bg-black/30 border border-white/60 dark:border-white/10 text-neutral-600 dark:text-neutral-300 backdrop-blur-sm hover:bg-matcha-50/80 dark:hover:bg-matcha-900/50 hover:border-matcha-300/60 hover:text-matcha-700 dark:hover:text-matcha-300 transition-all duration-250 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-matcha-400/60"
+              onClick={prev}
+              style={{
+                position: 'absolute', left: '0.5rem', top: '50%',
+                transform: 'translateY(-50%)', zIndex: 30,
+                width: '2rem', height: '2rem', borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'rgba(255,255,255,0.55)',
+                border: '1px solid rgba(255,255,255,0.7)',
+                color: 'rgba(44,42,41,0.75)',
+                backdropFilter: 'blur(4px)',
+                cursor: 'pointer', pointerEvents: 'auto',
+                transition: 'background 0.2s, color 0.2s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(122,139,105,0.25)'; e.currentTarget.style.color = '#4A6741' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.55)'; e.currentTarget.style.color = 'rgba(44,42,41,0.75)' }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" strokeWidth="2.2"
+                   strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <polyline points="15 18 9 12 15 6" />
               </svg>
             </button>
           )}
 
-          {/* ── Next chevron button ──────────────────────────────────────────
-               Mirror of the previous button on the right edge. */}
+          {/* ── Next button ──────────────────────────────────────────────── */}
           {images.length > 1 && (
             <button
               type="button"
-              onClick={next}
               aria-label="Next image"
-              className="absolute right-2 top-1/2 -translate-y-1/2 z-30 w-8 h-8 rounded-full flex items-center justify-center bg-white/50 dark:bg-black/30 border border-white/60 dark:border-white/10 text-neutral-600 dark:text-neutral-300 backdrop-blur-sm hover:bg-matcha-50/80 dark:hover:bg-matcha-900/50 hover:border-matcha-300/60 hover:text-matcha-700 dark:hover:text-matcha-300 transition-all duration-250 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-matcha-400/60"
+              onClick={next}
+              style={{
+                position: 'absolute', right: '0.5rem', top: '50%',
+                transform: 'translateY(-50%)', zIndex: 30,
+                width: '2rem', height: '2rem', borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'rgba(255,255,255,0.55)',
+                border: '1px solid rgba(255,255,255,0.7)',
+                color: 'rgba(44,42,41,0.75)',
+                backdropFilter: 'blur(4px)',
+                cursor: 'pointer', pointerEvents: 'auto',
+                transition: 'background 0.2s, color 0.2s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(122,139,105,0.25)'; e.currentTarget.style.color = '#4A6741' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.55)'; e.currentTarget.style.color = 'rgba(44,42,41,0.75)' }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" strokeWidth="2.2"
+                   strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <polyline points="9 18 15 12 9 6" />
               </svg>
             </button>
           )}
 
-          {/* ── Slide counter — top-LEFT ─────────────────────────────────────
-               Moved from top-right so it doesn't overlap the next button.
-               Monospaced numerals, very faint — a quiet position marker. */}
+          {/* ── Slide counter — top-left ──────────────────────────────────── */}
           {images.length > 1 && (
             <div
-              className="absolute top-2 left-2 z-30 text-[0.6rem] font-mono tabular-nums text-white/70 dark:text-white/50 bg-black/25 dark:bg-black/40 backdrop-blur-sm px-1.5 py-0.5 rounded"
               aria-hidden="true"
+              style={{
+                position: 'absolute', top: '0.5rem', left: '0.5rem', zIndex: 30,
+                fontSize: '0.6rem', fontFamily: 'monospace', tabularNums: true,
+                color: 'rgba(255,255,255,0.75)',
+                background: 'rgba(0,0,0,0.3)',
+                backdropFilter: 'blur(4px)',
+                padding: '0.15rem 0.4rem', borderRadius: '0.25rem',
+                pointerEvents: 'none',
+              }}
             >
               {currentIndex + 1} / {images.length}
             </div>
           )}
 
-          {/* ── Zoom hint icon — bottom-right corner ────────────────────────
-               Tiny magnifier icon signals that the image is clickable. */}
+          {/* ── Zoom hint — bottom-right ─────────────────────────────────── */}
           <div
-            className="absolute bottom-2 right-2 z-30 pointer-events-none text-white/50 dark:text-white/35"
             aria-hidden="true"
+            style={{
+              position: 'absolute', bottom: '0.5rem', right: '0.5rem', zIndex: 30,
+              color: 'rgba(255,255,255,0.5)', pointerEvents: 'none',
+            }}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" strokeWidth="2"
+                 strokeLinecap="round" strokeLinejoin="round">
               <circle cx="11" cy="11" r="8" />
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              <line x1="11" y1="8" x2="11" y2="14" />
-              <line x1="8" y1="11" x2="14" y2="11" />
+              <line x1="11"  y1="8"  x2="11"   y2="14"   />
+              <line x1="8"   y1="11" x2="14"   y2="11"   />
             </svg>
           </div>
         </div>
 
-        {/* ── Caption ───────────────────────────────────────────────────────
-             min-h prevents layout shift when toggling between captioned and
-             uncaptioned slides. Italic serif text, centred, understated. */}
-        <figcaption className="mt-2.5 mx-auto max-w-xl min-h-[1.4em] text-center font-serif italic text-xs text-neutral-500 dark:text-neutral-400 leading-relaxed px-4 transition-opacity duration-300">
+        {/* ── Caption ──────────────────────────────────────────────────────── */}
+        <p
+          style={{
+            marginTop: '0.6rem', textAlign: 'center',
+            fontStyle: 'italic', fontSize: '0.78rem',
+            color: 'var(--ws-text-tertiary, #7A756E)',
+            minHeight: '1.4em', lineHeight: 1.6,
+            padding: '0 1rem',
+            transition: 'opacity 0.3s',
+            pointerEvents: 'none',
+          }}
+        >
           {current.caption || ''}
-        </figcaption>
+        </p>
 
-        {/* ── Dot indicators ──────────────────────────────────────────────── */}
+        {/* ── Dot indicators ───────────────────────────────────────────────── */}
         {images.length > 1 && (
           <div
-            className="mt-2.5 flex items-center justify-center gap-1.5"
             role="tablist"
             aria-label="Slide indicators"
+            style={{ marginTop: '0.6rem', display: 'flex',
+                     alignItems: 'center', justifyContent: 'center', gap: '0.375rem',
+                     pointerEvents: 'auto' }}
           >
             {images.map((_, idx) => (
               <button
@@ -208,65 +317,27 @@ export default function ImageSlider({ images = [] }) {
                 aria-selected={idx === currentIndex}
                 aria-label={`Go to slide ${idx + 1}`}
                 onClick={() => setCurrentIndex(idx)}
-                className={[
-                  // Active dot: elongated emerald pill (ServiceNow-inspired green)
-                  // Inactive: round muted-stone pebble
-                  'rounded-full transition-all duration-300 ease-out',
-                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-matcha-400/60',
-                  idx === currentIndex
-                    ? 'w-4 h-1.5 bg-emerald-600 dark:bg-emerald-500'
-                    : 'w-1.5 h-1.5 bg-stone-300 dark:bg-stone-600 hover:bg-stone-400 dark:hover:bg-stone-500',
-                ].join(' ')}
+                style={{
+                  borderRadius: '9999px',
+                  border: 'none', padding: 0,
+                  cursor: 'pointer',
+                  pointerEvents: 'auto',
+                  // Active: elongated emerald pill; inactive: round stone pebble
+                  width:  idx === currentIndex ? '1rem' : '0.375rem',
+                  height: '0.375rem',
+                  background: idx === currentIndex
+                    ? '#059669'              // emerald-600
+                    : 'rgba(168,162,158,0.5)', // stone-400/50
+                  transition: 'width 0.3s ease, background 0.3s ease',
+                }}
               />
             ))}
           </div>
         )}
-      </figure>
+      </div>
 
-      {/* ── Full-screen zoom lightbox ──────────────────────────────────────── */}
-      {/*
-        Rendered as a portal-like overlay outside the <figure> so it can
-        escape any overflow:hidden ancestors and cover the full viewport.
-        Click anywhere (image or backdrop) to dismiss.
-      */}
-      {zoomed && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Zoomed image"
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/85 backdrop-blur-sm cursor-zoom-out p-4"
-          onClick={() => setZoomed(false)}
-        >
-          {/* Close button — top-right corner */}
-          <button
-            type="button"
-            aria-label="Close zoom"
-            className="absolute top-4 right-4 z-10 w-9 h-9 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 border border-white/20 text-white/80 hover:text-white transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
-            onClick={() => setZoomed(false)}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-
-          {/* Zoomed image — max 90vw × 90vh, natural proportions */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={current.url}
-            alt={current.caption || `Slide ${currentIndex + 1} of ${images.length}`}
-            className="max-w-[90vw] max-h-[90vh] object-contain rounded-xl shadow-2xl cursor-default"
-            onClick={e => e.stopPropagation()} // prevent backdrop click from closing when clicking the image
-          />
-
-          {/* Caption inside lightbox */}
-          {current.caption && (
-            <p className="absolute bottom-6 left-1/2 -translate-x-1/2 text-center font-serif italic text-sm text-white/70 max-w-[70ch] px-4">
-              {current.caption}
-            </p>
-          )}
-        </div>
-      )}
+      {/* Portal lightbox — mounted outside the article DOM tree */}
+      {lightbox}
     </>
   )
 }
