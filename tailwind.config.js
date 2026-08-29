@@ -93,6 +93,22 @@ module.exports = {
     'notion-zoomable', 'cursor-zoom-in',
     // Code block IDE renderer classes
     'whitespace-pre-wrap', 'break-words', 'border-neutral-200/60', 'dark:border-neutral-800/60', 'hljs',
+    // ImageSlider v2 — active dot (emerald pill)
+    'bg-emerald-600', 'dark:bg-emerald-500', 'w-4', 'h-1.5',
+    // ImageSlider v2 — inactive dots
+    'bg-stone-300', 'dark:bg-stone-600', 'hover:bg-stone-400', 'dark:hover:bg-stone-500', 'w-1.5', 'h-1.5',
+    // ImageSlider v2 — chevron buttons
+    'hover:bg-matcha-50/80', 'dark:hover:bg-matcha-900/50',
+    'hover:border-matcha-300/60', 'hover:text-matcha-700', 'dark:hover:text-matcha-300',
+    'duration-250',
+    // ImageSlider v2 — pointer-events on inactive slides
+    'pointer-events-auto',
+    // ImageSlider v2 — image stage
+    'aspect-[16/10]', 'shadow-zen-sm', 'max-w-xl',
+    // ImageSlider v2 — caption
+    'min-h-[1.4em]',
+    // ImageSlider v2 — lightbox
+    'cursor-zoom-in', 'cursor-zoom-out', 'backdrop-blur-sm',
   ],
 
   theme: {
