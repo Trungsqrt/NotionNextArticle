@@ -93,23 +93,22 @@ module.exports = {
     'notion-zoomable', 'cursor-zoom-in',
     // Code block IDE renderer classes
     'whitespace-pre-wrap', 'break-words', 'border-neutral-200/60', 'dark:border-neutral-800/60', 'hljs',
-    // ImageSlider component — active dot (emerald/matcha-green pill)
+    // ImageSlider v2 — active dot (emerald pill)
     'bg-emerald-600', 'dark:bg-emerald-500', 'w-4', 'h-1.5',
-    // ImageSlider component — inactive dots (muted stone pebbles)
+    // ImageSlider v2 — inactive dots
     'bg-stone-300', 'dark:bg-stone-600', 'hover:bg-stone-400', 'dark:hover:bg-stone-500', 'w-1.5', 'h-1.5',
-    // ImageSlider chevron button states
-    'bg-rice-paper-100/40', 'dark:bg-tea-slate-300/40',
-    'border-rice-paper-400/40', 'dark:border-tea-slate-50/20',
-    'text-ink-500/60', 'dark:text-sage-300/60',
-    'hover:bg-matcha-50/70', 'dark:hover:bg-matcha-900/40',
-    'hover:border-matcha-300/60', 'dark:hover:border-matcha-700/50',
-    'hover:text-matcha-700', 'dark:hover:text-matcha-300',
-    // ImageSlider slide counter badge
-    'bg-tea-slate-300/50', 'dark:bg-tea-slate-200/60',
-    // ImageSlider image area
-    'aspect-[4/3]', 'shadow-zen',
-    // ImageSlider caption typography
-    'min-h-[1.5em]',
+    // ImageSlider v2 — chevron buttons
+    'hover:bg-matcha-50/80', 'dark:hover:bg-matcha-900/50',
+    'hover:border-matcha-300/60', 'hover:text-matcha-700', 'dark:hover:text-matcha-300',
+    'duration-250',
+    // ImageSlider v2 — pointer-events on inactive slides
+    'pointer-events-auto',
+    // ImageSlider v2 — image stage
+    'aspect-[16/10]', 'shadow-zen-sm', 'max-w-xl',
+    // ImageSlider v2 — caption
+    'min-h-[1.4em]',
+    // ImageSlider v2 — lightbox
+    'cursor-zoom-in', 'cursor-zoom-out', 'backdrop-blur-sm',
   ],
 
   theme: {
