@@ -13,6 +13,7 @@ import { useEffect, useRef } from 'react'
 import parse from 'html-react-parser'
 import NotionCodeBlock from './NotionCodeBlock'
 import NotionToggleBlock from './NotionToggleBlock'
+import ImageSlider from './ImageSlider'
 
 // ── Lightweight zoom lightbox ──────────────────────────────────────────────
 function useLightbox(containerRef) {
@@ -157,6 +158,18 @@ export default function NotionContent({ html, className }) {
           }
         } catch (err) {
           console.error('Failed to parse NotionToggleBlock props:', err)
+        }
+      } else if (domNode.attribs['data-notion-component'] === 'ImageSlider') {
+        // Replace the sentinel div emitted by the custom_slider renderer
+        // with the interactive ImageSlider client component.
+        try {
+          const rawProps = domNode.attribs['data-props']
+          if (rawProps) {
+            const props = JSON.parse(rawProps)
+            return <ImageSlider images={props.images} />
+          }
+        } catch (err) {
+          console.error('Failed to parse ImageSlider props:', err)
         }
       }
     },
