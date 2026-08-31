@@ -280,6 +280,30 @@
   border-color: var(--ws-border-soft) !important;
 }
 
+/* ── Heading Inline Code Refinements (H1 - H6) ── */
+h1 code,
+h2 code,
+h3 code,
+h4 code,
+h5 code,
+h6 code,
+.notion-h1 code,
+.notion-h2 code,
+.notion-h3 code,
+.notion-h4 code,
+.notion-h5 code,
+.notion-h6 code {
+  font-size: 0.82em !important;
+  font-weight: 500 !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  vertical-align: 0.05em !important;
+  line-height: normal !important;
+  padding: 0.12em 0.38em !important;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
 /* ── Bold */
 .notion-bold {
   font-weight: 600 !important;
@@ -1046,3 +1070,60 @@ blockquote:hover {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 19. MERMAID DIAGRAMS — Zen & Wabi-Sabi Styling
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.mermaid-diagram-container {
+  border-radius: var(--ws-radius-lg, 12px);
+  overflow-x: auto;
+  transition: background-color var(--ws-transition-base), border-color var(--ws-transition-base);
+}
+
+.mermaid-diagram-container svg {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block;
+  margin: 0 auto;
+  opacity: 0.92;
+  transition: opacity var(--ws-transition-fast);
+}
+
+.mermaid-diagram-container svg:hover {
+  opacity: 1;
+}
+
+/* Softened node geometry */
+.mermaid-diagram-container svg .node rect,
+.mermaid-diagram-container svg .node circle,
+.mermaid-diagram-container svg .node ellipse,
+.mermaid-diagram-container svg .node polygon,
+.mermaid-diagram-container svg .node path {
+  rx: 8px !important;
+  ry: 8px !important;
+  stroke-width: 1.2px !important;
+}
+
+/* Subgraph cluster containers */
+.mermaid-diagram-container svg .cluster rect {
+  rx: 10px !important;
+  ry: 10px !important;
+  stroke-width: 1.2px !important;
+}
+
+/* Connectors and edge paths */
+.mermaid-diagram-container svg .flowchart-link,
+.mermaid-diagram-container svg .edgePath .path,
+.mermaid-diagram-container svg path.link,
+.mermaid-diagram-container svg path.connection {
+  stroke-width: 1.2px !important;
+}
+
+/* Flowchart and sequence diagram labels & text */
+.mermaid-diagram-container svg text {
+  font-family: var(--font-serif, "Noto Serif JP", Georgia, serif) !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.01em !important;
+}
+
