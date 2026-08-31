@@ -115,7 +115,7 @@ export default async function ArticlePage({ params }) {
   const blocks = page.blocks || []
 
   // ── Sibling Pages (Previous / Next Article Navigation) ──────────────────
-  // Resolved on the server: only computed when the page belongs to a parent course/module.
+  // Resolved on the server using Notion Block API for nested child pages.
   const { prevPage, nextPage } = await getSiblingPages(page)
 
   // ── JSON-LD Structured Data Schema (TechArticle + BreadcrumbList) ──────
