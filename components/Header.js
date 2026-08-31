@@ -1,9 +1,9 @@
 'use client'
 
 /**
- * Header.js — Wabi-Sabi Matcha Navbar
- * ─────────────────────────────────────
- * A serene, uncluttered top navigation bar for the ServiceNow Knowledge Hub.
+ * Header.js — Wabi-Sabi Matcha & "Moss & Ink" Navbar
+ * ─────────────────────────────────────────────────
+ * A quiet, Japanese editorial top navigation bar for the ServiceNow Knowledge Hub.
  * Props: none required — reads from Next.js router and site config env vars.
  *
  * IMPORTANT: Does NOT alter any NotionNext data props or recordMap.
@@ -16,7 +16,7 @@ import { usePathname } from 'next/navigation'
 // ── Icon helpers (inline SVGs — no icon library dependency)
 const SearchIcon = () => (
   <svg
-    width="16" height="16" viewBox="0 0 24 24"
+    width="15" height="15" viewBox="0 0 24 24"
     fill="none" stroke="currentColor" strokeWidth="2"
     strokeLinecap="round" strokeLinejoin="round"
     aria-hidden="true"
@@ -27,8 +27,8 @@ const SearchIcon = () => (
 )
 
 const SunIcon = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
-    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
     aria-hidden="true">
     <circle cx="12" cy="12" r="4" />
     <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
@@ -37,15 +37,15 @@ const SunIcon = () => (
 
 const MoonIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
     aria-hidden="true">
     <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
   </svg>
 )
 
 const MenuIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+  <svg width="19" height="19" viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
     aria-hidden="true">
     <line x1="3" y1="6" x2="21" y2="6" />
     <line x1="3" y1="12" x2="21" y2="12" />
@@ -54,8 +54,8 @@ const MenuIcon = () => (
 )
 
 const CloseIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-    stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+  <svg width="19" height="19" viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
     aria-hidden="true">
     <line x1="18" y1="6" x2="6" y2="18" />
     <line x1="6" y1="6" x2="18" y2="18" />
@@ -67,11 +67,11 @@ const MatchaLeaf = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <path
       d="M12 22C12 22 4 17 4 10C4 6 7.5 3 12 3C16.5 3 20 6 20 10C20 17 12 22 12 22Z"
-      fill="rgba(122,139,105,0.85)"
+      className="fill-matcha-500/85 dark:fill-matcha-400/90"
       stroke="none"
     />
-    <path d="M12 22L12 8" stroke="rgba(74,87,61,0.6)" strokeWidth="1.5" strokeLinecap="round" />
-    <path d="M12 14C12 14 9 12 8 9" stroke="rgba(74,87,61,0.4)" strokeWidth="1" strokeLinecap="round" />
+    <path d="M12 22L12 8" className="stroke-matcha-700/60 dark:stroke-matcha-700" strokeWidth="1.5" strokeLinecap="round" />
+    <path d="M12 14C12 14 9 12 8 9" className="stroke-matcha-700/40 dark:stroke-matcha-700/70" strokeWidth="1" strokeLinecap="round" />
   </svg>
 )
 
@@ -95,16 +95,13 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
 
-  // Initialise dark mode from localStorage or system pref
+  // Sync dark mode state on mount
   useEffect(() => {
-    const saved = localStorage.getItem('ws-theme')
-    const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    const dark = saved ? saved === 'dark' : systemDark
-    setIsDark(dark)
-    document.documentElement.classList.toggle('dark', dark)
+    const isCurrentlyDark = document.documentElement.classList.contains('dark')
+    setIsDark(isCurrentlyDark)
   }, [])
 
-  // Scroll shadow
+  // Scroll state
   useEffect(() => {
     const handler = () => setIsScrolled(window.scrollY > 8)
     window.addEventListener('scroll', handler, { passive: true })
@@ -143,11 +140,10 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
         id="site-header"
         className={[
           'fixed top-0 inset-x-0 z-50 h-14',
-          'bg-rice-paper-100/88 dark:bg-tea-slate-400/88',
-          'backdrop-blur-md',
-          'border-b border-rice-paper-400/60 dark:border-tea-slate-50/60',
-          'transition-all duration-300',
-          isScrolled ? 'shadow-zen-sm' : 'shadow-none',
+          'bg-rice-paper-100/90 dark:bg-tea-slate-300',
+          'border-b border-rice-paper-400/60 dark:border-tea-slate-50/40',
+          'transition-colors duration-200',
+          isScrolled ? 'shadow-zen-sm dark:shadow-none' : 'shadow-none',
         ].join(' ')}
       >
         <div className="max-w-screen-xl mx-auto h-full px-4 md:px-6 flex items-center gap-4">
@@ -159,10 +155,10 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
             className="flex items-center gap-2.5 flex-shrink-0 group"
             aria-label="ServiceNow Knowledge Hub — Home"
           >
-            <span className="transition-transform duration-300 group-hover:scale-110">
+            <span className="transition-transform duration-200 group-hover:scale-105">
               <MatchaLeaf />
             </span>
-            <span className="font-serif font-medium text-[0.92rem] tracking-wide text-ink-700 dark:text-sage-200 leading-none">
+            <span className="font-serif font-medium text-[0.92rem] tracking-wide text-ink-700 dark:text-sage-100 leading-none">
               <span className="text-matcha-500 dark:text-matcha-400">SN</span>
               {' '}Space
             </span>
@@ -173,44 +169,52 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
             className="hidden md:flex items-center gap-1 ml-4"
             aria-label="Primary navigation"
           >
-            {NAV_LINKS.map(({ href, label }) => (
-              <Link
-                key={href}
-                href={href}
-                id={`header-nav-${label.toLowerCase()}`}
-                className={[
-                  'px-3 py-1.5 rounded-zen text-[0.83rem] font-medium',
-                  'transition-all duration-200',
-                  isActive(href)
-                    ? 'bg-matcha-100/80 dark:bg-matcha-700/30 text-matcha-500 dark:text-matcha-300'
-                    : 'text-ink-500 dark:text-sage-300 hover:bg-rice-paper-300/70 dark:hover:bg-tea-slate-200/50 hover:text-ink-700 dark:hover:text-sage-100',
-                ].join(' ')}
-              >
-                {label}
-              </Link>
-            ))}
+            {NAV_LINKS.map(({ href, label }) => {
+              const active = isActive(href)
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  id={`header-nav-${label.toLowerCase()}`}
+                  className={[
+                    'px-3 py-1.5 rounded-[6px] text-[0.83rem] font-medium tracking-wide',
+                    'transition-all duration-200 ease-out',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-matcha-500/50 dark:focus-visible:ring-matcha-400/60',
+                    active
+                      ? 'bg-matcha-100/80 text-matcha-600 dark:bg-tea-slate-200/80 dark:text-sage-100 dark:border dark:border-matcha-600/40'
+                      : 'text-ink-500 dark:text-sage-400 hover:bg-rice-paper-300/60 dark:hover:bg-tea-slate-200/40 hover:text-ink-700 dark:hover:text-sage-200',
+                  ].join(' ')}
+                >
+                  {label}
+                </Link>
+              )
+            })}
           </nav>
 
           {/* ── Spacer */}
           <div className="flex-1" />
 
-          {/* ── Search Bar */}
+          {/* ── Search Control */}
           <div className="relative hidden md:flex items-center">
             <div
               className={[
-                'flex items-center gap-2 rounded-zen',
-                'border border-rice-paper-400/80 dark:border-tea-slate-50/70',
-                'bg-rice-paper-200/70 dark:bg-tea-slate-300/70',
-                'transition-all duration-300',
-                searchOpen ? 'w-52' : 'w-36',
+                'flex items-center gap-2 rounded-[6px]',
+                'border border-rice-paper-400/80 dark:border-tea-slate-50/50',
+                'bg-rice-paper-200/60 dark:bg-tea-slate-200/40',
+                'transition-all duration-250 ease-out',
+                'focus-within:border-matcha-500/60 dark:focus-within:border-matcha-600/50 dark:focus-within:bg-tea-slate-200/70',
+                searchOpen
+                  ? 'w-56 dark:bg-tea-slate-200/70 dark:border-matcha-600/40'
+                  : 'w-36 hover:border-rice-paper-500 dark:hover:border-tea-slate-50/70',
               ].join(' ')}
             >
               <button
                 id="header-search-toggle"
                 type="button"
                 onClick={() => setSearchOpen(v => !v)}
-                className="p-2 text-ink-400 dark:text-sage-400 hover:text-matcha-500 dark:hover:text-matcha-300 transition-colors"
+                className="p-2 text-ink-400 dark:text-sage-500 hover:text-matcha-500 dark:hover:text-matcha-400 transition-colors duration-200 ease-out flex items-center justify-center shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-matcha-500/50 dark:focus-visible:ring-matcha-400/60 rounded-[4px]"
                 aria-label="Toggle search"
+                title="Search (Esc to close)"
               >
                 <SearchIcon />
               </button>
@@ -221,10 +225,10 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 className={[
-                  'bg-transparent text-[0.82rem] text-ink-700 dark:text-sage-200',
+                  'bg-transparent text-[0.82rem] text-ink-700 dark:text-sage-100',
                   'placeholder:text-ink-300 dark:placeholder:text-sage-500',
-                  'outline-none border-none pr-2 w-full',
-                  'transition-all duration-300',
+                  'outline-none border-none pr-2.5 w-full',
+                  'transition-opacity duration-200 ease-out',
                   searchOpen ? 'opacity-100' : 'opacity-0 pointer-events-none',
                 ].join(' ')}
                 aria-label="Search knowledge base"
@@ -232,23 +236,25 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
             </div>
           </div>
 
-          {/* ── Dark Mode Toggle */}
+          {/* ── Theme Toggle Button */}
           <button
             id="header-theme-toggle"
             type="button"
             onClick={toggleDark}
             className={[
-              'w-8 h-8 flex items-center justify-center rounded-zen',
+              'w-8 h-8 flex items-center justify-center rounded-[6px]',
               'text-ink-400 dark:text-sage-400',
-              'hover:bg-rice-paper-300/70 dark:hover:bg-tea-slate-200/50',
-              'hover:text-matcha-500 dark:hover:text-matcha-300',
-              'transition-all duration-200',
+              'border border-transparent hover:border-rice-paper-400/60 dark:hover:border-tea-slate-50/60',
+              'hover:bg-rice-paper-300/60 dark:hover:bg-tea-slate-200/60',
+              'hover:text-matcha-600 dark:hover:text-matcha-300',
+              'transition-all duration-250 ease-out',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-matcha-500/50 dark:focus-visible:ring-matcha-400/60',
             ].join(' ')}
-            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={isDark ? 'Switch to daylight theme' : 'Switch to Moss & Ink dark theme'}
             title={isDark ? 'Light mode' : 'Dark mode'}
           >
             <span
-              className="transition-all duration-300"
+              className="transition-transform duration-300 ease-out"
               style={{ display: 'flex', alignItems: 'center' }}
             >
               {isDark ? <SunIcon /> : <MoonIcon />}
@@ -261,10 +267,12 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
             type="button"
             onClick={onMenuToggle}
             className={[
-              'md:hidden w-8 h-8 flex items-center justify-center rounded-zen',
+              'md:hidden w-8 h-8 flex items-center justify-center rounded-[6px]',
               'text-ink-500 dark:text-sage-400',
-              'hover:bg-rice-paper-300/70 dark:hover:bg-tea-slate-200/50',
-              'transition-colors duration-200',
+              'hover:bg-rice-paper-300/60 dark:hover:bg-tea-slate-200/50',
+              'hover:text-ink-700 dark:hover:text-sage-200',
+              'transition-colors duration-200 ease-out',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-matcha-500/50 dark:focus-visible:ring-matcha-400/60',
             ].join(' ')}
             aria-label={isMenuOpen ? 'Close menu' : 'Open menu'}
             aria-expanded={isMenuOpen}
@@ -279,14 +287,14 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
         id="header-mobile-menu"
         className={[
           'fixed inset-0 z-40 md:hidden',
-          'transition-all duration-300',
+          'transition-opacity duration-200',
           isMenuOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none',
         ].join(' ')}
         aria-hidden={!isMenuOpen}
       >
         {/* Backdrop */}
         <div
-          className="absolute inset-0 bg-ink-700/20 dark:bg-black/40 backdrop-blur-sm"
+          className="absolute inset-0 bg-ink-700/20 dark:bg-black/50"
           onClick={onMenuToggle}
         />
 
@@ -294,41 +302,46 @@ export default function Header({ onMenuToggle, isMenuOpen }) {
         <nav
           className={[
             'absolute top-14 left-0 right-0',
-            'bg-rice-paper-100/98 dark:bg-tea-slate-300/98',
-            'border-b border-rice-paper-400/60 dark:border-tea-slate-50/60',
+            'bg-rice-paper-100 dark:bg-tea-slate-300',
+            'border-b border-rice-paper-400/60 dark:border-tea-slate-50/40',
             'px-4 py-3 flex flex-col gap-1',
-            'transition-transform duration-300 ease-out',
+            'transition-transform duration-200 ease-out',
             isMenuOpen ? 'translate-y-0' : '-translate-y-2',
           ].join(' ')}
           aria-label="Mobile navigation"
         >
           {/* Mobile search */}
-          <div className="flex items-center gap-2 mb-2 px-2 py-2 rounded-zen border border-rice-paper-400/70 dark:border-tea-slate-50/60 bg-rice-paper-200/60 dark:bg-tea-slate-400/60">
-            <SearchIcon />
+          <div className="flex items-center gap-2 mb-2 px-2.5 py-2 rounded-[6px] border border-rice-paper-400/70 dark:border-tea-slate-50/50 bg-rice-paper-200/60 dark:bg-tea-slate-200/40">
+            <span className="text-ink-400 dark:text-sage-500">
+              <SearchIcon />
+            </span>
             <input
               id="header-mobile-search"
               type="search"
               placeholder="Search knowledge base…"
-              className="flex-1 bg-transparent text-[0.85rem] text-ink-700 dark:text-sage-200 placeholder:text-ink-300 dark:placeholder:text-sage-500 outline-none"
+              className="flex-1 bg-transparent text-[0.85rem] text-ink-700 dark:text-sage-100 placeholder:text-ink-300 dark:placeholder:text-sage-500 outline-none"
             />
           </div>
 
-          {NAV_LINKS.map(({ href, label }) => (
-            <Link
-              key={href}
-              href={href}
-              onClick={onMenuToggle}
-              className={[
-                'px-3 py-2.5 rounded-zen text-[0.9rem] font-medium',
-                'transition-colors duration-200',
-                isActive(href)
-                  ? 'bg-matcha-100/80 dark:bg-matcha-700/30 text-matcha-500 dark:text-matcha-300'
-                  : 'text-ink-600 dark:text-sage-300 hover:bg-rice-paper-300/70 dark:hover:bg-tea-slate-200/50',
-              ].join(' ')}
-            >
-              {label}
-            </Link>
-          ))}
+          {NAV_LINKS.map(({ href, label }) => {
+            const active = isActive(href)
+            return (
+              <Link
+                key={href}
+                href={href}
+                onClick={onMenuToggle}
+                className={[
+                  'px-3 py-2.5 rounded-[6px] text-[0.88rem] font-medium tracking-wide',
+                  'transition-colors duration-150 ease-out',
+                  active
+                    ? 'bg-matcha-100/80 text-matcha-600 dark:bg-tea-slate-200/80 dark:text-sage-100 dark:border dark:border-matcha-600/30'
+                    : 'text-ink-600 dark:text-sage-400 hover:bg-rice-paper-300/60 dark:hover:bg-tea-slate-200/40 hover:text-ink-700 dark:hover:text-sage-200',
+                ].join(' ')}
+              >
+                {label}
+              </Link>
+            )
+          })}
         </nav>
       </div>
     </>

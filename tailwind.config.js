@@ -134,21 +134,21 @@ module.exports = {
           600: '#C8C1B4',
         },
 
-        // Matcha — the key accent green
+        // Matcha & Moss — the key accent green
         matcha: {
           50:  '#F4F6F1',
           100: '#E6EBE0',
           200: '#CDDAC4',
-          300: '#AFC9A3',
-          400: '#8E9B7B',   // ← primary accent
-          500: '#7A8B69',   // ← hover / strong accent
-          600: '#647256',
-          700: '#4A573D',   // ← dark mode accent
-          800: '#3A4530',
-          900: '#2A3323',
+          300: '#9DAA82',   // ← luminous moss highlight
+          400: '#87936E',   // ← primary moss accent (dark mode)
+          500: '#7A8B69',   // ← primary light mode accent
+          600: '#68745A',   // ← muted moss / solid borders
+          700: '#454D3D',   // ← faint moss / dark badge bg
+          800: '#343B2E',
+          900: '#23281E',
         },
 
-        // Ink — deep charcoal for text
+        // Ink — deep charcoal for text (light mode)
         ink: {
           50:  '#F5F4F3',
           100: '#E8E6E3',
@@ -157,29 +157,35 @@ module.exports = {
           400: '#7A756E',
           500: '#524E47',
           600: '#3D3A34',
-          700: '#2C2A29',   // ← primary dark text
+          700: '#2C2A29',   // ← primary dark text (light mode)
           800: '#1E1D1B',
           900: '#121110',
         },
 
-        // Tea Slate — dark mode backgrounds
+        // Tea Slate & Sumi Ink — dark mode backgrounds & surfaces ("Moss & Ink")
         'tea-slate': {
-          50:  '#2A2B28',
-          100: '#242520',
-          200: '#1F201C',
-          300: '#1A1B18',   // ← primary dark bg
-          400: '#161714',   // ← deepest dark bg
-          500: '#111210',
+          50:  '#2B2C27',   // ← raised surface (menus, dropdowns, table headers)
+          100: '#262722',   // ← intermediate surface
+          200: '#242520',   // ← primary surface (cards, sidebar, toggles)
+          300: '#1C1D1A',   // ← primary dark page canvas background
+          400: '#161714',   // ← deepest code / terminal bg
+          500: '#11120F',   // ← deepest sumi ink tone
         },
 
-        // Sage — muted supporting tones for dark mode text
+        // Sage & Parchment — dark mode typography ("Moss & Ink")
         sage: {
-          100: '#F0F1EC',
-          200: '#D8DAD3',   // ← dark mode body text
-          300: '#BEC1B7',
-          400: '#9DA096',
-          500: '#7C7F76',
-          600: '#5E6159',
+          100: '#E5E1D7',   // ← headings & high-emphasis text (warm ivory)
+          200: '#D0CCC1',   // ← dark mode body text (soft parchment)
+          300: '#B8B5AA',   // ← active nav & sub-headings
+          400: '#A8A59A',   // ← secondary & summary text
+          500: '#7A786E',   // ← muted captions, timestamps
+          600: '#5C5A52',   // ← subtle decorative text
+        },
+
+        // Earth & Wabi-Sabi Accents
+        earth: {
+          beige: '#C5BBA5', // ← warm beige
+          rust:  '#9A7258', // ← muted rust
         },
       },
 

@@ -700,9 +700,11 @@ export default function ZenStillLife({ currentSlug = '' }) {
       </svg>
 
       {/* ── Artwork Centerpiece */}
-      <div className={`my-auto py-2 transition-all duration-300 ease-out group-hover:scale-[1.04] ${
-        isTransitioning ? 'opacity-0 scale-95' : 'opacity-100 scale-100'
-      }`}>
+      <div
+        className={`my-auto py-2 transition-transform duration-300 ease-out transform-gpu will-change-transform group-hover:scale-[1.04] ${
+          isTransitioning ? 'opacity-0 scale-95 transition-opacity duration-150' : 'opacity-100'
+        }`}
+      >
         {activeItem.renderSvg()}
       </div>
 

@@ -76,17 +76,20 @@ export default async function Home() {
       />
 
       {/* ── Hero */}
-      <header className="mb-12 max-w-2xl animate-fade-in">
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-matcha-500 dark:text-matcha-400 font-semibold text-[0.75rem] uppercase tracking-widest">
-            ✦ &nbsp;ServiceNow Space
+      <header className="mb-10 md:mb-14 max-w-2xl animate-fade-in relative">
+        <div className="flex items-center gap-2.5 mb-3.5">
+          <span className="w-3.5 h-px bg-matcha-400/60 dark:bg-matcha-600/60" aria-hidden="true" />
+          <span className="text-[0.72rem] uppercase tracking-[0.2em] font-medium text-matcha-600 dark:text-matcha-400 select-none">
+            ServiceNow Space
           </span>
         </div>
-        <h1 className="font-serif font-medium text-3xl md:text-4xl text-ink-700 dark:text-sage-100 leading-tight mb-4 text-balance">
+        <h1 className="font-serif font-medium text-3xl sm:text-4xl md:text-[2.6rem] text-ink-700 dark:text-sage-100 leading-[1.28] tracking-[-0.015em] mb-4 text-balance">
           Master ServiceNow with{' '}
-          <span className="text-matcha-500 dark:text-matcha-400">calm clarity</span>
+          <span className="text-matcha-600 dark:text-matcha-400 font-normal">
+            calm clarity
+          </span>
         </h1>
-        <p className="text-[1rem] leading-relaxed text-ink-400 dark:text-sage-400 max-w-prose">
+        <p className="text-[0.98rem] md:text-[1.02rem] leading-[1.8] text-ink-500 dark:text-sage-400 max-w-prose">
           A serene knowledge space for IT professionals navigating ServiceNow's vast ecosystem.
           Curated lessons, labs, and reference notes — structured for deep learning.
         </p>
