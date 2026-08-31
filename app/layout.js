@@ -147,6 +147,12 @@ export default function RootLayout({ children }) {
       suppressHydrationWarning
     >
       <head>
+        <script
+          id="theme-initializer"
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var s=localStorage.getItem('ws-theme');var m=window.matchMedia('(prefers-color-scheme: dark)').matches;if(s==='dark'||(!s&&m)){document.documentElement.classList.add('dark');}else{document.documentElement.classList.remove('dark');}}catch(e){}})();`,
+          }}
+        />
         <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM-friendly text version" />
         <script
           type="application/ld+json"

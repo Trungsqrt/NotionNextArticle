@@ -14,70 +14,7 @@
 import { useState, useEffect, useRef, useId, useCallback } from 'react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-
-// ── Mermaid diagram renderer ───────────────────────────────────────────────
-function MermaidChart({ code, isDark }) {
-  const containerRef = useRef(null)
-  const [svg, setSvg] = useState('')
-  const [error, setError] = useState(null)
-  const chartId = useId().replace(/:/g, '_')
-
-  useEffect(() => {
-    if (!code) return
-    let cancelled = false
-
-    async function render() {
-      try {
-        const mermaid = (await import('mermaid')).default
-        mermaid.initialize({
-          startOnLoad: false,
-          theme: isDark ? 'dark' : 'neutral',
-          securityLevel: 'loose',
-          fontFamily: 'inherit',
-        })
-        const { svg: renderedSvg } = await mermaid.render(`mermaid-${chartId}`, code)
-        if (!cancelled) setSvg(renderedSvg)
-      } catch (err) {
-        if (!cancelled) setError(String(err?.message || err))
-      }
-    }
-
-    render()
-    return () => { cancelled = true }
-  }, [code, chartId, isDark])
-
-  if (error) {
-    return (
-      <div className="my-8 p-4 rounded-xl border border-red-200/80 dark:border-red-800/60 bg-red-50/80 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm font-mono">
-        <span className="font-semibold">Mermaid error: </span>{error}
-      </div>
-    )
-  }
-
-  if (!svg) {
-    return (
-      <div className="my-8 flex items-center justify-center py-12 text-neutral-400 dark:text-neutral-600">
-        <svg className="animate-spin mr-2" width="18" height="18" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-        </svg>
-        <span className="text-sm">Rendering diagram…</span>
-      </div>
-    )
-  }
-
-  return (
-    <div
-      ref={containerRef}
-      className={`my-8 flex justify-center items-center p-6 rounded-xl border overflow-x-auto shadow-sm transition-colors duration-200 ${
-        isDark 
-          ? 'bg-[#1d2021] border-neutral-800/90 text-neutral-200' 
-          : 'bg-white border-neutral-200/90 text-neutral-800'
-      }`}
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
-  )
-}
+import MermaidDiagram from './MermaidDiagram'
 
 export default function NotionCodeBlock({ codeText, language, caption }) {
   const [isWrapped, setIsWrapped] = useState(false)
@@ -137,7 +74,7 @@ export default function NotionCodeBlock({ codeText, language, caption }) {
   if (normalizedLang === 'mermaid') {
     return (
       <div className="not-prose my-6">
-        <MermaidChart code={codeText || ''} isDark={isDark} />
+        <MermaidDiagram code={codeText || ''} isDark={isDark} />
         {caption && (
           <div
             className="mt-1 text-center text-xs text-neutral-400 dark:text-neutral-500 italic"

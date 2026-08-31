@@ -224,7 +224,7 @@ export default async function ArticlePage({ params }) {
                 'prose-strong:text-ink-700 dark:prose-strong:text-sage-100 prose-strong:font-semibold',
                 'prose-ul:my-4 prose-ol:my-4 prose-li:my-1.5 prose-li:text-ink-700 dark:prose-li:text-sage-200 prose-li:text-[0.98rem]',
                 'prose-code:text-matcha-700 dark:prose-code:text-matcha-300 prose-code:bg-rice-paper-300/50 dark:prose-code:bg-tea-slate-200/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none',
-                'prose-blockquote:border-l-3 prose-blockquote:border-matcha-500 prose-blockquote:pl-4 prose-blockquote:italic prose-blockquote:text-ink-500 dark:prose-blockquote:text-sage-300',
+                'prose-blockquote:border-l-2 prose-blockquote:border-matcha-500 dark:prose-blockquote:border-matcha-400 prose-blockquote:pl-5 prose-blockquote:pr-4 prose-blockquote:py-3.5 prose-blockquote:font-serif prose-blockquote:italic prose-blockquote:text-[0.96rem] prose-blockquote:leading-[1.8] prose-blockquote:text-ink-700 dark:prose-blockquote:text-sage-100 prose-blockquote:bg-rice-paper-200/60 dark:prose-blockquote:bg-tea-slate-200/50 prose-blockquote:rounded-r-[6px] prose-blockquote:border-y prose-blockquote:border-r prose-blockquote:border-transparent dark:prose-blockquote:border-tea-slate-50/30',
               ].join(' ')}
             />
           ) : (

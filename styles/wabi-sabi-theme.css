@@ -77,42 +77,42 @@
   --ws-shadow-lg:   0 8px 24px rgba(44, 42, 41, 0.10), 0 4px 8px rgba(44, 42, 41, 0.05);
 }
 
-/* Dark Mode token overrides */
+/* Dark Mode token overrides — "Moss & Ink" */
 .dark {
-  --ws-bg-primary:        #1A1B18;
-  --ws-bg-secondary:      #1F201C;
-  --ws-bg-tertiary:       #242520;
-  --ws-bg-callout:        #1F221B;
-  --ws-bg-code:           #111310;
-  --ws-bg-hover:          rgba(74, 87, 61, 0.18);
-  --ws-bg-highlight:      rgba(74, 87, 61, 0.25);
-  --ws-bg-yellow:         rgba(74, 87, 61, 0.22);
-  --ws-bg-blue:           rgba(60, 80, 120, 0.18);
-  --ws-bg-red:            rgba(140, 60, 55, 0.18);
-  --ws-bg-purple:         rgba(100, 70, 120, 0.18);
-  --ws-bg-pink:           rgba(140, 75, 95, 0.18);
-  --ws-bg-orange:         rgba(150, 95, 50, 0.18);
-  --ws-bg-green:          rgba(55, 100, 65, 0.18);
-  --ws-bg-gray:           rgba(90, 90, 90, 0.15);
+  --ws-bg-primary:        #1C1D1A;
+  --ws-bg-secondary:      #242520;
+  --ws-bg-tertiary:       #2B2C27;
+  --ws-bg-callout:        #20221D;
+  --ws-bg-code:           #161714;
+  --ws-bg-hover:          rgba(135, 147, 110, 0.08);
+  --ws-bg-highlight:      rgba(135, 147, 110, 0.16);
+  --ws-bg-yellow:         rgba(197, 187, 165, 0.12);
+  --ws-bg-blue:           rgba(90, 110, 130, 0.14);
+  --ws-bg-red:            rgba(154, 114, 88, 0.14);
+  --ws-bg-purple:         rgba(120, 95, 135, 0.14);
+  --ws-bg-pink:           rgba(150, 100, 115, 0.14);
+  --ws-bg-orange:         rgba(165, 115, 75, 0.14);
+  --ws-bg-green:          rgba(135, 147, 110, 0.14);
+  --ws-bg-gray:           rgba(120, 120, 115, 0.10);
 
-  --ws-text-primary:      #D8DAD3;
-  --ws-text-secondary:    #BEC1B7;
-  --ws-text-tertiary:     #9DA096;
-  --ws-text-muted:        #7C7F76;
-  --ws-text-accent:       #AFC9A3;
+  --ws-text-primary:      #E5E1D7;
+  --ws-text-secondary:    #D0CCC1;
+  --ws-text-tertiary:     #A8A59A;
+  --ws-text-muted:        #7A786E;
+  --ws-text-accent:       #87936E;
 
-  --ws-matcha-primary:    #6A7B5A;
-  --ws-matcha-light:      #8E9B7B;
-  --ws-matcha-muted:      #4A573D;
-  --ws-matcha-faint:      #2A3323;
+  --ws-matcha-primary:    #87936E;
+  --ws-matcha-light:      #9DAA82;
+  --ws-matcha-muted:      #68745A;
+  --ws-matcha-faint:      #454D3D;
 
-  --ws-border-soft:       #292A27;
-  --ws-border-medium:     #323330;
-  --ws-border-strong:     #3D3E3A;
+  --ws-border-soft:       #32332C;
+  --ws-border-medium:     #3A3B34;
+  --ws-border-strong:     #4A4B42;
 
-  --ws-shadow-sm:   0 1px 3px rgba(0, 0, 0, 0.20), 0 1px 2px rgba(0, 0, 0, 0.15);
-  --ws-shadow-md:   0 4px 12px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.15);
-  --ws-shadow-lg:   0 8px 24px rgba(0, 0, 0, 0.30), 0 4px 8px rgba(0, 0, 0, 0.20);
+  --ws-shadow-sm:   0 1px 3px rgba(18, 19, 16, 0.25), 0 1px 2px rgba(18, 19, 16, 0.18);
+  --ws-shadow-md:   0 4px 12px rgba(18, 19, 16, 0.35), 0 2px 4px rgba(18, 19, 16, 0.20);
+  --ws-shadow-lg:   0 8px 24px rgba(18, 19, 16, 0.45), 0 4px 8px rgba(18, 19, 16, 0.25);
 }
 
 
@@ -276,8 +276,32 @@
 
 .dark .notion-inline-code {
   background-color: var(--ws-bg-tertiary) !important;
-  color: var(--ws-matcha-muted) !important;
+  color: var(--ws-matcha-light) !important;
   border-color: var(--ws-border-soft) !important;
+}
+
+/* ── Heading Inline Code Refinements (H1 - H6) ── */
+h1 code,
+h2 code,
+h3 code,
+h4 code,
+h5 code,
+h6 code,
+.notion-h1 code,
+.notion-h2 code,
+.notion-h3 code,
+.notion-h4 code,
+.notion-h5 code,
+.notion-h6 code {
+  font-size: 0.82em !important;
+  font-weight: 500 !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  vertical-align: 0.05em !important;
+  line-height: normal !important;
+  padding: 0.12em 0.38em !important;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 /* ── Bold */
@@ -415,7 +439,51 @@
 
 .dark .notion-toggle:hover {
   border-color: var(--ws-matcha-muted) !important;
-  background-color: rgba(74, 87, 61, 0.12) !important;
+  background-color: rgba(135, 147, 110, 0.08) !important;
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 5.5. BLOCKQUOTES & NOTION QUOTES — Japanese Literary Inscription
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.notion-quote,
+blockquote {
+  margin: 1.5rem 0 !important;
+  padding: 1rem 1.35rem 1rem 1.4rem !important;
+  background-color: var(--ws-bg-secondary) !important;
+  border: 1px solid var(--ws-border-soft) !important;
+  border-left: 3px solid var(--ws-matcha-primary) !important;
+  border-radius: 0 var(--ws-radius-md) var(--ws-radius-md) 0 !important;
+  font-family: var(--font-serif) !important;
+  font-style: italic !important;
+  font-size: 0.96rem !important;
+  line-height: 1.8 !important;
+  color: var(--ws-text-primary) !important;
+  position: relative !important;
+  transition:
+    background-color var(--ws-transition-base),
+    border-color var(--ws-transition-base) !important;
+}
+
+.notion-quote:hover,
+blockquote:hover {
+  border-left-color: var(--ws-matcha-light) !important;
+  background-color: rgba(122, 139, 105, 0.04) !important;
+}
+
+.dark .notion-quote,
+.dark blockquote {
+  background-color: var(--ws-bg-secondary) !important;
+  border-color: var(--ws-border-soft) !important;
+  border-left-color: var(--ws-matcha-primary) !important;
+  color: var(--ws-text-primary) !important;
+}
+
+.dark .notion-quote:hover,
+.dark blockquote:hover {
+  border-left-color: var(--ws-matcha-light) !important;
+  background-color: rgba(135, 147, 110, 0.06) !important;
 }
 
 
@@ -466,7 +534,7 @@
 }
 
 .dark .notion-callout:hover {
-  background-color: rgba(74, 87, 61, 0.20) !important;
+  background-color: rgba(135, 147, 110, 0.12) !important;
 }
 
 
@@ -476,7 +544,7 @@
 
 .notion-code {
   background-color: var(--ws-bg-code) !important;
-  border: 1px solid #292A27 !important;
+  border: 1px solid var(--ws-border-soft) !important;
   border-radius: var(--ws-radius-md) !important;
   margin-bottom: 1.25rem !important;
   overflow: hidden !important;
@@ -491,9 +559,9 @@
   padding: 0.6rem 1rem !important;
   font-size: 0.5rem !important;
   letter-spacing: 0.4rem !important;
-  color: #3D3E3A !important;
-  border-bottom: 1px solid #292A27 !important;
-  background-color: #141512 !important;
+  color: #5C5A52 !important;
+  border-bottom: 1px solid var(--ws-border-soft) !important;
+  background-color: #11120F !important;
 }
 
 .notion-code > pre {
@@ -509,7 +577,7 @@
 .notion-code code {
   font-family: var(--font-mono) !important;
   font-size: inherit !important;
-  color: #D8DAD3 !important;
+  color: #D0CCC1 !important;
   background: none !important;
 }
 
@@ -766,7 +834,7 @@
 
 .dark .notion-property-select-item,
 .dark .notion-property-multi_select-item {
-  background-color: rgba(74, 87, 61, 0.3) !important;
+  background-color: rgba(135, 147, 110, 0.18) !important;
   color: var(--ws-matcha-light) !important;
 }
 
@@ -964,7 +1032,7 @@
 .dark .notion-page::after {
   background: radial-gradient(
     ellipse 70% 50% at 50% 100%,
-    rgba(74, 87, 61, 0.07) 0%,
+    rgba(135, 147, 110, 0.05) 0%,
     transparent 70%
   ) !important;
 }
@@ -1002,3 +1070,60 @@
     grid-template-columns: 1fr !important;
   }
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+   § 19. MERMAID DIAGRAMS — Zen & Wabi-Sabi Styling
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.mermaid-diagram-container {
+  border-radius: var(--ws-radius-lg, 12px);
+  overflow-x: auto;
+  transition: background-color var(--ws-transition-base), border-color var(--ws-transition-base);
+}
+
+.mermaid-diagram-container svg {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block;
+  margin: 0 auto;
+  opacity: 0.92;
+  transition: opacity var(--ws-transition-fast);
+}
+
+.mermaid-diagram-container svg:hover {
+  opacity: 1;
+}
+
+/* Softened node geometry */
+.mermaid-diagram-container svg .node rect,
+.mermaid-diagram-container svg .node circle,
+.mermaid-diagram-container svg .node ellipse,
+.mermaid-diagram-container svg .node polygon,
+.mermaid-diagram-container svg .node path {
+  rx: 8px !important;
+  ry: 8px !important;
+  stroke-width: 1.2px !important;
+}
+
+/* Subgraph cluster containers */
+.mermaid-diagram-container svg .cluster rect {
+  rx: 10px !important;
+  ry: 10px !important;
+  stroke-width: 1.2px !important;
+}
+
+/* Connectors and edge paths */
+.mermaid-diagram-container svg .flowchart-link,
+.mermaid-diagram-container svg .edgePath .path,
+.mermaid-diagram-container svg path.link,
+.mermaid-diagram-container svg path.connection {
+  stroke-width: 1.2px !important;
+}
+
+/* Flowchart and sequence diagram labels & text */
+.mermaid-diagram-container svg text {
+  font-family: var(--font-serif, "Noto Serif JP", Georgia, serif) !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.01em !important;
+}
+

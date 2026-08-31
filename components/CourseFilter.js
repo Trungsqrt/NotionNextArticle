@@ -1,10 +1,10 @@
 'use client'
 
 /**
- * CourseFilter.js — Custom dropdown filter for the course grid
+ * CourseFilter.js — Editorial Knowledge Archive Filter Controls
  * ─────────────────────────────────────────────────────────────
  * Fully custom div/ul/li dropdowns — no native <select>.
- * Single shared click-outside handler via one container ref.
+ * Single shared click-outside handler via container refs.
  */
 
 import { useState, useEffect, useRef, useMemo } from 'react'
@@ -56,29 +56,30 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
   // ── Shared dropdown classes ──────────────────────────────────────────────
   function triggerCls(active) {
     return [
-      'flex items-center justify-between w-48 pl-4 pr-3 py-2 rounded-xl',
-      'text-sm font-medium transition-colors duration-150 outline-none select-none cursor-pointer',
+      'flex items-center justify-between w-full sm:w-48 pl-3.5 pr-2.5 py-2 rounded-[6px]',
+      'text-[0.83rem] font-medium transition-all duration-200 ease-out outline-none select-none cursor-pointer',
+      'focus-visible:ring-2 focus-visible:ring-matcha-500/50 dark:focus-visible:ring-matcha-400/60',
       active
-        ? 'bg-neutral-600 dark:bg-neutral-500 text-white border border-transparent shadow-sm'
-        : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 border border-neutral-200/60 dark:border-neutral-700 hover:bg-neutral-200/60 dark:hover:bg-neutral-700/70',
+        ? 'bg-matcha-100/90 text-matcha-700 border border-matcha-400/70 shadow-sm dark:bg-matcha-700/25 dark:text-matcha-300 dark:border-matcha-600/50 dark:shadow-none'
+        : 'bg-rice-paper-200/70 text-ink-600 border border-rice-paper-400/80 hover:bg-rice-paper-300/80 hover:text-ink-700 dark:bg-tea-slate-200 dark:text-sage-200 dark:border-tea-slate-50/50 dark:hover:bg-tea-slate-100/70 dark:hover:border-tea-slate-50/70 dark:hover:text-sage-100',
     ].join(' ')
   }
 
   function itemCls(selected) {
     return [
-      'px-4 py-2 text-sm cursor-pointer transition-colors duration-100',
+      'px-3.5 py-2 text-[0.82rem] cursor-pointer transition-colors duration-150 ease-out flex items-center justify-between',
       selected
-        ? 'bg-neutral-100 dark:bg-neutral-700 font-semibold text-neutral-900 dark:text-neutral-100'
-        : 'text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700/50',
+        ? 'bg-matcha-100/70 dark:bg-matcha-700/25 font-medium text-matcha-700 dark:text-matcha-300'
+        : 'text-ink-600 dark:text-sage-300 hover:bg-rice-paper-300/60 dark:hover:bg-tea-slate-200/70 hover:text-ink-700 dark:hover:text-sage-100',
     ].join(' ')
   }
 
-  const menuCls = 'animate-dropdown absolute top-full left-0 mt-2 w-56 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-lg z-50 py-1 overflow-hidden'
+  const menuCls = 'animate-dropdown absolute top-full left-0 mt-1.5 w-full sm:w-56 bg-rice-paper-100 dark:bg-tea-slate-50 border border-rice-paper-400/80 dark:border-tea-slate-50/60 rounded-[6px] shadow-zen-md dark:shadow-[0_4px_16px_rgba(18,19,16,0.5)] z-50 py-1 overflow-hidden'
 
   function ChevronIcon({ open }) {
     return (
       <svg
-        className={`w-4 h-4 ml-2 shrink-0 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+        className={`w-3.5 h-3.5 ml-2 shrink-0 transition-transform duration-250 ease-out text-ink-400 dark:text-sage-400 ${open ? 'rotate-180 text-matcha-500 dark:text-matcha-400' : ''}`}
         fill="none" strokeWidth="2" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"
       >
         <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
@@ -92,7 +93,7 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
       <div className="flex flex-wrap gap-3 mb-8 items-center">
 
         {/* ── Category dropdown ─────────────────────────────────────────── */}
-        <div className="relative" ref={categoryRef}>
+        <div className="relative w-full sm:w-auto" ref={categoryRef}>
           <button
             type="button"
             id="filter-category"
@@ -110,9 +111,12 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
               <li
                 role="option" aria-selected={!selectedCategory}
                 onClick={() => { setSelectedCategory(''); setOpenDropdown(null) }}
-                className="px-4 py-2 text-sm text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 cursor-pointer transition-colors"
+                className={itemCls(!selectedCategory)}
               >
-                Category: All
+                <span>Category: All</span>
+                {!selectedCategory && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-matcha-500 dark:bg-matcha-400" aria-hidden="true" />
+                )}
               </li>
               {uniqueCategories.map(cat => (
                 <li
@@ -120,7 +124,10 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
                   onClick={() => { setSelectedCategory(cat); setSelectedTag(''); setOpenDropdown(null) }}
                   className={itemCls(selectedCategory === cat)}
                 >
-                  {cat}
+                  <span className="truncate">{cat}</span>
+                  {selectedCategory === cat && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-matcha-500 dark:bg-matcha-400" aria-hidden="true" />
+                  )}
                 </li>
               ))}
             </ul>
@@ -128,7 +135,7 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
         </div>
 
         {/* ── Tag dropdown ──────────────────────────────────────────────── */}
-        <div className="relative" ref={tagRef}>
+        <div className="relative w-full sm:w-auto" ref={tagRef}>
           <button
             type="button"
             id="filter-tag"
@@ -146,9 +153,12 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
               <li
                 role="option" aria-selected={!selectedTag}
                 onClick={() => { setSelectedTag(''); setOpenDropdown(null) }}
-                className="px-4 py-2 text-sm text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 cursor-pointer transition-colors"
+                className={itemCls(!selectedTag)}
               >
-                Tag: All
+                <span>Tag: All</span>
+                {!selectedTag && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-matcha-500 dark:bg-matcha-400" aria-hidden="true" />
+                )}
               </li>
               {uniqueTags.map(tag => (
                 <li
@@ -156,7 +166,10 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
                   onClick={() => { setSelectedTag(tag); setOpenDropdown(null) }}
                   className={itemCls(selectedTag === tag)}
                 >
-                  {tag}
+                  <span className="truncate">{tag}</span>
+                  {selectedTag === tag && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-matcha-500 dark:bg-matcha-400" aria-hidden="true" />
+                  )}
                 </li>
               ))}
             </ul>
@@ -169,7 +182,7 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
             type="button"
             onClick={clearAll}
             aria-label="Clear all filters"
-            className="flex items-center gap-1.5 py-2 px-3 rounded-xl text-sm font-medium text-neutral-400 dark:text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors duration-150"
+            className="flex items-center gap-1.5 py-1.5 px-2.5 rounded-[4px] text-[0.78rem] font-medium text-ink-400 dark:text-sage-400 hover:text-matcha-600 dark:hover:text-matcha-300 hover:bg-rice-paper-300/40 dark:hover:bg-tea-slate-200/50 transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-matcha-500/50 dark:focus-visible:ring-matcha-400/60"
           >
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
               <path d="M18 6L6 18M6 6l12 12" />
@@ -179,7 +192,7 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
         )}
 
         {/* ── Live result count ─────────────────────────────────────────── */}
-        <span className="ml-auto text-xs text-neutral-400 dark:text-neutral-500 tabular-nums select-none">
+        <span className="ml-auto text-[0.75rem] text-ink-400 dark:text-sage-500 tabular-nums select-none tracking-wide">
           {filteredCourses.length} {filteredCourses.length === 1 ? 'result' : 'results'}
         </span>
       </div>
@@ -189,7 +202,7 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
         {filteredCourses.length > 0 ? (
           <div
             className="grid gap-5"
-            style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}
+            style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))' }}
           >
             {filteredCourses.map((course, index) => (
               <div key={course.id || `${course.slug}-${index}`} style={{ animationDelay: `${index * 50 + 60}ms` }}>
@@ -200,13 +213,13 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
         ) : (
           <div className="flex flex-col items-center justify-center py-24 text-center animate-fade-in">
             <span className="text-4xl mb-4 opacity-50 select-none">茶</span>
-            <p className="text-ink-400 dark:text-sage-500 font-serif italic text-[0.95rem]">
+            <p className="text-ink-400 dark:text-sage-400 font-serif italic text-[0.95rem]">
               No lessons match the selected filters.
             </p>
             <button
               type="button"
               onClick={clearAll}
-              className="mt-4 text-[0.78rem] text-matcha-500 dark:text-matcha-400 hover:underline underline-offset-2 transition-colors duration-150"
+              className="mt-3 text-[0.78rem] text-matcha-500 dark:text-matcha-400 hover:text-matcha-600 dark:hover:text-matcha-300 transition-colors duration-200 ease-out focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-matcha-500/50 dark:focus-visible:ring-matcha-400/60 rounded-[4px] px-2 py-1"
             >
               Clear filters
             </button>
@@ -216,3 +229,4 @@ export default function CourseFilter({ initialCourses, uniqueCategories, uniqueT
     </>
   )
 }
+
