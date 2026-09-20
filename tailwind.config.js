@@ -36,8 +36,7 @@ module.exports = {
     // Typography
     'font-serif', 'line-clamp-2', 'leading-snug',
     'text-ink-700', 'dark:text-sage-100',
-    'text-ink-400', 'dark:text-sage-500',
-    'text-ink-400', 'dark:text-sage-600',
+    'text-ink-400', 'dark:text-sage-500', 'dark:text-sage-600',
     // Read CTA
     'text-matcha-500', 'dark:text-matcha-400',
     'text-matcha-600', 'dark:text-matcha-300',
@@ -192,12 +191,6 @@ module.exports = {
       // ─────────────────────────────────────────
       //  Typography
       // ─────────────────────────────────────────
-      fontFamily: {
-        sans:  ['"Plus Jakarta Sans"', 'Inter', 'system-ui', 'sans-serif'],
-        serif: ['"Noto Serif JP"', '"Georgia"', 'serif'],
-        mono:  ['"Fira Code"', 'monospace'],
-      },
-
       fontSize: {
         'xs':   ['0.75rem',  { lineHeight: '1.6' }],
         'sm':   ['0.875rem', { lineHeight: '1.7' }],

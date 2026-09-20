@@ -5,7 +5,6 @@ import { getAllPosts } from '../lib/notion'
 export const revalidate = 3600
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
-const AUTHOR_NAME = 'Jun Mai - Trungsqrt'
 
 export const metadata = {
   title: 'ServiceNow Space · Knowledge Hub',

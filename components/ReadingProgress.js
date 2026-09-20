@@ -30,21 +30,14 @@ function LeafUpIcon() {
 }
 
 export default function ReadingProgress() {
-  const [progress, setProgress] = useState(0)
-  const [showTop,  setShowTop]  = useState(false)
-  const [visible,  setVisible]  = useState(false)
+  const [showTop, setShowTop] = useState(false)
 
   useEffect(() => {
     function onScroll() {
-      const scrollTop = window.scrollY
-      const docHeight = document.documentElement.scrollHeight - window.innerHeight
-      const pct       = docHeight > 0 ? Math.min(100, (scrollTop / docHeight) * 100) : 0
-      setProgress(pct)
-      setShowTop(scrollTop > 300)
+      setShowTop(window.scrollY > 300)
     }
 
     onScroll()
-    setVisible(true)
     window.addEventListener('scroll', onScroll, { passive: true })
     return () => window.removeEventListener('scroll', onScroll)
   }, [])

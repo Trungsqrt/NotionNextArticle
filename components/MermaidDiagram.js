@@ -15,7 +15,7 @@
 
 import { useState, useEffect, useRef, useId } from 'react'
 
-export const WABI_SABI_MERMAID_THEME = {
+const WABI_SABI_MERMAID_THEME = {
   light: {
     theme: 'base',
     look: 'handDrawn',
