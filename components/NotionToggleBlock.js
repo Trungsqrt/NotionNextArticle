@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import NotionContent from './NotionContent'
 
-export default function NotionToggleBlock({ blockId, titleHtml, color, dynamicClasses, hasChildren }) {
+export default function NotionToggleBlock({ blockId, titleHtml, dynamicClasses, hasChildren }) {
   const [isOpen, setIsOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [childrenHtml, setChildrenHtml] = useState("")

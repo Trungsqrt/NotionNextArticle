@@ -19,7 +19,7 @@
  *   images — Array<{ url: string, caption: string }>
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 
 export default function ImageSlider({ images = [] }) {

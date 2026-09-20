@@ -27,7 +27,6 @@ import Sidebar from './Sidebar'
 import ReadingProgress from './ReadingProgress'
 
 const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || 'ServiceNow Knowledge Hub'
-const SITE_DESCRIPTION = process.env.NEXT_PUBLIC_SITE_DESCRIPTION || 'A serene learning space for mastering ServiceNow.'
 
 export default function Layout({
   children,
@@ -37,8 +36,6 @@ export default function Layout({
   currentSlug = '',
   completedLessons = 0,
   totalLessons = 0,
-  pageTitle = '',
-  pageDescription = '',
 }) {
   const pathname = usePathname() || ''
   const isHomePage = pathname === '/'

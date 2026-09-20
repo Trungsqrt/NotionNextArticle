@@ -11,7 +11,7 @@
  * the mermaid npm package (v11 async API).
  */
 
-import { useState, useEffect, useRef, useId, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import MermaidDiagram from './MermaidDiagram'

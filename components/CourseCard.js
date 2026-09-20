@@ -35,13 +35,6 @@ const ClockIcon = () => (
   </svg>
 )
 
-const StarIcon = () => (
-  <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"
-    stroke="none" aria-hidden="true">
-    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 21 12 17.77 5.82 21 7 14.14 2 9.27l6.91-1.01L12 2z" />
-  </svg>
-)
-
 const CheckIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
     stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
@@ -196,8 +189,6 @@ export default function CourseCard({
   duration = null,
   status = 'Published',
   completedAt = null,
-  // Absorb any extra NotionNext props without breaking
-  ...rest
 }) {
   const href = slug.startsWith('/') ? slug : `/${slug}`
   const isCompleted = Boolean(completedAt)

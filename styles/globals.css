@@ -189,21 +189,6 @@
     text-decoration-thickness: 1px;
   }
 
-  /* Smooth accordion fold-down animation for Toggle */
-  details .toggle-content-wrapper {
-    display: grid;
-    grid-template-rows: 0fr;
-    transition: grid-template-rows 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  details[open] .toggle-content-wrapper {
-    grid-template-rows: 1fr;
-  }
-
-  .toggle-content-inner {
-    overflow: hidden;
-  }
-
   /* Custom dropdown animation */
   @keyframes dropdownIn {
     from {
