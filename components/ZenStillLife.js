@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 /**
  * 8 Curated Japanese Wabi-Sabi & Zen Still Life Artworks
@@ -18,12 +18,12 @@ const STILL_LIFE_ITEMS = [
     renderSvg: () => (
       <svg viewBox="0 0 200 240" className="w-full max-w-[170px] mx-auto overflow-visible select-none" aria-hidden="true">
         <circle cx="100" cy="120" r="70" fill="url(#zenGlow)" opacity="0.4" />
-        
+
         {/* Rippling sand lines (Karesansui wave patterns) */}
         <path d="M20 195 Q60 188 100 195 T180 195" stroke="currentColor" strokeWidth="1.2" strokeOpacity="0.18" fill="none" />
         <path d="M10 205 Q55 198 100 205 T190 205" stroke="currentColor" strokeWidth="1.2" strokeOpacity="0.22" fill="none" />
         <path d="M30 215 Q65 208 100 215 T170 215" stroke="currentColor" strokeWidth="1.2" strokeOpacity="0.15" fill="none" />
-        
+
         {/* Bottom Large Pebble */}
         <path
           d="M42 180 C42 165 70 156 100 156 C132 156 158 165 158 180 C158 193 130 198 100 198 C68 198 42 192 42 180 Z"
@@ -74,7 +74,7 @@ const STILL_LIFE_ITEMS = [
         {/* Bamboo Main Stem */}
         <path d="M98 220 L98 175" className="stroke-matcha-700 dark:stroke-matcha-400" strokeWidth="4.5" strokeLinecap="round" />
         <circle cx="98" cy="174" r="3.5" className="fill-matcha-800 dark:fill-matcha-300" />
-        
+
         <path d="M98 170 L96 115" className="stroke-matcha-600 dark:stroke-matcha-400" strokeWidth="4" strokeLinecap="round" />
         <circle cx="96" cy="114" r="3" className="fill-matcha-800 dark:fill-matcha-300" />
 
@@ -119,8 +119,8 @@ const STILL_LIFE_ITEMS = [
         <circle cx="100" cy="130" r="65" fill="url(#zenGlow)" opacity="0.35" />
 
         {/* Delicate Steam Wisps */}
-        <path d="M95 95 Q90 75 98 60 T92 35" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 3" strokeOpacity="0.3" fill="none" className="animate-pulse" />
-        <path d="M108 90 Q115 70 106 50 T114 25" stroke="currentColor" strokeWidth="1.5" strokeDasharray="2 3" strokeOpacity="0.25" fill="none" className="animate-pulse" />
+        <path d="M95 95 Q90 75 98 60 T92 35" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 3" strokeOpacity="0.3" fill="none" className="zen-steam-slow" />
+        <path d="M108 90 Q115 70 106 50 T114 25" stroke="currentColor" strokeWidth="1.5" strokeDasharray="2 3" strokeOpacity="0.25" fill="none" className="zen-steam-delayed" />
 
         {/* Teapot Base Mat */}
         <ellipse cx="98" cy="192" rx="68" ry="12" className="fill-rice-paper-400/50 dark:fill-tea-slate-100/40" />
@@ -406,8 +406,8 @@ const STILL_LIFE_ITEMS = [
         <line x1="62" y1="155" x2="138" y2="155" className="stroke-ink-700/80 dark:stroke-tea-slate-50" strokeWidth="1.5" />
 
         {/* Inner Candle Flame Glow */}
-        <ellipse cx="100" cy="142" rx="7" ry="12" className="fill-amber-400/90 dark:fill-amber-300/90 animate-pulse" />
-        <ellipse cx="100" cy="144" rx="3.5" ry="6" fill="#ffffff" className="animate-pulse" />
+        <ellipse cx="100" cy="142" rx="7" ry="12" className="fill-amber-400/90 dark:fill-amber-300/90 zen-flame-flicker" />
+        <ellipse cx="100" cy="144" rx="3.5" ry="6" fill="#ffffff" className="zen-flame-flicker" />
 
         {/* Wooden Base & Sturdy Legs */}
         <rect x="58" y="183" width="84" height="7" rx="1.5" className="fill-ink-700 dark:fill-tea-slate-50" />
@@ -646,6 +646,8 @@ export default function ZenStillLife({ currentSlug = '' }) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [mounted, setMounted] = useState(false)
   const [isTransitioning, setIsTransitioning] = useState(false)
+  const isAnimatingRef = useRef(false)
+  const animTimeoutRef = useRef(null)
 
   // Pure random pick on every single page load / route navigation
   useEffect(() => {
@@ -655,16 +657,36 @@ export default function ZenStillLife({ currentSlug = '' }) {
     setMounted(true)
   }, [currentSlug])
 
-  // Click to smoothly cycle to a different artwork
-  const handleCycle = () => {
+  // Clear running animation timers on unmount
+  useEffect(() => {
+    return () => {
+      if (animTimeoutRef.current) clearTimeout(animTimeoutRef.current)
+    }
+  }, [])
+
+  // Silky, meditative Wabi-Sabi ink dissolve: gentle fade-out -> swap -> serene fade-in
+  const handleCycle = useCallback(() => {
+    if (isAnimatingRef.current) return
+    isAnimatingRef.current = true
     setIsTransitioning(true)
-    setTimeout(() => {
+
+    // Step 1: Gentle ink fade-out (320ms)
+    animTimeoutRef.current = setTimeout(() => {
       const nextIndex = (currentIndex + 1) % STILL_LIFE_ITEMS.length
       setCurrentIndex(nextIndex)
       setActiveItem(STILL_LIFE_ITEMS[nextIndex])
-      setIsTransitioning(false)
-    }, 150)
-  }
+
+      // Step 2: Swap at opacity 0, then smoothly fade in like ink drying on washi paper (550ms)
+      animTimeoutRef.current = setTimeout(() => {
+        setIsTransitioning(false)
+
+        // Step 3: Unlock interaction after full gentle transition completes
+        animTimeoutRef.current = setTimeout(() => {
+          isAnimatingRef.current = false
+        }, 550)
+      }, 40)
+    }, 320)
+  }, [currentIndex])
 
   if (!mounted) {
     // Placeholder during SSR hydration
@@ -674,18 +696,24 @@ export default function ZenStillLife({ currentSlug = '' }) {
   }
 
   return (
-    <div 
+    <div
       onClick={handleCycle}
-      title="Click to cycle next Zen artwork"
-      className="h-full flex flex-col justify-between p-3.5 select-none cursor-pointer group rounded-xl transition-colors hover:bg-rice-paper-200/40 dark:hover:bg-tea-slate-200/20"
+      title="✦ Tap to cycle inspiration"
+      className="h-full flex flex-col justify-between p-3.5 select-none cursor-pointer group rounded-2xl border border-rice-paper-300/50 dark:border-tea-slate-100/30 bg-rice-paper-100/30 dark:bg-tea-slate-300/20 hover:bg-rice-paper-200/40 dark:hover:bg-tea-slate-200/25 hover:border-matcha-400/40 dark:hover:border-matcha-700/40 transition-colors duration-500"
     >
       {/* ── Top Header Badge with Counter */}
-      <div className="flex items-center justify-between pt-1 px-1">
-        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[0.68rem] font-serif tracking-wider bg-matcha-100/60 dark:bg-matcha-900/30 text-matcha-700 dark:text-matcha-300 border border-matcha-200/50 dark:border-matcha-800/40 transition-colors group-hover:border-matcha-400 dark:group-hover:border-matcha-600">
-          <span className="text-[0.6rem]">✦</span> {activeItem.kanjiTitle}
+      <div className="flex items-center justify-between pt-0.5 px-1">
+        <span
+          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[0.68rem] font-serif tracking-wider bg-matcha-100/60 dark:bg-matcha-900/30 text-matcha-800 dark:text-matcha-300 border border-matcha-200/50 dark:border-matcha-800/40 transition-opacity duration-500 ${isTransitioning ? 'opacity-30' : 'opacity-100'
+            }`}
+        >
+          <span className="text-[0.6rem] text-matcha-600 dark:text-matcha-400">✦</span> {activeItem.kanjiTitle}
         </span>
-        <span className="text-[0.65rem] font-mono text-ink-300 dark:text-sage-600 transition-colors group-hover:text-matcha-500">
-          {currentIndex + 1}/{STILL_LIFE_ITEMS.length}
+        <span
+          className={`text-[0.68rem] font-serif tracking-widest text-ink-300 dark:text-sage-600 transition-opacity duration-500 ${isTransitioning ? 'opacity-30' : 'opacity-100'
+            }`}
+        >
+          {currentIndex + 1} / {STILL_LIFE_ITEMS.length}
         </span>
       </div>
 
@@ -693,25 +721,29 @@ export default function ZenStillLife({ currentSlug = '' }) {
       <svg className="absolute w-0 h-0" aria-hidden="true">
         <defs>
           <radialGradient id="zenGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#7A8B69" stopOpacity="0.3" />
+            <stop offset="0%" stopColor="#7A8B69" stopOpacity="0.32" />
             <stop offset="100%" stopColor="#7A8B69" stopOpacity="0" />
           </radialGradient>
         </defs>
       </svg>
 
-      {/* ── Artwork Centerpiece */}
+      {/* ── Artwork Centerpiece (Gentle ink dissolve, no bouncing or scaling) */}
       <div
-        className={`my-auto py-2 transition-transform duration-300 ease-out transform-gpu will-change-transform group-hover:scale-[1.04] ${
-          isTransitioning ? 'opacity-0 scale-95 transition-opacity duration-150' : 'opacity-100'
-        }`}
+        className={`my-auto py-2 transition-opacity duration-500 ease-in-out ${isTransitioning
+          ? 'opacity-0 pointer-events-none'
+          : 'opacity-100'
+          }`}
       >
         {activeItem.renderSvg()}
       </div>
 
       {/* ── Bottom Inscription / Thought Card */}
-      <div className={`mt-auto px-1.5 pb-1 text-center transition-opacity duration-300 ${
-        isTransitioning ? 'opacity-0' : 'opacity-100'
-      }`}>
+      <div
+        className={`mt-auto px-1.5 pb-1 text-center transition-opacity duration-500 ease-in-out ${isTransitioning
+          ? 'opacity-0'
+          : 'opacity-100'
+          }`}
+      >
         <p className="font-serif italic text-[0.82rem] leading-relaxed text-ink-600 dark:text-sage-300 mb-1.5">
           &ldquo;{activeItem.quote}&rdquo;
         </p>
@@ -720,7 +752,7 @@ export default function ZenStillLife({ currentSlug = '' }) {
             — {activeItem.author}
           </span>
         </div>
-        <p className="mt-2 text-[0.62rem] text-ink-300/80 dark:text-sage-600/80 font-serif italic">
+        <p className="mt-2.5 text-[0.62rem] text-ink-300 dark:text-sage-600 font-serif italic tracking-wide group-hover:text-matcha-600 dark:group-hover:text-matcha-400 transition-colors duration-300">
           ✦ Tap to cycle inspiration
         </p>
       </div>

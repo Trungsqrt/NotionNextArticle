@@ -1127,3 +1127,68 @@ blockquote:hover {
   letter-spacing: 0.01em !important;
 }
 
+/* ───────────────────────────────────────────────────────────────────────────
+   § 20. ZEN STILL LIFE & MEDITATIVE ANIMATIONS
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Meditative background halo breathing (8s period) */
+@keyframes zen-breathe {
+  0%, 100% {
+    opacity: 0.28;
+    transform: scale(0.97);
+  }
+  50% {
+    opacity: 0.46;
+    transform: scale(1.05);
+  }
+}
+
+.zen-glow-breathe,
+circle[fill="url(#zenGlow)"] {
+  animation: zen-breathe 8s ease-in-out infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
+/* Kyusu Tea gentle steam floating (6s - 7s period) */
+@keyframes zen-steam-drift {
+  0%, 100% {
+    opacity: 0.16;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 0.45;
+    transform: translateY(-5px);
+  }
+}
+
+.zen-steam-slow {
+  animation: zen-steam-drift 6.5s ease-in-out infinite;
+  transform-origin: bottom center;
+  transform-box: fill-box;
+}
+
+.zen-steam-delayed {
+  animation: zen-steam-drift 7.5s ease-in-out 1.8s infinite;
+  transform-origin: bottom center;
+  transform-box: fill-box;
+}
+
+/* Andon Lantern gentle candle breathing (4.5s period) */
+@keyframes zen-flame-breathe {
+  0%, 100% {
+    opacity: 0.82;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.98;
+    transform: scale(1.04, 1.06);
+  }
+}
+
+.zen-flame-flicker {
+  animation: zen-flame-breathe 4.5s ease-in-out infinite;
+  transform-origin: center bottom;
+  transform-box: fill-box;
+}
+
