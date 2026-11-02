@@ -1,9 +1,11 @@
 import { notFound } from 'next/navigation'
-import { getAllPosts, getPageBySlug, getSiblingPages } from '../../lib/notion'
+import { getAllPosts, getPageBySlug, getSiblingPages, getArticleTranslations } from '../../lib/notion'
+import { DEFAULT_LOCALE, getLocaleMeta } from '../../lib/locales'
 import NotionContent from '../../components/NotionContent'
 import TableOfContents from '../../components/TableOfContents'
 import ArticleCover from '../../components/ArticleCover'
 import SiblingNavigation from '../../components/SiblingNavigation'
+import LanguageSwitcher from '../../components/LanguageSwitcher'
 
 // Revalidate in background every 1 hour (3600 seconds)
 export const revalidate = 3600
@@ -12,10 +14,12 @@ export const dynamicParams = true
 
 export async function generateStaticParams() {
   try {
-    const posts = await getAllPosts() // Fetch all published articles
-    return posts.map(post => ({
-      slug: post.slug ? [post.slug] : [post.id],
-    }))
+    const posts = await getAllPosts('all') // Fetch all published articles (every locale)
+    const seen = new Set()
+    return posts
+      .map(post => post.slug || post.id)
+      .filter(slug => slug && !seen.has(slug) && seen.add(slug))
+      .map(slug => ({ slug: [slug] }))
   } catch (error) {
     console.error('Error generating static params:', error)
     return []
@@ -25,10 +29,37 @@ export async function generateStaticParams() {
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
 const AUTHOR_NAME = 'Jun Mai - Trungsqrt'
 
+/** Decodes a URL segment (e.g. non-ASCII slugs) without throwing. */
+function safeDecode(segment) {
+  if (!segment) return segment
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
+}
+
+/**
+ * Builds the hreflang map ({ en: '/slug-en', vi: '/slug-vi' }) for an article.
+ * Returns null when no published translation exists, so no alternate language
+ * is declared for single-language articles.
+ */
+function buildLanguageAlternates(page, canonicalSlug, translations) {
+  const available = Object.entries(translations || {}).filter(([, t]) => t?.slug)
+  if (available.length === 0) return null
+  const languages = {
+    [getLocaleMeta(page.locale || DEFAULT_LOCALE).hreflang]: `/${canonicalSlug}`,
+  }
+  for (const [locale, t] of available) {
+    languages[getLocaleMeta(locale).hreflang] = `/${t.slug}`
+  }
+  return languages
+}
+
 export async function generateMetadata({ params }) {
   const resolvedParams = await params
   const slugArray = resolvedParams?.slug || []
-  const lastSlug = slugArray[slugArray.length - 1]
+  const lastSlug = safeDecode(slugArray[slugArray.length - 1])
   if (!lastSlug || /\.(ico|png|jpg|jpeg|svg|css|js|txt|map|json|xml)$/i.test(lastSlug)) {
     return { title: 'ServiceNow Space · Knowledge Hub' }
   }
@@ -45,6 +76,15 @@ export async function generateMetadata({ params }) {
 
     const ogImages = coverUrl ? [{ url: coverUrl, alt: pageTitle }] : [{ url: `${SITE_URL}/icon.svg`, width: 512, height: 512, alt: pageTitle }]
 
+    // ── Locale / translations ──────────────────────────────────────────
+    const localeMeta = getLocaleMeta(page.locale || DEFAULT_LOCALE)
+    const canonicalSlug = page.slug || lastSlug
+    const translations = await getArticleTranslations(page)
+    const languages = buildLanguageAlternates(page, canonicalSlug, translations)
+    const alternateOgLocales = Object.entries(translations)
+      .filter(([, t]) => t?.slug)
+      .map(([locale]) => getLocaleMeta(locale).ogLocale)
+
     return {
       title: `${pageTitle} · ServiceNow Knowledge Hub`,
       description: pageDesc,
@@ -57,14 +97,17 @@ export async function generateMetadata({ params }) {
       ],
       authors: [{ name: AUTHOR_NAME, url: SITE_URL }],
       alternates: {
-        canonical: `/${lastSlug}`,
+        canonical: `/${canonicalSlug}`,
+        ...(languages ? { languages } : {}),
       },
       openGraph: {
         type: 'article',
         title: `${pageTitle} · ServiceNow Knowledge Hub`,
         description: pageDesc,
-        url: `${SITE_URL}/${lastSlug}`,
+        url: `${SITE_URL}/${canonicalSlug}`,
         siteName: 'ServiceNow Knowledge Hub',
+        locale: localeMeta.ogLocale,
+        ...(alternateOgLocales.length > 0 ? { alternateLocale: alternateOgLocales } : {}),
         publishedTime: page.date ? new Date(page.date).toISOString() : undefined,
         modifiedTime: page.date ? new Date(page.date).toISOString() : undefined,
         authors: [AUTHOR_NAME],
@@ -92,7 +135,7 @@ export default async function ArticlePage({ params }) {
   }
 
   const slugArray = resolvedParams?.slug || []
-  const lastSlug = slugArray[slugArray.length - 1]
+  const lastSlug = safeDecode(slugArray[slugArray.length - 1])
   if (!lastSlug) notFound()
 
   let page
@@ -114,6 +157,12 @@ export default async function ArticlePage({ params }) {
   const html = page.html
   const blocks = page.blocks || []
 
+  // ── Locale & translations (metadata only — no extra block fetching) ────
+  const locale = page.locale || DEFAULT_LOCALE
+  const localeMeta = getLocaleMeta(locale)
+  const canonicalSlug = page.slug || lastSlug
+  const translations = await getArticleTranslations(page)
+
   // ── Sibling Pages (Previous / Next Article Navigation) ──────────────────
   // Resolved on the server using Notion Block API for nested child pages.
   const { prevPage, nextPage } = await getSiblingPages(page)
@@ -124,12 +173,13 @@ export default async function ArticlePage({ params }) {
     '@graph': [
       {
         '@type': 'TechArticle',
-        '@id': `${SITE_URL}/${lastSlug}#article`,
+        '@id': `${SITE_URL}/${canonicalSlug}#article`,
         isPartOf: {
           '@id': `${SITE_URL}/#website`,
         },
         headline: title,
         description: description || `ServiceNow architecture and technical guide for ${title}.`,
+        inLanguage: localeMeta.bcp47,
         image: coverUrl ? [coverUrl] : [`${SITE_URL}/icon.svg`],
         datePublished: page.date ? new Date(page.date).toISOString() : undefined,
         dateModified: page.date ? new Date(page.date).toISOString() : undefined,
@@ -149,17 +199,29 @@ export default async function ArticlePage({ params }) {
         },
         mainEntityOfPage: {
           '@type': 'WebPage',
-          '@id': `${SITE_URL}/${lastSlug}`,
+          '@id': `${SITE_URL}/${canonicalSlug}`,
         },
         keywords: [
           ...(page.tags || []),
           page.category || 'ServiceNow',
           AUTHOR_NAME,
         ].join(', '),
+        ...(() => {
+          const workTranslation = Object.entries(translations)
+            .filter(([, t]) => t?.slug)
+            .map(([loc, t]) => ({
+              '@type': 'TechArticle',
+              '@id': `${SITE_URL}/${t.slug}#article`,
+              url: `${SITE_URL}/${t.slug}`,
+              headline: t.title,
+              inLanguage: getLocaleMeta(loc).bcp47,
+            }))
+          return workTranslation.length > 0 ? { workTranslation } : {}
+        })(),
       },
       {
         '@type': 'BreadcrumbList',
-        '@id': `${SITE_URL}/${lastSlug}#breadcrumb`,
+        '@id': `${SITE_URL}/${canonicalSlug}#breadcrumb`,
         itemListElement: [
           {
             '@type': 'ListItem',
@@ -177,7 +239,7 @@ export default async function ArticlePage({ params }) {
             '@type': 'ListItem',
             position: 3,
             name: title,
-            item: `${SITE_URL}/${lastSlug}`,
+            item: `${SITE_URL}/${canonicalSlug}`,
           },
         ],
       },
@@ -199,20 +261,22 @@ export default async function ArticlePage({ params }) {
         <article className="flex-1 max-w-4xl mx-auto min-w-0">
           {/* Page Header */}
           <header className="mb-8 pb-6 border-b border-rice-paper-400/60 dark:border-tea-slate-50/40">
-            <h1 className="font-serif font-medium text-2xl sm:text-3xl md:text-4xl text-ink-700 dark:text-sage-100 leading-tight mb-3">
+            <h1 lang={localeMeta.hreflang} className="font-serif font-medium text-2xl sm:text-3xl md:text-4xl text-ink-700 dark:text-sage-100 leading-tight mb-3">
               {title}
             </h1>
             {description && (
-              <p className="text-[1rem] leading-relaxed text-ink-400 dark:text-sage-400 max-w-prose">
+              <p lang={localeMeta.hreflang} className="text-[1rem] leading-relaxed text-ink-400 dark:text-sage-400 max-w-prose">
                 {description}
               </p>
             )}
+            <LanguageSwitcher currentLocale={locale} translations={translations} />
           </header>
 
           {/* Content Body */}
           {html ? (
             <NotionContent
               html={html}
+              locale={locale}
               className={[
                 'prose prose-neutral dark:prose-invert max-w-none wabi-sabi-theme',
                 'prose-headings:font-serif prose-headings:font-medium prose-headings:text-ink-700 dark:prose-headings:text-sage-100',
