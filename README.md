@@ -109,12 +109,24 @@ To make full use of the Course Cards and filtering system, your Notion Database 
 | `Name` / `Title` | `title` | Article / Lesson title |
 | `Slug` | `rich_text` | Custom URL slug (falls back to auto-slugified title or Page ID) |
 | `Status` | `status` / `select` | `Published` (only published articles are shown), `Draft`, `Archived` |
+| `Locale` | `select` / `rich_text` | Content language: `en` (default) or `vi`. Backward compatible if omitted. |
+| `Translation Group ID` | `rich_text` | Stable ID linking translations of the same article (e.g. `cmdb-001`). |
 | `Category` | `select` | High-level topic (e.g., `ITSM`, `Discovery`, `Scripting`, `Architect`) |
 | `Tags` | `multi_select` | Keyword tags for secondary filtering |
 | `Summary` | `rich_text` | Short description displayed on cards and article headers |
 | `Difficulty` | `select` | `Beginner`, `Intermediate`, `Advanced` (renders 1–3 dots) |
 | `Duration` | `rich_text` / `number` | Estimated read/completion time (e.g. `20 min`) |
 | `Parent Course` | `relation` / `select` | Optional parent course title to group sub-lessons |
+
+### 🌐 Bilingual Articles (English / Vietnamese)
+
+Articles support content localization via Notion database properties:
+- **Each language is a distinct Notion page**: Slugs, titles, categories, tags, and block bodies are localized independently.
+- **Link translations**: Set the same `Translation Group ID` (e.g., `cmdb-001`) on both English (`Locale: en`) and Vietnamese (`Locale: vi`) pages.
+- **Root-level URLs preserved**: English uses `/understanding-cmdb`, Vietnamese uses `/tim-hieu-cmdb` (no `/en/` or `/vi/` prefixes).
+- **Language Switcher**: Compact pill control `[ EN ] [ VI ]` automatically appears under the article title. Clicking the other language navigates directly to its localized slug.
+- **No Translation Available**: If an article does not have a translation published yet, the alternate language tag is shown as disabled/unclickable, without broken redirects or fake links.
+- **Homepage & UI**: The homepage displays English articles only by default to prevent duplicate cards. The site UI remains in English.
 
 ---
 

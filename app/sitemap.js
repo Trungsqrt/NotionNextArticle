@@ -8,7 +8,7 @@ export const revalidate = 3600
 export default async function sitemap() {
   let posts = []
   try {
-    posts = await getAllPosts()
+    posts = await getAllPosts('all')
   } catch (err) {
     console.error('Failed to generate dynamic sitemap:', err)
   }
@@ -18,9 +18,17 @@ export default async function sitemap() {
     return status !== 'draft' && status !== 'archived' && status !== 'hidden'
   })
 
-  const postEntries = validPosts.map(post => {
-    const slug = post.slug || post.id
-    const lastModified = post.date ? new Date(post.date) : new Date()
+  const seenSlugs = new Set()
+  const postEntries = validPosts
+    .filter(post => {
+      const slug = post.slug || post.id
+      if (!slug || seenSlugs.has(slug)) return false
+      seenSlugs.add(slug)
+      return true
+    })
+    .map(post => {
+      const slug = post.slug || post.id
+      const lastModified = post.date ? new Date(post.date) : new Date()
     return {
       url: `${SITE_URL}/${slug}`,
       lastModified,

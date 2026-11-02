@@ -21,7 +21,7 @@ export const metadata = {
 }
 
 export default async function Home() {
-  const allPosts = await getAllPosts()
+  const allPosts = await getAllPosts('en')
 
   // ── Filter courses for homepage ──────────────────────────────────────────
   // 1. Only Published status (exclude Draft / Archived / Hidden)
