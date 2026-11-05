@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev --webpack",
     "build": "next build --webpack",
-    "start": "next start"
+    "start": "next start",
+    "translate:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.local worker/index.js",
+    "test:translation": "node --test tests/translation-worker.test.js"
   },
   "dependencies": {
     "@notion-render/client": "^0.0.2",

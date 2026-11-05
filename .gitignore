@@ -38,3 +38,6 @@ Thumbs.db
 next-env.d.ts
 
 .agentrules
+
+# Local translation worker lock file
+.translation-worker.lock
