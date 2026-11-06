@@ -1,12 +1,21 @@
 #!/usr/bin/env node
-'use strict'
 
-const { getTranslationConfig } = require('../lib/notion-translation/config')
-const { startPoller } = require('./poller')
-const { createLogger } = require('./logger')
+import { getTranslationConfig } from '../lib/notion-translation/config'
+import { startPoller } from './poller'
+import { createLogger } from './logger'
 
-function parseCliArgs(argv = process.argv.slice(2)) {
-  const flags = {
+export interface WorkerCliFlags {
+  once: boolean
+  dryRun: boolean
+  help: boolean
+  targetPageId: string | null
+  pollIntervalMs: number | undefined
+}
+
+export function parseCliArgs(
+  argv: readonly string[] = process.argv.slice(2)
+): WorkerCliFlags {
+  const flags: WorkerCliFlags = {
     once: false,
     dryRun: false,
     help: false,
@@ -16,6 +25,8 @@ function parseCliArgs(argv = process.argv.slice(2)) {
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
+    if (!arg) continue
+
     if (arg === '--once') {
       flags.once = true
     } else if (arg === '--dry-run' || arg === '--dryRun') {
@@ -25,7 +36,7 @@ function parseCliArgs(argv = process.argv.slice(2)) {
     } else if (arg.startsWith('--page-id=')) {
       flags.targetPageId = arg.split('=')[1]?.trim() || null
     } else if (arg === '--page-id' && argv[i + 1]) {
-      flags.targetPageId = argv[++i].trim()
+      flags.targetPageId = argv[++i]!.trim()
     } else if (arg.startsWith('--interval=')) {
       const val = Number(arg.split('=')[1])
       if (!Number.isNaN(val) && val > 0) flags.pollIntervalMs = val
@@ -35,9 +46,9 @@ function parseCliArgs(argv = process.argv.slice(2)) {
   return flags
 }
 
-function printHelp() {
+export function printHelp(): void {
   console.log(`
-ServiceNow Knowledge Hub — Local Notion AI Translation Worker
+ServiceNow Knowledge Hub — Local Notion AI Translation Worker (TypeScript)
 
 Usage:
   pnpm run translate:worker                 Run continuous polling worker (default: 60s)
@@ -55,7 +66,9 @@ Options:
 `)
 }
 
-async function main(argv = process.argv.slice(2)) {
+export async function main(
+  argv: readonly string[] = process.argv.slice(2)
+): Promise<0 | 1> {
   const cli = parseCliArgs(argv)
   if (cli.help) {
     printHelp()
@@ -70,27 +83,43 @@ async function main(argv = process.argv.slice(2)) {
   })
 
   try {
-    await startPoller({
+    const pollerResult = await startPoller({
       config,
       once: cli.once,
       dryRun: cli.dryRun,
       targetPageId: cli.targetPageId,
       logger,
     })
+
+    const failedCount = pollerResult.lastCycleSummary?.failedCount || 0
+    if (pollerResult.exitCode === 1 || (cli.once && failedCount > 0)) {
+      logger.error(
+        `Worker finished with ${failedCount} failed translation job(s).`,
+        {
+          succeededCount: pollerResult.lastCycleSummary?.succeededCount || 0,
+          needsReviewCount:
+            pollerResult.lastCycleSummary?.needsReviewCount || 0,
+          failedCount,
+        }
+      )
+      process.exitCode = 1
+      return 1
+    }
+
     return 0
   } catch (err) {
-    logger.error(`Worker exited with error: ${err?.message || err}`)
+    const message = err instanceof Error ? err.message : String(err)
+    logger.error(`Worker exited with error: ${message}`)
     process.exitCode = 1
     return 1
   }
 }
 
-if (require.main === module) {
-  main()
-}
+const isMainExecution =
+  Boolean(process.argv[1]) &&
+  /worker[\\/]index\.(ts|js)$/i.test(process.argv[1]!)
 
-module.exports = {
-  parseCliArgs,
-  main,
+if (isMainExecution) {
+  void main()
 }
 

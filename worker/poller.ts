@@ -1,32 +1,51 @@
-'use strict'
-
-const fs = require('node:fs')
-const os = require('node:os')
-const { TRANSLATION_STATUS, getTranslationConfig, validateConfig } = require('../lib/notion-translation/config')
-const {
+import fs from 'node:fs'
+import os from 'node:os'
+import type { Client } from '@notionhq/client'
+import {
+  TRANSLATION_STATUS,
+  getTranslationConfig,
+  validateConfig,
+  type TranslationConfig,
+} from '../lib/notion-translation/config'
+import {
   createNotionClient,
   resolveArticlesDataSource,
   ensureTranslationSchema,
   queryAllPages,
   normalizeNotionId,
-} = require('../lib/notion-translation/notion-client')
-const {
+} from '../lib/notion-translation/notion-client'
+import {
   extractPageWorkflowMeta,
   processTranslationJob,
   recoverStaleProcessingPages,
-} = require('../lib/notion-translation/workflow')
-const { defaultLogger } = require('./logger')
+  type ProcessTranslationJobOptions,
+} from '../lib/notion-translation/workflow'
+import type {
+  IndexedDatabasePage,
+  PageWorkflowMeta,
+  PollCycleSummary,
+  TranslationJobResult,
+  WorkerLogger,
+} from '../lib/notion-translation/types'
+import { defaultLogger } from './logger'
 
-function isProcessAlive(pid) {
+export function isProcessAlive(pid: number): boolean {
   if (!pid || typeof pid !== 'number' || pid <= 0) return false
   if (pid === process.pid) return true
   try {
     process.kill(pid, 0)
     return true
   } catch (err) {
-    // ESRCH = no such process; EPERM = process exists under another user
-    return err?.code === 'EPERM'
+    return Boolean(
+      err && typeof err === 'object' && (err as { code?: string }).code === 'EPERM'
+    )
   }
+}
+
+export interface WorkerLockHandle {
+  acquired: boolean
+  lockFilePath?: string
+  release: () => void
 }
 
 /**
@@ -34,7 +53,10 @@ function isProcessAlive(pid) {
  * from concurrently polling and translating the same Notion pages.
  * Automatically recovers stale lock files left behind by dead processes.
  */
-function acquireWorkerLock(lockFilePath, logger = defaultLogger) {
+export function acquireWorkerLock(
+  lockFilePath: string | null | undefined,
+  logger: WorkerLogger = defaultLogger
+): WorkerLockHandle {
   if (!lockFilePath) {
     return { acquired: true, release: () => {} }
   }
@@ -49,8 +71,8 @@ function acquireWorkerLock(lockFilePath, logger = defaultLogger) {
     2
   )
 
-  function tryWriteExclusive() {
-    const fd = fs.openSync(lockFilePath, 'wx')
+  function tryWriteExclusive(): void {
+    const fd = fs.openSync(lockFilePath!, 'wx')
     try {
       fs.writeFileSync(fd, payload, 'utf8')
     } finally {
@@ -61,14 +83,18 @@ function acquireWorkerLock(lockFilePath, logger = defaultLogger) {
   try {
     tryWriteExclusive()
   } catch (err) {
-    if (err?.code !== 'EEXIST') {
+    const code =
+      err && typeof err === 'object' ? (err as { code?: string }).code : undefined
+    if (code !== 'EEXIST') {
       throw err
     }
 
-    // Lock file already exists; inspect whether the owning PID is still alive
-    let existingLock = null
+    let existingLock: { pid?: number; startedAt?: string } | null = null
     try {
-      existingLock = JSON.parse(fs.readFileSync(lockFilePath, 'utf8'))
+      existingLock = JSON.parse(fs.readFileSync(lockFilePath, 'utf8')) as {
+        pid?: number
+        startedAt?: string
+      }
     } catch {
       existingLock = null
     }
@@ -76,7 +102,7 @@ function acquireWorkerLock(lockFilePath, logger = defaultLogger) {
     if (existingLock?.pid && isProcessAlive(existingLock.pid)) {
       const lockErr = new Error(
         `Another translation worker instance is already running (PID ${existingLock.pid}, started at ${existingLock.startedAt}).`
-      )
+      ) as Error & { code?: string }
       lockErr.code = 'WORKER_LOCKED'
       throw lockErr
     }
@@ -94,12 +120,14 @@ function acquireWorkerLock(lockFilePath, logger = defaultLogger) {
   }
 
   let released = false
-  function release() {
-    if (released) return
+  function release(): void {
+    if (released || !lockFilePath) return
     released = true
     try {
       if (fs.existsSync(lockFilePath)) {
-        const current = JSON.parse(fs.readFileSync(lockFilePath, 'utf8'))
+        const current = JSON.parse(fs.readFileSync(lockFilePath, 'utf8')) as {
+          pid?: number
+        }
         if (!current?.pid || current.pid === process.pid) {
           fs.unlinkSync(lockFilePath)
         }
@@ -116,20 +144,29 @@ function acquireWorkerLock(lockFilePath, logger = defaultLogger) {
   }
 }
 
+export interface RunPollCycleOptions extends ProcessTranslationJobOptions {
+  targetPageId?: string | null
+  activePageIds?: Set<string>
+  shouldStop?: () => boolean
+}
+
 /**
  * Runs a single polling cycle:
  * 1. Resolves Articles database & ensures schema properties exist.
  * 2. Recovers any stale `Processing` jobs (>30m) safely.
  * 3. Finds pages with `Translation Status = Requested` and `Locale = en` (or missing Locale).
- * 4. Processes each requested page sequentially.
+ * 4. Processes each requested page sequentially and returns a structured cycle summary.
  */
-async function runPollCycle(options = {}) {
+export async function runPollCycle(
+  options: RunPollCycleOptions = {}
+): Promise<PollCycleSummary> {
   const config = options.config || getTranslationConfig(options)
   const logger = options.logger || defaultLogger
   const dryRun = Boolean(options.dryRun ?? config.dryRun)
   const client = options.client || createNotionClient(config)
-  const activePageIds = options.activePageIds || new Set()
-  const shouldStop = typeof options.shouldStop === 'function' ? options.shouldStop : () => false
+  const activePageIds = options.activePageIds || new Set<string>()
+  const shouldStop =
+    typeof options.shouldStop === 'function' ? options.shouldStop : () => false
 
   const dataSourceInfo =
     options.dataSourceInfo ||
@@ -138,21 +175,21 @@ async function runPollCycle(options = {}) {
       retryOptions: options.retryOptions,
     }))
 
-  await ensureTranslationSchema(client, dataSourceInfo, {
-    dryRun,
-    logger,
-    retryOptions: options.retryOptions,
-  })
+  await ensureTranslationSchema(
+    client,
+    dataSourceInfo as Awaited<ReturnType<typeof resolveArticlesDataSource>>,
+    {
+      dryRun,
+      logger,
+      retryOptions: options.retryOptions,
+    }
+  )
 
-  // Fetch all pages in the Articles database so we can:
-  // - Recover stale Processing jobs
-  // - Check existing Vietnamese translations across both Published and Draft pages
-  // - Process all Requested English pages
   const allDatabasePages = await queryAllPages(
     client,
-    dataSourceInfo,
+    dataSourceInfo as Awaited<ReturnType<typeof resolveArticlesDataSource>>,
     {},
-    { logger, retryOptions: options.retryOptions }
+    { config, logger, retryOptions: options.retryOptions }
   )
 
   // 1. Recover stale Processing jobs (>30 minutes) safely
@@ -166,15 +203,17 @@ async function runPollCycle(options = {}) {
   })
 
   // 2. Filter pages where Translation Status = Requested (or specific target page if --page-id is supplied)
-  const requestedPages = []
-  const skippedNonEnglish = []
+  const requestedPages: IndexedDatabasePage[] = []
+  const skippedNonEnglish: PageWorkflowMeta[] = []
 
   for (const page of allDatabasePages) {
     if (!page || page.in_trash || page.archived) continue
     const meta = extractPageWorkflowMeta(page, dataSourceInfo)
 
     if (options.targetPageId) {
-      if (normalizeNotionId(meta.id) === normalizeNotionId(options.targetPageId)) {
+      if (
+        normalizeNotionId(meta.id) === normalizeNotionId(options.targetPageId)
+      ) {
         requestedPages.push({ page, meta })
       }
       continue
@@ -193,31 +232,46 @@ async function runPollCycle(options = {}) {
   }
 
   if (skippedNonEnglish.length > 0) {
-    logger.info(`Ignored ${skippedNonEnglish.length} Requested page(s) with non-English locale`, {
-      pages: skippedNonEnglish.map(m => ({ id: m.id, locale: m.locale, title: m.title })),
-    })
+    logger.info(
+      `Ignored ${skippedNonEnglish.length} Requested page(s) with non-English locale`,
+      {
+        pages: skippedNonEnglish.map((m) => ({
+          id: m.id,
+          locale: m.locale,
+          title: m.title,
+        })),
+      }
+    )
   }
 
-  logger.info(`Poll scan complete: ${requestedPages.length} English article(s) queued for translation.`)
+  logger.info(
+    `Poll scan complete: ${requestedPages.length} English article(s) queued for translation.`
+  )
 
-  const results = []
+  const results: TranslationJobResult[] = []
 
   // 3. Process sequentially by default
   for (const { page, meta } of requestedPages) {
     if (shouldStop()) {
-      logger.info('Shutdown signal active; stopping before starting next queued article.')
+      logger.info(
+        'Shutdown signal active; stopping before starting next queued article.'
+      )
       break
     }
 
     const normId = normalizeNotionId(meta.id)
     if (activePageIds.has(normId)) {
-      logger.warn(`Skipping page "${meta.title}" (${meta.id}) because it is already being processed in this worker.`)
+      logger.warn(
+        `Skipping page "${meta.title}" (${meta.id}) because it is already being processed in this worker.`
+      )
       continue
     }
 
     activePageIds.add(normId)
     try {
-      logger.info(`Starting translation job for "${meta.title}" (${meta.id})...`)
+      logger.info(
+        `Starting translation job for "${meta.title}" (${meta.id})...`
+      )
       const jobResult = await processTranslationJob(page, {
         ...options,
         config,
@@ -229,14 +283,15 @@ async function runPollCycle(options = {}) {
       })
       results.push(jobResult)
 
-      // Refresh allDatabasePages in-memory list if a new page was created so subsequent jobs in the same batch see it
       if (jobResult.targetPageId && !dryRun) {
         try {
           const updatedPages = await queryAllPages(
             client,
-            dataSourceInfo,
+            dataSourceInfo as Awaited<
+              ReturnType<typeof resolveArticlesDataSource>
+            >,
             {},
-            { logger, retryOptions: options.retryOptions }
+            { config, logger, retryOptions: options.retryOptions }
           )
           allDatabasePages.length = 0
           allDatabasePages.push(...updatedPages)
@@ -249,26 +304,76 @@ async function runPollCycle(options = {}) {
     }
   }
 
-  return {
+  const allOutcomes = [...recoveredJobs, ...results]
+  let succeededCount = 0
+  let needsReviewCount = 0
+  let failedCount = 0
+
+  for (const outcome of allOutcomes) {
+    if (outcome?.status === TRANSLATION_STATUS.DRAFT_READY) {
+      succeededCount += 1
+    } else if (outcome?.status === TRANSLATION_STATUS.NEEDS_REVIEW) {
+      needsReviewCount += 1
+    } else if (outcome?.status === TRANSLATION_STATUS.FAILED) {
+      failedCount += 1
+    }
+  }
+
+  const summary: PollCycleSummary = {
     scannedCount: allDatabasePages.length,
     requestedCount: requestedPages.length,
     processedCount: results.length,
+    succeededCount,
+    needsReviewCount,
+    failedCount,
     recoveredCount: recoveredJobs.length,
     recoveredJobs,
     results,
+    hasFailures: failedCount > 0,
   }
+
+  logger.info('Poll cycle summary', {
+    scannedCount: summary.scannedCount,
+    requestedCount: summary.requestedCount,
+    succeededCount: summary.succeededCount,
+    needsReviewCount: summary.needsReviewCount,
+    failedCount: summary.failedCount,
+    recoveredCount: summary.recoveredCount,
+  })
+
+  return summary
+}
+
+export interface StartPollerOptions extends RunPollCycleOptions {
+  once?: boolean
+  pollIntervalMs?: number
+  skipLock?: boolean
+  registerSignalHandlers?: boolean
+  client?: Client
+  config?: TranslationConfig
+}
+
+export interface PollerRunResult {
+  cyclesCompleted: number
+  lastCycleSummary: PollCycleSummary | null
+  hasFailedJobs: boolean
+  exitCode: 0 | 1
+  requestStop: (signal?: string) => void
 }
 
 /**
- * Starts the single-loop async polling worker (no overlapping setInterval).
+ * Starts the single-loop async polling worker.
  * Supports `--once`, `--dry-run`, and graceful SIGINT/SIGTERM shutdown.
  */
-async function startPoller(options = {}) {
+export async function startPoller(
+  options: StartPollerOptions = {}
+): Promise<PollerRunResult> {
   const config = options.config || getTranslationConfig(options)
   const logger = options.logger || defaultLogger
   const once = Boolean(options.once ?? config.once)
   const dryRun = Boolean(options.dryRun ?? config.dryRun)
-  const pollIntervalMs = Number(options.pollIntervalMs ?? config.pollIntervalMs) || 60000
+  const pollIntervalMs =
+    Number(options.pollIntervalMs ?? config.pollIntervalMs) || 60000
 
   const validation = validateConfig(config, {
     requireAi: typeof options.aiAdapter !== 'function',
@@ -285,20 +390,22 @@ async function startPoller(options = {}) {
   )
 
   let stopping = false
-  let wakeUpSleep = null
-  const activePageIds = new Set()
+  let wakeUpSleep: (() => void) | null = null
+  const activePageIds = new Set<string>()
 
-  function requestStop(signal = 'SIGTERM') {
+  function requestStop(signal = 'SIGTERM'): void {
     if (stopping) return
     stopping = true
-    logger.info(`Received ${signal}. Finishing active translation job (if any) before exiting...`)
-    if ( typeof wakeUpSleep === 'function' ) {
+    logger.info(
+      `Received ${signal}. Finishing active translation job (if any) before exiting...`
+    )
+    if (typeof wakeUpSleep === 'function') {
       wakeUpSleep()
     }
   }
 
-  function interruptibleSleep(ms) {
-    return new Promise(resolve => {
+  function interruptibleSleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
       if (stopping) {
         resolve()
         return
@@ -325,7 +432,7 @@ async function startPoller(options = {}) {
 
   const client = options.client || createNotionClient(config)
   let cyclesCompleted = 0
-  let lastCycleSummary = null
+  let lastCycleSummary: PollCycleSummary | null = null
 
   logger.info('Local Notion AI Translation Worker started', {
     mode: once ? 'once' : 'continuous-polling',
@@ -350,7 +457,12 @@ async function startPoller(options = {}) {
           shouldStop: () => stopping,
         })
       } catch (cycleErr) {
-        logger.error(`Error during polling cycle #${cyclesCompleted}: ${cycleErr.message}`, cycleErr)
+        const errMessage =
+          cycleErr instanceof Error ? cycleErr.message : String(cycleErr)
+        logger.error(
+          `Error during polling cycle #${cyclesCompleted}: ${errMessage}`,
+          cycleErr instanceof Error ? cycleErr : { error: errMessage }
+        )
         if (once) throw cycleErr
       }
 
@@ -358,7 +470,9 @@ async function startPoller(options = {}) {
         break
       }
 
-      logger.info(`Waiting ${Math.round(pollIntervalMs / 1000)}s until next poll cycle...`)
+      logger.info(
+        `Waiting ${Math.round(pollIntervalMs / 1000)}s until next poll cycle...`
+      )
       await interruptibleSleep(pollIntervalMs)
     }
   } finally {
@@ -372,16 +486,16 @@ async function startPoller(options = {}) {
     })
   }
 
+  const hasFailedJobs = Boolean(
+    lastCycleSummary && lastCycleSummary.failedCount > 0
+  )
+
   return {
     cyclesCompleted,
     lastCycleSummary,
+    hasFailedJobs,
+    exitCode: once && hasFailedJobs ? 1 : 0,
     requestStop,
   }
 }
 
-module.exports = {
-  startPoller,
-  runPollCycle,
-  acquireWorkerLock,
-  isProcessAlive,
-}

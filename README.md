@@ -53,30 +53,30 @@ NotionNextArticle/
 ├── lib/
 │   ├── locales.js                  ← Supported article locales (en, vi) & normalization helpers
 │   ├── notion.js                   ← Website Notion API client, custom block-to-HTML parser, and caching
-│   └── notion-translation/         ← Independent AI translation engine for Notion pages
-│       ├── block-classifier.js     ← Classifies translatable vs non-translatable blocks & runs
-│       ├── builder.js              ← Reconstructs Notion blocks, rich_text annotations, and VI slugs
-│       ├── config.js               ← Environment config, status constants, and ServiceNow glossary
-│       ├── extractor.js            ← Extracts translatable rich_text runs with stable IDs and context
-│       ├── notion-client.js        ← Notion SDK wrapper, data source resolver, retry/backoff, file uploads
-│       ├── reader.js               ← Independent recursive raw Notion block tree reader
-│       ├── translator.js           ← Multi-provider AI adapter, batching, and JSON schema validation
-│       ├── validator.js            ← Post-translation structural validator and report generator
-│       ├── workflow.js             ← Idempotency, duplicate protection, stale recovery, and job lifecycle
-│       └── writer.js               ← Batched recursive Notion page & block writer
+│   └── notion-translation/         ← Independent TypeScript AI translation engine for Notion pages
+│       ├── block-classifier.ts     ← Classifies translatable vs non-translatable blocks & runs
+│       ├── builder.ts              ← Reconstructs Notion blocks, rich_text annotations, and VI slugs
+│       ├── checkpoint-store.ts     ← Durable local JSON checkpoints & SHA-256 content fingerprints
+│       ├── config.ts               ← Environment config, timeouts/limits, and ServiceNow glossary
+│       ├── extractor.ts            ← Extracts translatable rich_text runs with stable IDs and context
+│       ├── notion-client.ts        ← Notion SDK wrapper, safe pagination, retry/backoff, file uploads
+│       ├── reader.ts               ← Independent recursive raw Notion block tree reader
+│       ├── translator.ts           ← Multi-provider AI adapter, batching, and JSON schema validation
+│       ├── types.ts                ← Shared TypeScript interfaces and discriminated unions
+│       ├── validator.ts            ← Post-translation structural validator and report generator
+│       ├── workflow.ts             ← Idempotency, checkpoint resume, duplicate protection, job lifecycle
+│       └── writer.ts               ← Batched recursive Notion page & block writer with resume support
 ├── worker/
-│   ├── index.js                    ← CLI entry point (--once, --dry-run, --page-id)
-│   ├── logger.js                   ← Structured logger with automatic secret redaction
-│   └── poller.js                   ← Single-loop async poller, single-instance lock, graceful shutdown
-├── tests/
-│   ├── fixtures.js                 ← Comprehensive Notion block & property test fixtures
-│   └── translation-worker.test.js  ← Automated unit & workflow test suite
+│   ├── index.ts                    ← CLI entry point (--once, --dry-run, --page-id) & exit code handler
+│   ├── logger.ts                   ← Structured Pino logger with automatic secret redaction
+│   └── poller.ts                   ← Single-loop async poller, single-instance lock, graceful shutdown
 ├── styles/
 │   ├── globals.css                 ← Tailwind CSS directives, typography utilities, and resets
 │   └── wabi-sabi-theme.css         ← Wabi-sabi design tokens and rich Notion block overrides
 ├── .env.local.example              ← Environment variable template
 ├── next.config.js                  ← Image remotePatterns and bundler configuration
 ├── package.json
+├── tsconfig.worker.json            ← TypeScript configuration scoped to the translation worker
 └── tailwind.config.js              ← Custom color palette & design tokens
 ```
 
@@ -128,6 +128,13 @@ TRANSLATION_BATCH_SIZE=20
 TRANSLATION_MAX_BATCH_CHARS=6000
 TRANSLATION_CONCURRENCY=1
 TRANSLATION_STALE_TIMEOUT_MS=1800000
+
+# Request timeouts, media size limit, and pagination safety limits
+TRANSLATION_AI_TIMEOUT_MS=120000
+TRANSLATION_NOTION_TIMEOUT_MS=30000
+TRANSLATION_ASSET_TIMEOUT_MS=60000
+TRANSLATION_MAX_ASSET_BYTES=20971520
+TRANSLATION_MAX_PAGINATION_PAGES=500
 ```
 
 ### 3. Run Development Server
@@ -203,7 +210,7 @@ Whenever you finish writing an English article (`Locale = en` or empty), simply 
 
 ### 3. AI Provider Configuration
 
-The translation engine uses a provider adapter (`lib/notion-translation/translator.js`) that supports multiple AI providers via `.env.local`:
+The translation engine uses a provider adapter (`lib/notion-translation/translator.ts`) that supports multiple AI providers via `.env.local`:
 
 - **OpenAI**:
   ```env
@@ -296,12 +303,12 @@ Press `Ctrl+C` in PowerShell at any time for a **graceful shutdown** — the wor
 
 ---
 
-## 🧪 Testing & Verification
+## 🔍 Typecheck & Verification
 
-Run the automated unit and workflow test suite (uses mocked Notion and AI responses — zero live Notion writes or AI token usage):
+Verify TypeScript types for the translation worker:
 
 ```bash
-pnpm run test:translation
+pnpm run typecheck:worker
 ```
 
 Run a production build check:
