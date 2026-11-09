@@ -10,18 +10,22 @@ import {
 import {
   createNotionClient,
   resolveArticlesDataSource,
+  resolveDatabaseById,
   ensureTranslationSchema,
   queryAllPages,
   normalizeNotionId,
+  withNotionRetry,
 } from '../lib/notion-translation/notion-client'
 import {
   extractPageWorkflowMeta,
+  isPageInActiveTranslationJob,
   processTranslationJob,
   recoverStaleProcessingPages,
   type ProcessTranslationJobOptions,
 } from '../lib/notion-translation/workflow'
 import type {
   IndexedDatabasePage,
+  NotionPageLike,
   PageWorkflowMeta,
   PollCycleSummary,
   TranslationJobResult,
@@ -231,6 +235,57 @@ export async function runPollCycle(
     requestedPages.push({ page, meta })
   }
 
+  // If a specific --page / --page-id was requested and not found in the root database,
+  // retrieve it directly from Notion (e.g. nested database item or child page).
+  if (
+    options.targetPageId &&
+    requestedPages.length === 0 &&
+    typeof client.pages?.retrieve === 'function'
+  ) {
+    try {
+      const retrievedPage = (await withNotionRetry(
+        () => client.pages.retrieve({ page_id: options.targetPageId! }),
+        {
+          isIdempotent: true,
+          label: `pages.retrieve(${options.targetPageId})`,
+          logger,
+          ...options.retryOptions,
+        }
+      )) as NotionPageLike
+
+      if (retrievedPage && !retrievedPage.in_trash && !retrievedPage.archived) {
+        let pageDsInfo = dataSourceInfo
+        if (
+          retrievedPage.parent?.database_id &&
+          normalizeNotionId(retrievedPage.parent.database_id) !==
+            normalizeNotionId(dataSourceInfo.databaseId)
+        ) {
+          try {
+            pageDsInfo = await resolveDatabaseById(
+              client,
+              retrievedPage.parent.database_id,
+              { config, logger, retryOptions: options.retryOptions }
+            )
+          } catch {
+            // Keep root dataSourceInfo fallback
+          }
+        }
+        const meta = extractPageWorkflowMeta(retrievedPage, pageDsInfo)
+        requestedPages.push({ page: retrievedPage, meta })
+      }
+    } catch (retrieveErr) {
+      logger.error(
+        `Could not retrieve target page "${options.targetPageId}" from Notion`,
+        {
+          error:
+            retrieveErr instanceof Error
+              ? retrieveErr.message
+              : String(retrieveErr),
+        }
+      )
+    }
+  }
+
   if (skippedNonEnglish.length > 0) {
     logger.info(
       `Ignored ${skippedNonEnglish.length} Requested page(s) with non-English locale`,
@@ -260,9 +315,9 @@ export async function runPollCycle(
     }
 
     const normId = normalizeNotionId(meta.id)
-    if (activePageIds.has(normId)) {
+    if (activePageIds.has(normId) || isPageInActiveTranslationJob(meta.id)) {
       logger.warn(
-        `Skipping page "${meta.title}" (${meta.id}) because it is already being processed in this worker.`
+        `Skipping page "${meta.title}" (${meta.id}) because it is already being processed in an active worker job.`
       )
       continue
     }
@@ -282,6 +337,13 @@ export async function runPollCycle(
         logger,
       })
       results.push(jobResult)
+
+      if (jobResult.status === 'paused_quota') {
+        logger.warn(
+          `AI provider daily quota exhausted during "${meta.title}" (${meta.id}). Stopping further jobs in this cycle; checkpoint and completed batches are preserved.`
+        )
+        break
+      }
 
       if (jobResult.targetPageId && !dryRun) {
         try {
@@ -308,6 +370,7 @@ export async function runPollCycle(
   let succeededCount = 0
   let needsReviewCount = 0
   let failedCount = 0
+  let pausedQuotaCount = 0
 
   for (const outcome of allOutcomes) {
     if (outcome?.status === TRANSLATION_STATUS.DRAFT_READY) {
@@ -316,6 +379,8 @@ export async function runPollCycle(
       needsReviewCount += 1
     } else if (outcome?.status === TRANSLATION_STATUS.FAILED) {
       failedCount += 1
+    } else if (outcome?.status === 'paused_quota') {
+      pausedQuotaCount += 1
     }
   }
 
@@ -326,6 +391,7 @@ export async function runPollCycle(
     succeededCount,
     needsReviewCount,
     failedCount,
+    pausedQuotaCount,
     recoveredCount: recoveredJobs.length,
     recoveredJobs,
     results,
@@ -338,6 +404,7 @@ export async function runPollCycle(
     succeededCount: summary.succeededCount,
     needsReviewCount: summary.needsReviewCount,
     failedCount: summary.failedCount,
+    pausedQuotaCount: summary.pausedQuotaCount,
     recoveredCount: summary.recoveredCount,
   })
 
@@ -464,6 +531,16 @@ export async function startPoller(
           cycleErr instanceof Error ? cycleErr : { error: errMessage }
         )
         if (once) throw cycleErr
+      }
+
+      if (
+        lastCycleSummary?.pausedQuotaCount &&
+        lastCycleSummary.pausedQuotaCount > 0
+      ) {
+        logger.warn(
+          'AI daily quota exhausted; stopping polling loop safely. Restart the worker after quota resets or switch AI provider to resume from local checkpoints.'
+        )
+        break
       }
 
       if (once || stopping) {

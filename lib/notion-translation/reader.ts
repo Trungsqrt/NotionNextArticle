@@ -214,18 +214,24 @@ export async function readRawNotionTree(
         : `${index}`
       const blockId = rawBlock.id || `anon-${position}`
 
+      const isSeparateResourceBlock =
+        rawBlock.type === 'child_page' || rawBlock.type === 'child_database'
+
       const node: NotionBlockNode = {
         id: blockId,
         type: rawBlock.type || 'unsupported',
         position,
         depth,
-        has_children: Boolean(rawBlock.has_children),
+        has_children: isSeparateResourceBlock
+          ? false
+          : Boolean(rawBlock.has_children),
         text: extractBlockPlainText(rawBlock),
         raw: deepClone(rawBlock),
         children: [],
       }
 
       const shouldFetchChildren =
+        !isSeparateResourceBlock &&
         Boolean(rawBlock.has_children) &&
         Boolean(rawBlock.id) &&
         !visitedBlockIds.has(rawBlock.id!)

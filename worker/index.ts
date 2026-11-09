@@ -33,10 +33,12 @@ export function parseCliArgs(
       flags.dryRun = true
     } else if (arg === '--help' || arg === '-h') {
       flags.help = true
-    } else if (arg.startsWith('--page-id=')) {
+    } else if (arg.startsWith('--page-id=') || arg.startsWith('--page=')) {
       flags.targetPageId = arg.split('=')[1]?.trim() || null
-    } else if (arg === '--page-id' && argv[i + 1]) {
+      if (flags.targetPageId) flags.once = true
+    } else if ((arg === '--page-id' || arg === '--page') && argv[i + 1]) {
       flags.targetPageId = argv[++i]!.trim()
+      if (flags.targetPageId) flags.once = true
     } else if (arg.startsWith('--interval=')) {
       const val = Number(arg.split('=')[1])
       if (!Number.isNaN(val) && val > 0) flags.pollIntervalMs = val
@@ -51,16 +53,17 @@ export function printHelp(): void {
 ServiceNow Knowledge Hub — Local Notion AI Translation Worker (TypeScript)
 
 Usage:
-  pnpm run translate:worker                 Run continuous polling worker (default: 60s)
-  pnpm run translate:worker -- --once       Run a single polling cycle and exit
-  pnpm run translate:worker -- --dry-run    Read and translate without modifying Notion
-  pnpm run translate:worker -- --once --dry-run
-  pnpm run translate:worker -- --once --page-id=<notion-page-id>
+  pnpm translate:worker                     Run continuous polling worker (default: 60s)
+  pnpm translate --page <notion-page-id>    Translate a specific page (and its nested hierarchy) once
+  pnpm translate:worker -- --once           Run a single polling cycle and exit
+  pnpm translate:worker -- --dry-run        Read and translate without modifying Notion
+  pnpm translate:worker -- --once --dry-run
+  pnpm translate:worker -- --once --page-id=<notion-page-id>
 
 Options:
   --once                Scan and process one polling cycle, then exit
   --dry-run             Translate in memory and validate without writing to Notion
-  --page-id=<id>        Process a specific English source page ID
+  --page <id>           Process a specific English source page ID (alias: --page-id=<id>)
   --interval=<ms>       Override polling interval in milliseconds (default: 60000)
   --help, -h            Show this help message
 `)

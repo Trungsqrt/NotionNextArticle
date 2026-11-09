@@ -54,20 +54,22 @@ NotionNextArticle/
 │   ├── locales.js                  ← Supported article locales (en, vi) & normalization helpers
 │   ├── notion.js                   ← Website Notion API client, custom block-to-HTML parser, and caching
 │   └── notion-translation/         ← Independent TypeScript AI translation engine for Notion pages
-│       ├── block-classifier.ts     ← Classifies translatable vs non-translatable blocks & runs
-│       ├── builder.ts              ← Reconstructs Notion blocks, rich_text annotations, and VI slugs
-│       ├── checkpoint-store.ts     ← Durable local JSON checkpoints & SHA-256 content fingerprints
+│       ├── block-classifier.ts     ← Classifies translatable vs non-translatable blocks, sliders & Mermaid
+│       ├── builder.ts              ← Reconstructs Notion blocks, Mermaid labels, references, and VI slugs
+│       ├── checkpoint-store.ts     ← Durable local JSON checkpoints & persistent resource mapping store
 │       ├── config.ts               ← Environment config, timeouts/limits, and ServiceNow glossary
-│       ├── extractor.ts            ← Extracts translatable rich_text runs with stable IDs and context
-│       ├── notion-client.ts        ← Notion SDK wrapper, safe pagination, retry/backoff, file uploads
+│       ├── discovery.ts            ← Recursive content hierarchy discovery (pages, child_page, child_database)
+│       ├── extractor.ts            ← Extracts translatable rich_text runs & safe Mermaid display labels
+│       ├── notion-client.ts        ← Notion SDK wrapper, schema caching, safe pagination, file uploads
+│       ├── planner.ts              ← Hierarchical translation planner, group IDs, and reference resolution
 │       ├── reader.ts               ← Independent recursive raw Notion block tree reader
 │       ├── translator.ts           ← Multi-provider AI adapter, batching, and JSON schema validation
 │       ├── types.ts                ← Shared TypeScript interfaces and discriminated unions
 │       ├── validator.ts            ← Post-translation structural validator and report generator
-│       ├── workflow.ts             ← Idempotency, checkpoint resume, duplicate protection, job lifecycle
-│       └── writer.ts               ← Batched recursive Notion page & block writer with resume support
+│       ├── workflow.ts             ← Hierarchical orchestration, checkpoint resume, duplicate protection
+│       └── writer.ts               ← Batched recursive Notion page, child_page & block writer
 ├── worker/
-│   ├── index.ts                    ← CLI entry point (--once, --dry-run, --page-id) & exit code handler
+│   ├── index.ts                    ← CLI entry point (--once, --dry-run, --page / --page-id)
 │   ├── logger.ts                   ← Structured Pino logger with automatic secret redaction
 │   └── poller.ts                   ← Single-loop async poller, single-instance lock, graceful shutdown
 ├── styles/
@@ -212,6 +214,20 @@ Whenever you finish writing an English article (`Locale = en` or empty), simply 
 
 The translation engine uses a provider adapter (`lib/notion-translation/translator.ts`) that supports multiple AI providers via `.env.local`:
 
+- **Groq (Recommended for Free/Low-Cost Development Testing)**:
+  ```env
+  AI_PROVIDER=groq
+  GROQ_API_KEY=gsk_...
+  AI_BASE_URL=https://api.groq.com/openai/v1
+  AI_MODEL=qwen/qwen3-32b
+  ```
+- **OpenRouter (Flexible Multi-Model Routing)**:
+  ```env
+  AI_PROVIDER=openrouter
+  OPENROUTER_API_KEY=sk-or-...
+  AI_BASE_URL=https://openrouter.ai/api/v1
+  AI_MODEL=qwen/qwen3-32b
+  ```
 - **OpenAI**:
   ```env
   AI_PROVIDER=openai
@@ -233,13 +249,18 @@ The translation engine uses a provider adapter (`lib/notion-translation/translat
   AI_BASE_URL=https://api.anthropic.com/v1
   AI_MODEL=claude-3-5-sonnet-latest
   ```
-- **OpenAI-Compatible Endpoints (OpenRouter, DeepSeek, Groq, Ollama)**:
-  ```env
-  AI_PROVIDER=openai-compatible
-  AI_API_KEY=your_api_key
-  AI_BASE_URL=https://openrouter.ai/api/v1
-  AI_MODEL=openai/gpt-4o-mini
-  ```
+
+### 3b. ServiceNow Terminology Protection & Token Optimization
+
+- **Deterministic Terminology Protection (`lib/notion-translation/terminology.ts`)**:
+  - Official ServiceNow terms (`Catalog Item`, `Record Producer`, `Business Rule`, `Script Include`, `Flow Designer`, `Service Catalog`, `CMDB`, `CSDM`, `IRE`, `RITM`, `SCTASK`, `GlideRecord`, etc.), table/field identifiers (`sc_req_item`, `short_description`, `sys_id`), 32-char hex `sys_id`s, ticket numbers, API calls (`gs.*`, `g_form.*`), URLs, and custom object names are automatically protected with compact placeholders (`__SN0__`, `__SN1__`, ...) before sending text to the AI and restored verbatim after translation.
+  - Customize protected terms without changing code by editing `lib/notion-translation/servicenow-glossary.json` (or setting `TRANSLATION_GLOSSARY_PATH` / `TRANSLATION_CUSTOM_TERMS` in `.env.local`).
+- **Compact Batching & Persistent Segment Cache**:
+  - Batches are sent as compact flat JSON maps (`{"a":"...","b":"..."}`) with short keys and a concise ServiceNow-specific system prompt.
+  - Translated segments are cached in `.translation-worker-state/segment-cache.json` by SHA-256 fingerprint, so re-runs or incremental edits to an article reuse unchanged segments with zero AI token cost.
+- **Rate-Limit Pacing & Daily Quota Pause/Resume**:
+  - Configurable `TRANSLATION_RPM_LIMIT`, `TRANSLATION_TPM_LIMIT`, `TRANSLATION_RPD_LIMIT`, and `TRANSLATION_TPD_LIMIT`.
+  - If a provider's daily quota is exhausted (HTTP 429 daily limit / 402 or configured RPD/TPD cap), the worker safely pauses the job, keeps the Notion source page in `Requested` with `[Quota Paused]` details in `Translation Error`, preserves all completed batches and cached segments locally, and stops polling until restarted.
 
 ### 4. Starting the Worker on Windows PowerShell
 
@@ -247,19 +268,23 @@ The worker runs locally on your Windows PC and does **not** require `pnpm dev` o
 
 - **Continuous polling mode** (scans every 60 seconds by default):
   ```powershell
-  pnpm run translate:worker
+  pnpm translate:worker
+  ```
+- **Translate a specific page (and its entire nested hierarchy) once**:
+  ```powershell
+  pnpm translate --page <32_char_or_uuid_page_id>
   ```
 - **Single-cycle mode** (scans once, processes all `Requested` English pages, then exits):
   ```powershell
-  pnpm run translate:worker -- --once
+  pnpm translate:worker -- --once
   ```
-- **Dry-run mode** (reads the Notion page and runs AI translation + structural validation in memory without creating or updating any Notion pages):
+- **Dry-run mode** (discovers hierarchy, runs AI translation, and validates in memory without modifying Notion):
   ```powershell
-  pnpm run translate:worker -- --once --dry-run
+  pnpm translate:worker -- --once --dry-run
   ```
-- **Target a specific page ID**:
+- **Dry-run a specific page ID**:
   ```powershell
-  pnpm run translate:worker -- --once --dry-run --page-id=<32_char_or_uuid_page_id>
+  pnpm translate --page <32_char_or_uuid_page_id> --dry-run
   ```
 
 Press `Ctrl+C` in PowerShell at any time for a **graceful shutdown** — the worker will finish the active article job (if one is in progress), release `.translation-worker.lock`, and exit cleanly.
@@ -292,13 +317,15 @@ Press `Ctrl+C` in PowerShell at any time for a **graceful shutdown** — the wor
 | `toggle` | Translates toggle title and nested children; preserves `[slider]` marker for `ImageSlider` | ✅ Full |
 | `table` / `table_row` | Translates cell rich text; preserves `table_width`, `has_column_header`, `has_row_header` | ✅ Full (supports >100 rows via chunked append) |
 | `column_list` / `column` | Preserves column layout, `width_ratio`, and recursively translates column children | ✅ Full |
-| `code` | **Never translates code**; preserves code text and language 100% verbatim | ✅ Full |
+| `code` | **Never translates programming code**; preserves code text and language verbatim, translates `caption`, and safely translates human-readable display labels in `mermaid` diagrams | ✅ Full |
 | `equation` | **Never translates LaTeX formulas**; preserves block and inline equations verbatim | ✅ Full |
 | `image`, `video`, `file`, `pdf`, `audio` | Translates caption; reuses external URLs and re-uploads Notion-hosted expiring files via `fileUploads` API | ✅ Full (marks `Needs Review` if an expiring URL cannot be downloaded) |
 | `bookmark`, `embed` | Preserves destination `url`; translates `bookmark` caption | ✅ Full |
 | `divider`, `breadcrumb`, `table_of_contents` | Preserves block structure and metadata without translation | ✅ Full |
 | `synced_block` | Recreates as an independent `synced_block` (`synced_from: null`) with translated children | ⚠️ Marks `Needs Review` (live sync with English block is not retained) |
-| `child_page`, `child_database` | Does not duplicate the entire sub-page/database; links to localized VI counterpart if available or original reference via `link_to_page` | ⚠️ Marks `Needs Review` when referenced resource is untranslated |
+| `child_page` | Creates a real Vietnamese child page (`parent: { page_id }`) under the Vietnamese parent page at the exact block position and recursively translates its content | ✅ Full |
+| `child_database` | Shares the same nested database (never duplicates the database), recursively translates its English rows into Vietnamese (`Locale = vi`, `Status = Draft`) inside that database, and links the shared database on the Vietnamese parent page | ✅ Full |
+| `link_to_page` | Localizes `page_id` references to the corresponding Vietnamese page when available, or preserves the original reference | ✅ Full (marks `Needs Review` only if referenced external page has no translation) |
 | `unsupported` | Never silently dropped; records block ID, type, and position in `Translation Error` | ⚠️ Marks `Needs Review` |
 
 ---

@@ -86,6 +86,27 @@ function positiveIntWithDefault(
   }, z.number().int().min(min).max(max))
 }
 
+function nonNegativeIntWithDefault(
+  fallback: number,
+  max = Number.MAX_SAFE_INTEGER
+) {
+  return z.preprocess((raw) => {
+    if (raw === undefined || raw === null || raw === '') return fallback
+    const num = Number(raw)
+    if (!Number.isFinite(num) || num < 0) return fallback
+    return Math.min(max, Math.max(0, Math.floor(num)))
+  }, z.number().int().min(0).max(max))
+}
+
+function nonNegativeFloatWithDefault(fallback: number) {
+  return z.preprocess((raw) => {
+    if (raw === undefined || raw === null || raw === '') return fallback
+    const num = Number(raw)
+    if (!Number.isFinite(num) || num < 0) return fallback
+    return num
+  }, z.number().min(0))
+}
+
 export function inferAiProvider(env: Record<string, string | undefined>): string {
   const explicit = (env.AI_PROVIDER || '').trim().toLowerCase()
   if (explicit) return explicit
@@ -106,6 +127,17 @@ export function inferAiProvider(env: Record<string, string | undefined>): string
   if (baseUrl.includes('openrouter.ai')) return 'openrouter'
   if (baseUrl.includes('deepseek.com')) return 'deepseek'
   if (baseUrl.includes('groq.com')) return 'groq'
+  if (env.GROQ_API_KEY && !env.AI_API_KEY && !env.OPENAI_API_KEY && !baseUrl) {
+    return 'groq'
+  }
+  if (
+    env.OPENROUTER_API_KEY &&
+    !env.AI_API_KEY &&
+    !env.OPENAI_API_KEY &&
+    !baseUrl
+  ) {
+    return 'openrouter'
+  }
   if (env.GEMINI_API_KEY || env.GOOGLE_API_KEY) {
     if (!env.AI_API_KEY && !env.OPENAI_API_KEY && !baseUrl) return 'gemini'
   }
@@ -151,12 +183,50 @@ export function getDefaultModel(provider: string): string {
       return 'claude-3-5-sonnet-latest'
     case 'deepseek':
       return 'deepseek-chat'
+    case 'groq':
+      return 'qwen/qwen3-32b'
     case 'openrouter':
-      return 'openai/gpt-4o-mini'
+      return 'qwen/qwen3-32b'
     case 'openai':
     case 'openai-compatible':
     default:
       return 'gpt-4o-mini'
+  }
+}
+
+export function resolveProviderApiKey(
+  provider: string,
+  env: Record<string, string | undefined>,
+  explicitKey?: string
+): string {
+  if (explicitKey) return explicitKey
+  if (env.AI_API_KEY) return env.AI_API_KEY
+
+  switch (provider) {
+    case 'groq':
+      return env.GROQ_API_KEY || ''
+    case 'openrouter':
+      return env.OPENROUTER_API_KEY || ''
+    case 'gemini':
+    case 'google':
+      return env.GEMINI_API_KEY || env.GOOGLE_API_KEY || ''
+    case 'anthropic':
+    case 'claude':
+      return env.ANTHROPIC_API_KEY || ''
+    case 'deepseek':
+      return env.DEEPSEEK_API_KEY || env.OPENAI_API_KEY || ''
+    case 'openai':
+    case 'openai-compatible':
+    default:
+      return (
+        env.OPENAI_API_KEY ||
+        env.GROQ_API_KEY ||
+        env.OPENROUTER_API_KEY ||
+        env.GEMINI_API_KEY ||
+        env.GOOGLE_API_KEY ||
+        env.ANTHROPIC_API_KEY ||
+        ''
+      )
   }
 }
 
@@ -173,6 +243,12 @@ export const TranslationConfigSchema = z.object({
   sourceLocale: z.string().min(1),
   batchSize: positiveIntWithDefault(20, 1),
   maxBatchChars: positiveIntWithDefault(6000, 500),
+  maxInputTokensPerBatch: positiveIntWithDefault(1800, 200),
+  maxOutputTokens: positiveIntWithDefault(4096, 256),
+  rpmLimit: nonNegativeIntWithDefault(0),
+  tpmLimit: nonNegativeIntWithDefault(0),
+  rpdLimit: nonNegativeIntWithDefault(0),
+  tpdLimit: nonNegativeIntWithDefault(0),
   concurrency: positiveIntWithDefault(1, 1),
   staleTimeoutMs: positiveIntWithDefault(30 * 60 * 1000, 60000),
   maxBlocksPerAppend: positiveIntWithDefault(100, 1, 100),
@@ -183,6 +259,11 @@ export const TranslationConfigSchema = z.object({
   maxPaginationPages: positiveIntWithDefault(500, 1),
   lockFilePath: z.string().min(1),
   stateDirPath: z.string().min(1),
+  glossaryFilePath: z.string().default(''),
+  customProtectedTerms: z.array(z.string()).default([]),
+  inputCostPer1M: nonNegativeFloatWithDefault(0),
+  outputCostPer1M: nonNegativeFloatWithDefault(0),
+  disableReasoning: z.boolean().default(true),
   dryRun: z.boolean().default(false),
   once: z.boolean().default(false),
   glossary: z.custom<readonly GlossaryRule[]>(),
@@ -207,6 +288,20 @@ export function getTranslationConfig(
     .trim()
     .toLowerCase()
 
+  const customProtectedTerms = Array.isArray(overrides.customProtectedTerms)
+    ? overrides.customProtectedTerms
+    : (env.TRANSLATION_CUSTOM_TERMS || '')
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean)
+
+  const disableReasoningRaw =
+    overrides.disableReasoning !== undefined
+      ? overrides.disableReasoning
+      : env.TRANSLATION_DISABLE_REASONING !== undefined
+        ? !/^(false|0|no)$/i.test(env.TRANSLATION_DISABLE_REASONING.trim())
+        : true
+
   const rawConfig = {
     notionToken:
       overrides.notionToken ||
@@ -226,14 +321,7 @@ export function getTranslationConfig(
       env.NOTION_DATABASE_ID ||
       '',
     aiProvider,
-    aiApiKey:
-      overrides.aiApiKey ||
-      env.AI_API_KEY ||
-      env.OPENAI_API_KEY ||
-      env.GEMINI_API_KEY ||
-      env.GOOGLE_API_KEY ||
-      env.ANTHROPIC_API_KEY ||
-      '',
+    aiApiKey: resolveProviderApiKey(aiProvider, env, overrides.aiApiKey),
     aiBaseUrl: (
       overrides.aiBaseUrl ||
       env.AI_BASE_URL ||
@@ -257,6 +345,15 @@ export function getTranslationConfig(
       .toLowerCase(),
     batchSize: overrides.batchSize ?? env.TRANSLATION_BATCH_SIZE,
     maxBatchChars: overrides.maxBatchChars ?? env.TRANSLATION_MAX_BATCH_CHARS,
+    maxInputTokensPerBatch:
+      overrides.maxInputTokensPerBatch ??
+      env.TRANSLATION_MAX_INPUT_TOKENS_PER_BATCH,
+    maxOutputTokens:
+      overrides.maxOutputTokens ?? env.TRANSLATION_MAX_OUTPUT_TOKENS,
+    rpmLimit: overrides.rpmLimit ?? env.TRANSLATION_RPM_LIMIT,
+    tpmLimit: overrides.tpmLimit ?? env.TRANSLATION_TPM_LIMIT,
+    rpdLimit: overrides.rpdLimit ?? env.TRANSLATION_RPD_LIMIT,
+    tpdLimit: overrides.tpdLimit ?? env.TRANSLATION_TPD_LIMIT,
     concurrency: overrides.concurrency ?? env.TRANSLATION_CONCURRENCY,
     staleTimeoutMs:
       overrides.staleTimeoutMs ?? env.TRANSLATION_STALE_TIMEOUT_MS,
@@ -277,6 +374,14 @@ export function getTranslationConfig(
       overrides.stateDirPath ||
       env.TRANSLATION_STATE_DIR ||
       path.join(process.cwd(), '.translation-worker-state'),
+    glossaryFilePath:
+      overrides.glossaryFilePath ?? env.TRANSLATION_GLOSSARY_PATH ?? '',
+    customProtectedTerms,
+    inputCostPer1M:
+      overrides.inputCostPer1M ?? env.TRANSLATION_INPUT_COST_PER_1M,
+    outputCostPer1M:
+      overrides.outputCostPer1M ?? env.TRANSLATION_OUTPUT_COST_PER_1M,
+    disableReasoning: Boolean(disableReasoningRaw),
     dryRun: Boolean(overrides.dryRun),
     once: Boolean(overrides.once),
     glossary: overrides.glossary || SERVICENOW_GLOSSARY,
@@ -308,7 +413,9 @@ export function validateConfig(
     config.aiProvider !== 'ollama' &&
     config.aiProvider !== 'mock'
   ) {
-    errors.push('Missing AI API key (set AI_API_KEY in .env.local).')
+    errors.push(
+      'Missing AI API key (set AI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY in .env.local).'
+    )
   }
 
   return {

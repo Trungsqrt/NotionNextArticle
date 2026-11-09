@@ -6,6 +6,7 @@
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",
+    "translate": "tsx --tsconfig tsconfig.worker.json worker/index.ts --once",
     "translate:worker": "tsx --tsconfig tsconfig.worker.json worker/index.ts",
     "typecheck:worker": "tsc -p tsconfig.worker.json --noEmit"
   },

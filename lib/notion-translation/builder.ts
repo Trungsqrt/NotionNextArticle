@@ -1,5 +1,9 @@
 import { classifyBlock } from './block-classifier'
 import {
+  extractMermaidLabelSpans,
+  formatRichTextContext,
+} from './extractor'
+import {
   normalizeTreeNodes,
   attachTreeMeta,
   deepClone,
@@ -9,13 +13,16 @@ import {
   findPropertyKey,
   findTitlePropertyKey,
   getPropertyPlainText,
+  normalizeNotionId,
 } from './notion-client'
 import { TRANSLATION_STATUS } from './config'
 import type {
   ArticlesDataSourceInfo,
+  DiscoveredPageParentKind,
   NotionBlockNode,
   NotionBlockTree,
   NotionPageLike,
+  ReferenceResolutionMap,
   TranslateManifestResult,
   TranslatedPagePropertiesPayload,
   TranslationStatus,
@@ -135,12 +142,20 @@ export function sanitizeAnnotations(
   }
 }
 
-function sanitizeMention(mention: unknown): unknown {
+function sanitizeMention(
+  mention: unknown,
+  referenceMap?: ReferenceResolutionMap | null
+): unknown {
   if (!mention || typeof mention !== 'object') return mention
   const m = mention as Record<string, unknown>
   const type = m.type
   if (type === 'page' && (m.page as { id?: string } | undefined)?.id) {
-    return { type: 'page', page: { id: (m.page as { id: string }).id } }
+    const rawPageId = (m.page as { id: string }).id
+    const localizedPageId =
+      referenceMap?.targetPageIdBySourcePageId?.get(
+        normalizeNotionId(rawPageId)
+      ) || rawPageId
+    return { type: 'page', page: { id: localizedPageId } }
   }
   if (type === 'database' && (m.database as { id?: string } | undefined)?.id) {
     return {
@@ -170,6 +185,96 @@ function sanitizeMention(mention: unknown): unknown {
     }
   }
   return deepClone(mention)
+}
+
+export function localizeInternalUrl(
+  rawUrl: string | null | undefined,
+  referenceMap?: ReferenceResolutionMap | null
+): string | null {
+  if (!rawUrl || typeof rawUrl !== 'string') return null
+  if (!referenceMap) return rawUrl
+
+  const trimmed = rawUrl.trim()
+  if (!trimmed) return rawUrl
+
+  // 1. Relative internal path: /some-slug or /some-slug#section
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+    const [pathPart, hashPart] = trimmed.split('#')
+    const slugCandidate = pathPart.replace(/^\/+|\/+$/g, '').trim()
+    if (slugCandidate) {
+      const mappedSlug =
+        referenceMap.targetSlugBySourceSlug.get(slugCandidate.toLowerCase()) ||
+        referenceMap.targetSlugBySourcePageId.get(
+          normalizeNotionId(slugCandidate)
+        )
+      if (mappedSlug) {
+        return `/${mappedSlug}${hashPart ? `#${hashPart}` : ''}`
+      }
+    }
+    return rawUrl
+  }
+
+  // 2. Notion URL pointing to a known source page ID
+  const notionIdMatch = trimmed.match(
+    /([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
+  )
+  if (
+    notionIdMatch &&
+    (trimmed.includes('notion.so/') ||
+      trimmed.includes('notion.site/') ||
+      /^\/?[0-9a-f-]{32,36}$/i.test(trimmed))
+  ) {
+    const matchedRawId = notionIdMatch[1]
+    const normId = normalizeNotionId(matchedRawId)
+    const mappedPageId = referenceMap.targetPageIdBySourcePageId.get(normId)
+    if (mappedPageId) {
+      const cleanTargetHex = normalizeNotionId(mappedPageId)
+      if (trimmed.includes('notion.so/') || trimmed.includes('notion.site/')) {
+        return `https://www.notion.so/${cleanTargetHex}`
+      }
+      return `/${cleanTargetHex}`
+    }
+  }
+
+  return rawUrl
+}
+
+export function rebuildMermaidCode(
+  mermaidCode: string,
+  blockId: string,
+  translationsInput: TranslationLookupInput
+): string {
+  if (!mermaidCode || typeof mermaidCode !== 'string') return mermaidCode
+  const spans = extractMermaidLabelSpans(mermaidCode)
+  if (spans.length === 0) return mermaidCode
+
+  let updatedCode = mermaidCode
+  for (let i = spans.length - 1; i >= 0; i--) {
+    const span = spans[i]
+    const itemId = `block:${blockId}:mermaid_label:${span.index}`
+    const translated = getTranslationValue(translationsInput, itemId)
+    if (translated === undefined || translated === null) continue
+
+    const sanitized = String(translated)
+      .replace(/[\r\n]+/g, ' ')
+      .replace(/"/g, "'")
+      .trim()
+    if (!sanitized) continue
+
+    const charBefore = span.start > 0 ? updatedCode[span.start - 1] : ''
+    const needsQuotes =
+      !span.wasQuoted &&
+      charBefore !== '|' &&
+      /[[\](){}|:;<>]/.test(sanitized)
+
+    const replacement = needsQuotes ? `"${sanitized}"` : sanitized
+    updatedCode =
+      updatedCode.slice(0, span.start) +
+      replacement +
+      updatedCode.slice(span.end)
+  }
+
+  return updatedCode
 }
 
 export function chunkTextContent(
@@ -207,7 +312,8 @@ export interface RebuiltRichTextItem {
 export function rebuildRichTextArray(
   richTextArray: unknown,
   idPrefix: string,
-  translationsInput: TranslationLookupInput
+  translationsInput: TranslationLookupInput,
+  referenceMap?: ReferenceResolutionMap | null
 ): RebuiltRichTextItem[] {
   if (!Array.isArray(richTextArray) || richTextArray.length === 0) return []
 
@@ -241,10 +347,13 @@ export function rebuildRichTextArray(
     if (runType === 'mention' && origRun.mention) {
       rebuiltRuns.push({
         type: 'mention',
-        mention: sanitizeMention(origRun.mention),
+        mention: sanitizeMention(origRun.mention, referenceMap),
         ...(annotations ? { annotations } : {}),
         plain_text: typeof origRun.plain_text === 'string' ? origRun.plain_text : '',
-        href: typeof origRun.href === 'string' ? origRun.href : null,
+        href: localizeInternalUrl(
+          typeof origRun.href === 'string' ? origRun.href : null,
+          referenceMap
+        ),
       })
       continue
     }
@@ -257,9 +366,10 @@ export function rebuildRichTextArray(
       (typeof origRun.plain_text === 'string' ? origRun.plain_text : '')
     const finalContent =
       translatedText !== undefined ? String(translatedText) : origText
-    const linkUrl =
+    const rawLinkUrl =
       origTextObj?.link?.url ||
       (typeof origRun.href === 'string' ? origRun.href : null)
+    const linkUrl = localizeInternalUrl(rawLinkUrl, referenceMap)
 
     const chunks = chunkTextContent(finalContent)
     for (const chunk of chunks) {
@@ -354,9 +464,13 @@ export function toNotionRichTextRequest(
 export function buildTranslatedBlockTree(
   rawTree: NotionBlockTree | NotionBlockNode[],
   translationResult: TranslationLookupInput,
-  options: { sourcePageId?: string } = {}
+  options: {
+    sourcePageId?: string
+    referenceMap?: ReferenceResolutionMap | null
+  } = {}
 ): NotionBlockTree {
   const rootNodes = normalizeTreeNodes(rawTree)
+  const referenceMap = options.referenceMap || null
 
   function buildNode(node: NotionBlockNode): NotionBlockNode {
     const clonedRaw = deepClone(node.raw || node) as Record<string, unknown>
@@ -374,13 +488,15 @@ export function buildTranslatedBlockTree(
           payload.rich_text = rebuildRichTextArray(
             payload.rich_text,
             `block:${blockId}:rich_text`,
-            translationResult
+            translationResult,
+            referenceMap
           )
         } else if (field === 'caption' && Array.isArray(payload.caption)) {
           payload.caption = rebuildRichTextArray(
             payload.caption,
             `block:${blockId}:caption`,
-            translationResult
+            translationResult,
+            referenceMap
           )
         } else if (
           field === 'cells' &&
@@ -391,9 +507,42 @@ export function buildTranslatedBlockTree(
             rebuildRichTextArray(
               cellRichText,
               `block:${blockId}:cells:${cellIndex}`,
-              translationResult
+              translationResult,
+              referenceMap
             )
           )
+        }
+      }
+
+      if (
+        blockType === 'code' &&
+        classification.isMermaidCodeBlock &&
+        Array.isArray(payload.rich_text) &&
+        payload.rich_text.length > 0
+      ) {
+        const origMermaidCode = formatRichTextContext(payload.rich_text)
+        const rebuiltMermaidCode = rebuildMermaidCode(
+          origMermaidCode,
+          blockId,
+          translationResult
+        )
+        if (rebuiltMermaidCode !== origMermaidCode) {
+          const chunks = chunkTextContent(rebuiltMermaidCode)
+          payload.rich_text = chunks.map((chunk) => ({
+            type: 'text',
+            text: { content: chunk },
+            plain_text: chunk,
+          }))
+        }
+      }
+
+      if (blockType === 'child_page' && referenceMap) {
+        const localizedMeta =
+          referenceMap.localizedPageMetaBySourcePageId.get(
+            normalizeNotionId(blockId)
+          )
+        if (localizedMeta?.title) {
+          payload.title = localizedMeta.title
         }
       }
     }
@@ -501,11 +650,15 @@ export interface BuildTranslatedPagePropertiesOptions {
   translationGroupId?: string
   existingSlugs?: Iterable<string>
   targetTranslationStatus?: TranslationStatus
+  parentKind?: DiscoveredPageParentKind
+  referenceMap?: ReferenceResolutionMap | null
 }
 
 /**
  * Builds the Notion `properties` payload for creating the translated Vietnamese page
- * inside the Articles database. Always sets `Status = Draft` and `Locale = vi`.
+ * inside a Notion database or as a child page under a parent page.
+ * Inspects the actual database schema before writing properties and always sets
+ * `Status = Draft` and `Locale = vi` when supported by the database schema.
  */
 export function buildTranslatedPageProperties(
   sourcePage: NotionPageLike,
@@ -518,22 +671,31 @@ export function buildTranslatedPageProperties(
   const existingSlugs = options.existingSlugs || new Set<string>()
   const targetTranslationStatus =
     options.targetTranslationStatus || TRANSLATION_STATUS.DRAFT_READY
+  const parentKind: DiscoveredPageParentKind =
+    options.parentKind ||
+    (sourcePage?.parent?.type === 'page_id' ? 'page' : 'database')
+  const referenceMap = options.referenceMap || null
 
   const sourceProps = (sourcePage?.properties || {}) as Record<
     string,
     Record<string, unknown>
   >
-  const schemaProps: Record<string, Record<string, unknown>> = {
-    ...(dataSourceInfo?.properties || {}),
-    ...sourceProps,
-  }
+  const dbSchemaProps = dataSourceInfo?.properties
+  const hasExplicitDbSchema =
+    Boolean(dbSchemaProps) && Object.keys(dbSchemaProps!).length > 0
+  const schemaProps: Record<string, Record<string, unknown>> = hasExplicitDbSchema
+    ? { ...dbSchemaProps! }
+    : { ...sourceProps }
 
   const propertiesPayload: Record<string, unknown> = {}
 
   // 1. Title property
   const titleKey =
-    dataSourceInfo?.titlePropertyName || findTitlePropertyKey(schemaProps)
-  const sourceTitleProp = sourceProps[titleKey]
+    dataSourceInfo?.titlePropertyName ||
+    findTitlePropertyKey(schemaProps) ||
+    findTitlePropertyKey(sourceProps)
+  const sourceTitleKey = findTitlePropertyKey(sourceProps) || titleKey
+  const sourceTitleProp = sourceProps[sourceTitleKey] || sourceProps[titleKey]
   let rebuiltTitleRuns: RebuiltRichTextItem[] = []
   if (
     sourceTitleProp &&
@@ -543,7 +705,8 @@ export function buildTranslatedPageProperties(
     rebuiltTitleRuns = rebuildRichTextArray(
       sourceTitleProp.title,
       'prop:title',
-      translationResult
+      translationResult,
+      referenceMap
     )
   } else {
     const fallbackTitle =
@@ -560,14 +723,10 @@ export function buildTranslatedPageProperties(
     .map((r) => r.text?.content ?? r.plain_text ?? '')
     .join('')
     .trim()
-  propertiesPayload[titleKey] = {
-    title: toNotionRichTextRequest(rebuiltTitleRuns),
-  }
 
-  // 2. Slug property
-  const slugKey = findPropertyKey(schemaProps, ['Slug', 'slug'])
-  const sourceSlug = slugKey
-    ? getPropertyPlainText(sourceProps[slugKey]).trim()
+  const slugKeyInSource = findPropertyKey(sourceProps, ['Slug', 'slug'])
+  const sourceSlug = slugKeyInSource
+    ? getPropertyPlainText(sourceProps[slugKeyInSource]).trim()
     : ''
   const uniqueSlug = resolveUniqueVietnameseSlug(
     translatedTitlePlain,
@@ -575,6 +734,29 @@ export function buildTranslatedPageProperties(
     existingSlugs,
     targetLocale
   )
+
+  // If the page is a direct child_page (`parent: { type: 'page_id' }`), Notion API
+  // only accepts the `title` property in `pages.create` / `pages.update`.
+  if (parentKind === 'page') {
+    propertiesPayload.title = {
+      title: toNotionRichTextRequest(rebuiltTitleRuns),
+    }
+    return {
+      properties: propertiesPayload,
+      translatedTitle: translatedTitlePlain,
+      slug: uniqueSlug,
+      translationGroupId,
+      locale: targetLocale,
+      status: 'Draft',
+    }
+  }
+
+  propertiesPayload[titleKey] = {
+    title: toNotionRichTextRequest(rebuiltTitleRuns),
+  }
+
+  // 2. Slug property (only if present in schema)
+  const slugKey = findPropertyKey(schemaProps, ['Slug', 'slug'])
   if (slugKey) {
     propertiesPayload[slugKey] = {
       rich_text: toNotionRichTextRequest([
@@ -584,12 +766,29 @@ export function buildTranslatedPageProperties(
   }
 
   // 3. Summary property
-  const summaryKey = findPropertyKey(schemaProps, ['Summary', 'Description'])
-  if (summaryKey && sourceProps[summaryKey]?.rich_text) {
+  const summaryKey = findPropertyKey(schemaProps, [
+    'Summary',
+    'summary',
+    'Description',
+    'description',
+  ])
+  const sourceSummaryKey =
+    findPropertyKey(sourceProps, [
+      'Summary',
+      'summary',
+      'Description',
+      'description',
+    ]) || summaryKey
+  if (
+    summaryKey &&
+    sourceSummaryKey &&
+    sourceProps[sourceSummaryKey]?.rich_text
+  ) {
     const rebuiltSummaryRuns = rebuildRichTextArray(
-      sourceProps[summaryKey].rich_text,
+      sourceProps[sourceSummaryKey].rich_text,
       'prop:summary',
-      translationResult
+      translationResult,
+      referenceMap
     )
     propertiesPayload[summaryKey] = {
       rich_text: toNotionRichTextRequest(rebuiltSummaryRuns),
@@ -597,7 +796,7 @@ export function buildTranslatedPageProperties(
   }
 
   // 4. Locale property -> 'vi'
-  const localeKey = findPropertyKey(schemaProps, ['Locale'])
+  const localeKey = findPropertyKey(schemaProps, ['Locale', 'locale'])
   if (localeKey) {
     propertiesPayload[localeKey] = buildLocaleWriteValue(
       dataSourceInfo?.properties?.[localeKey],
@@ -628,7 +827,56 @@ export function buildTranslatedPageProperties(
     )
   }
 
-  // 7. Category
+  // 7. Type (Course, Article, Tutorial, etc.)
+  const typeKey = findPropertyKey(schemaProps, ['Type', 'type'])
+  if (typeKey && sourceProps[typeKey]) {
+    const srcType = sourceProps[typeKey]
+    const sel = srcType.select as { name?: string } | undefined
+    if (srcType.type === 'select' && sel?.name) {
+      propertiesPayload[typeKey] = { select: { name: sel.name } }
+    } else if (
+      srcType.type === 'multi_select' &&
+      Array.isArray(srcType.multi_select)
+    ) {
+      propertiesPayload[typeKey] = {
+        multi_select: (srcType.multi_select as Array<{ name: string }>).map(
+          (item) => ({ name: item.name })
+        ),
+      }
+    } else if (
+      srcType.type === 'rich_text' &&
+      Array.isArray(srcType.rich_text)
+    ) {
+      propertiesPayload[typeKey] = {
+        rich_text: toNotionRichTextRequest(srcType.rich_text),
+      }
+    }
+  }
+
+  // 8. Date
+  const dateKey = findPropertyKey(schemaProps, [
+    'Date',
+    'date',
+    'Published Date',
+  ])
+  if (dateKey && sourceProps[dateKey]?.type === 'date' && sourceProps[dateKey].date) {
+    const srcDate = sourceProps[dateKey].date as {
+      start?: string
+      end?: string | null
+      time_zone?: string | null
+    }
+    if (srcDate.start) {
+      propertiesPayload[dateKey] = {
+        date: {
+          start: srcDate.start,
+          ...(srcDate.end ? { end: srcDate.end } : {}),
+          ...(srcDate.time_zone ? { time_zone: srcDate.time_zone } : {}),
+        },
+      }
+    }
+  }
+
+  // 9. Category
   const categoryKey = findPropertyKey(schemaProps, ['Category', 'category'])
   if (categoryKey && sourceProps[categoryKey]) {
     const srcCat = sourceProps[categoryKey]
@@ -651,7 +899,7 @@ export function buildTranslatedPageProperties(
     }
   }
 
-  // 8. Tags
+  // 10. Tags
   const tagsKey = findPropertyKey(schemaProps, ['Tags', 'tags'])
   if (tagsKey && sourceProps[tagsKey]) {
     const srcTags = sourceProps[tagsKey]
@@ -670,7 +918,7 @@ export function buildTranslatedPageProperties(
     }
   }
 
-  // 9. Difficulty
+  // 11. Difficulty
   const difficultyKey = findPropertyKey(schemaProps, [
     'Difficulty',
     'difficulty',
@@ -690,7 +938,7 @@ export function buildTranslatedPageProperties(
     }
   }
 
-  // 10. Duration
+  // 12. Duration
   const durationKey = findPropertyKey(schemaProps, ['Duration', 'duration'])
   if (durationKey && sourceProps[durationKey]) {
     const srcDur = sourceProps[durationKey]
@@ -706,10 +954,12 @@ export function buildTranslatedPageProperties(
     }
   }
 
-  // 11. Parent Course
+  // 13. Parent / Parent Course relation or select
   const parentCourseKey = findPropertyKey(schemaProps, [
     'Parent Course',
     'Parent',
+    'parent',
+    'Parent Item',
     'Course',
     'Parent Course Name',
   ])
@@ -722,9 +972,13 @@ export function buildTranslatedPageProperties(
       srcParent.relation.length > 0
     ) {
       propertiesPayload[parentCourseKey] = {
-        relation: (srcParent.relation as Array<{ id: string }>).map((r) => ({
-          id: r.id,
-        })),
+        relation: (srcParent.relation as Array<{ id: string }>).map((r) => {
+          const localizedParentId =
+            referenceMap?.targetPageIdBySourcePageId?.get(
+              normalizeNotionId(r.id)
+            ) || r.id
+          return { id: localizedParentId }
+        }),
       }
     } else if (srcParent.type === 'select' && sel?.name) {
       propertiesPayload[parentCourseKey] = { select: { name: sel.name } }
@@ -738,13 +992,13 @@ export function buildTranslatedPageProperties(
     }
   }
 
-  // 12. Order
+  // 14. Order
   const orderKey = findPropertyKey(schemaProps, ['Order', 'order'])
   if (orderKey && typeof sourceProps[orderKey]?.number === 'number') {
     propertiesPayload[orderKey] = { number: sourceProps[orderKey].number }
   }
 
-  // 13. Translation Status on target page -> Draft Ready
+  // 15. Translation Status on target page -> Draft Ready
   const translationStatusKey = findPropertyKey(schemaProps, [
     'Translation Status',
     'TranslationStatus',

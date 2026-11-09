@@ -476,6 +476,85 @@ export async function queryAllPages(
   )
 }
 
+const databaseInfoCacheByClient = new WeakMap<
+  Client,
+  Map<string, ArticlesDataSourceInfo>
+>()
+
+function getClientDatabaseCache(
+  client: Client
+): Map<string, ArticlesDataSourceInfo> {
+  let cache = databaseInfoCacheByClient.get(client)
+  if (!cache) {
+    cache = new Map<string, ArticlesDataSourceInfo>()
+    databaseInfoCacheByClient.set(client, cache)
+  }
+  return cache
+}
+
+export function extractDatabaseTitle(
+  rawDatabase: unknown,
+  rawDataSource: unknown = null,
+  fallback = 'Database'
+): string {
+  const candidates = [rawDatabase, rawDataSource]
+  for (const obj of candidates) {
+    if (!obj || typeof obj !== 'object') continue
+    const rec = obj as { title?: unknown[] }
+    if (Array.isArray(rec.title) && rec.title.length > 0) {
+      const text = rec.title.map(extractRichTextSegmentPlain).join('').trim()
+      if (text) return text
+    }
+  }
+  return fallback
+}
+
+/**
+ * Inspects a specific Notion database or data source by ID and returns its
+ * resolved databaseId, dataSourceId, titlePropertyName, and property schema map.
+ * Results are cached per Notion client instance.
+ */
+export async function resolveDatabaseById(
+  client: Client,
+  targetDatabaseOrDataSourceId: string,
+  options: NotionOperationOptions & { forceRefresh?: boolean } = {}
+): Promise<ArticlesDataSourceInfo> {
+  const cleanId = String(targetDatabaseOrDataSourceId || '').trim()
+  if (!cleanId) {
+    throw new Error('resolveDatabaseById requires a non-empty database ID.')
+  }
+
+  const normKey = normalizeNotionId(cleanId)
+  const cache = getClientDatabaseCache(client)
+  if (!options.forceRefresh && normKey && cache.has(normKey)) {
+    return cache.get(normKey)!
+  }
+
+  const info = await resolveArticlesDataSource(
+    client,
+    {
+      ...(options.config || {}),
+      translationDatabaseId: cleanId,
+      rootPageId: cleanId,
+    },
+    options
+  )
+
+  if (normKey) {
+    cache.set(normKey, info)
+  }
+  const normDb = normalizeNotionId(info.databaseId)
+  if (normDb) {
+    cache.set(normDb, info)
+  }
+  const normDs = normalizeNotionId(info.dataSourceId)
+  if (normDs) {
+    cache.set(normDs, info)
+  }
+
+  return info
+}
+
 /**
  * Inspects the configured database / root page and resolves the Articles database ID,
  * data source ID, and full property schema.

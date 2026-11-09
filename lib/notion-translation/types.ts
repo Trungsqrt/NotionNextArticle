@@ -53,13 +53,20 @@ export interface ArticlesDataSourceInfo {
   rawDataSource: DataSourceObjectResponse | null
 }
 
-export type NotionPageLike = PageObjectResponse | {
+export interface NotionPageLike {
   id: string
   url?: string
   in_trash?: boolean
   archived?: boolean
   created_time?: string
   last_edited_time?: string
+  parent?: {
+    type?: string
+    database_id?: string
+    data_source_id?: string
+    page_id?: string
+    workspace?: boolean
+  }
   cover?: Record<string, unknown> | null
   icon?: Record<string, unknown> | null
   properties?: Record<string, Record<string, unknown>>
@@ -93,6 +100,7 @@ export interface BlockClassification {
   requiresManualReviewNote?: boolean
   resourceType?: 'page' | 'database' | 'link_to_page'
   isCustomSliderToggle?: boolean
+  isMermaidCodeBlock?: boolean
 }
 
 export interface RichTextClassification {
@@ -210,17 +218,45 @@ export interface TranslationManifest {
   syncedBlocks: SyncedBlockIssue[]
 }
 
+export interface AiProviderTokenUsage {
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+}
+
+export interface AiProviderStructuredResponse {
+  __isStructuredAiResponse: true
+  data: unknown
+  usage?: AiProviderTokenUsage
+  finishReason?: string
+}
+
 export interface AiProviderRequest {
   systemPrompt: string
   userPrompt: string
   batchItems: TranslationItem[]
   targetLocale: string
   attempt: number
+  estimatedOutputTokens?: number
 }
 
 export type AiProviderAdapter = (
   request: AiProviderRequest
 ) => Promise<unknown>
+
+export interface TranslationUsageStats {
+  provider: string
+  model: string
+  apiRequests: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cachedSegments: number
+  skippedTechnicalSegments: number
+  translatedSegments: number
+  failedBatches: number
+  estimatedCostUsd: number | null
+}
 
 export interface TranslateManifestStats {
   totalRequested: number
@@ -228,6 +264,7 @@ export interface TranslateManifestStats {
   batchCount: number
   retryCount: number
   reusedFromCheckpoint?: boolean
+  usage?: TranslationUsageStats
 }
 
 export interface TranslateManifestResult {
@@ -293,6 +330,7 @@ export type CheckpointJobState =
   | 'translating'
   | 'translated'
   | 'writing'
+  | 'paused_quota'
   | 'failed'
   | 'needs_review'
   | 'completed'
@@ -318,6 +356,7 @@ export interface JobCheckpoint {
   uploadedAssetsBySourceKey: Record<string, UploadedAssetRecord>
   completedBatches: Record<string, CompletedBatchRecord>
   sourceToTargetBlockMap: Record<string, string>
+  childTargetPageIdsBySourceId?: Record<string, string>
   writeIssues: WriteIssuesCollection
   pendingOperation: PendingWriteOperation | null
   lastError: string | null
@@ -362,6 +401,11 @@ export interface CheckpointController {
     targetBlockIds: string[]
     blockFingerprints: string[]
   }): void
+  getChildTargetPageId(sourceChildPageId: string): string | null
+  recordChildTargetPageId(
+    sourceChildPageId: string,
+    targetChildPageId: string
+  ): void
   getPendingOperation(): PendingWriteOperation | null
   recordPendingOperation(op: PendingWriteOperation): void
   recordWriteIssues(issues: Partial<WriteIssuesCollection>): void
@@ -525,11 +569,18 @@ export type TranslationJobResult =
       error: string
       dryRun: boolean
     }
+  | {
+      status: 'paused_quota'
+      sourcePageId: string
+      targetPageId: string
+      reason: string
+      dryRun: boolean
+    }
 
 export interface RecoveredJobSummary {
   sourcePageId: string
   action: 'marked_existing' | 'resumed_partial_job' | 'resumed_empty_shell' | 'reprocessed'
-  status: TranslationStatus | 'skipped_locale'
+  status: TranslationStatus | 'skipped_locale' | 'paused_quota'
   targetPageId: string
 }
 
@@ -540,10 +591,146 @@ export interface PollCycleSummary {
   succeededCount: number
   needsReviewCount: number
   failedCount: number
+  pausedQuotaCount?: number
   recoveredCount: number
   recoveredJobs: RecoveredJobSummary[]
   results: TranslationJobResult[]
   hasFailures: boolean
+}
+
+export type DiscoveredPageParentKind = 'database' | 'page'
+
+export interface DiscoveredReference {
+  sourcePageId: string
+  blockId: string
+  position: string
+  referenceKind: 'link_to_page' | 'mention_page' | 'internal_url' | 'relation'
+  targetKind: 'page' | 'database' | 'slug'
+  targetIdOrSlug: string
+  rawHref?: string
+}
+
+export interface DiscoveredPageNode {
+  pageId: string
+  page: NotionPageLike
+  meta: PageWorkflowMeta
+  parentKind: DiscoveredPageParentKind
+  parentDatabaseId: string | null
+  parentDataSourceId: string | null
+  parentPageId: string | null
+  sourceChildPageBlockId: string | null
+  depth: number
+  blockTree: NotionBlockTree
+  childPageIds: string[]
+  childDatabaseIds: string[]
+  relatedChildPageIds: string[]
+  references: DiscoveredReference[]
+}
+
+export interface DiscoveredDatabaseNode {
+  databaseId: string
+  dataSourceInfo: ArticlesDataSourceInfo
+  parentPageId: string | null
+  sourceBlockId: string | null
+  title: string
+  isRootDatabase: boolean
+  allPages: NotionPageLike[]
+  englishPageIds: string[]
+  indices: DatabasePageIndices
+}
+
+export interface DiscoveredContentGraph {
+  rootPageId: string
+  rootDatabaseId: string
+  pagesById: Map<string, DiscoveredPageNode>
+  databasesById: Map<string, DiscoveredDatabaseNode>
+  orderedPageIds: string[]
+  references: DiscoveredReference[]
+}
+
+export interface ResourceMappingEntry {
+  sourcePageId: string
+  targetPageId: string
+  targetLocale: string
+  translationGroupId: string
+  sourceSlug: string
+  targetSlug: string
+  sourceTitle: string
+  targetTitle: string
+  parentKind: DiscoveredPageParentKind
+  parentDatabaseId: string | null
+  parentTargetPageId: string | null
+  updatedAt: string
+}
+
+export interface ResourceMappingStoreData {
+  version: 1
+  mappingsBySourceKey: Record<string, ResourceMappingEntry>
+  updatedAt: string
+}
+
+export interface ReferenceResolutionMap {
+  targetPageIdBySourcePageId: Map<string, string>
+  targetSlugBySourceSlug: Map<string, string>
+  targetSlugBySourcePageId: Map<string, string>
+  translatedDatabaseIds: Set<string>
+  localizedPageMetaBySourcePageId: Map<string, PageWorkflowMeta>
+}
+
+export interface PlannedPageTask {
+  sourcePageId: string
+  node: DiscoveredPageNode
+  dataSourceInfo: ArticlesDataSourceInfo
+  translationGroupId: string
+  generatedGroupId: boolean
+  existingInspection: ExistingTranslationInspection
+  manifest: TranslationManifest
+  sourceFingerprint: string
+  parentSourcePageId: string | null
+}
+
+export interface TranslationPlan {
+  rootPageId: string
+  targetLocale: string
+  graph: DiscoveredContentGraph
+  tasksById: Map<string, PlannedPageTask>
+  orderedTaskIds: string[]
+  referenceMap: ReferenceResolutionMap
+  totalDiscoveredPages: number
+  totalNestedDatabases: number
+  totalTranslatableBlocks: number
+}
+
+export interface ChildJobOutcome {
+  sourcePageId: string
+  title: string
+  parentKind: DiscoveredPageParentKind
+  status: TranslationStatus | 'skipped_locale' | 'paused_quota'
+  targetPageId: string
+  error?: string
+}
+
+export interface SegmentCacheEntry {
+  translatedText: string
+  targetLocale: string
+  updatedAt: string
+}
+
+export interface SegmentCacheStoreData {
+  version: 1
+  entries: Record<string, SegmentCacheEntry>
+  updatedAt: string
+}
+
+export interface HierarchicalJobProgress {
+  rootPageId: string
+  discoveredCount: number
+  completedCount: number
+  failedCount: number
+  needsReviewCount: number
+  currentResourceTitle: string
+  currentResourceId: string
+  outcomes: ChildJobOutcome[]
 }
 
 export type {

@@ -332,13 +332,21 @@ export function validateTranslation(
           | undefined
         const sCode = getRichTextPlain(sCodeObj?.rich_text)
         const tCode = getRichTextPlain(tCodeObj?.rich_text)
-        if (sCode !== tCode) {
+        const sLang = sCodeObj?.language || 'plain text'
+        const tLang = tCodeObj?.language || 'plain text'
+        const isMermaid = sLang.trim().toLowerCase() === 'mermaid'
+
+        if (isMermaid) {
+          if (sCode.trim() && !tCode.trim()) {
+            validationErrors.push(
+              `Mermaid diagram block at ${itemPath} is empty in translated output`
+            )
+          }
+        } else if (sCode !== tCode) {
           validationErrors.push(
             `Code block content was altered at ${itemPath}`
           )
         }
-        const sLang = sCodeObj?.language || 'plain text'
-        const tLang = tCodeObj?.language || 'plain text'
         if (sLang !== tLang) {
           validationErrors.push(
             `Code block language mismatch at ${itemPath}: expected "${sLang}", found "${tLang}"`
@@ -367,14 +375,24 @@ export function validateTranslation(
         )
       }
 
-      // 6. Link destinations verification
+      // 6. Link destinations verification (allowing localized internal / Notion page links)
       const sLinks = extractAllBlockLinks(sRaw)
       const tLinks = extractAllBlockLinks(tRaw)
-      for (const link of sLinks) {
-        if (!tLinks.includes(link)) {
-          validationErrors.push(
-            `Missing hyperlink destination "${link}" at ${itemPath}`
-          )
+      if (sLinks.length > tLinks.length) {
+        validationErrors.push(
+          `Missing hyperlink(s) at ${itemPath}: expected ${sLinks.length} link(s), found ${tLinks.length}`
+        )
+      } else {
+        for (const link of sLinks) {
+          const isInternalOrNotionLink =
+            link.startsWith('/') ||
+            link.includes('notion.so/') ||
+            link.includes('notion.site/')
+          if (!isInternalOrNotionLink && !tLinks.includes(link)) {
+            validationErrors.push(
+              `Missing hyperlink destination "${link}" at ${itemPath}`
+            )
+          }
         }
       }
 

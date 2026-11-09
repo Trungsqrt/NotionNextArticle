@@ -55,6 +55,141 @@ export function getTrailingWhitespace(str: string): string {
   return m ? m[0] : ''
 }
 
+export interface MermaidLabelSpan {
+  index: number
+  start: number
+  end: number
+  text: string
+  wasQuoted: boolean
+}
+
+const MERMAID_KEYWORD_ONLY = new Set([
+  'graph',
+  'flowchart',
+  'sequencediagram',
+  'classdiagram',
+  'statediagram',
+  'statediagram-v2',
+  'erdiagram',
+  'gantt',
+  'pie',
+  'mindmap',
+  'timeline',
+  'subgraph',
+  'end',
+  'direction',
+  'tb',
+  'td',
+  'bt',
+  'rl',
+  'lr',
+  'participant',
+  'actor',
+  'class',
+  'style',
+  'classdef',
+  'click',
+  'linkstyle',
+])
+
+/**
+ * Extracts safe human-readable display label spans from a Mermaid diagram without
+ * touching Mermaid syntax, node IDs, arrows, or styling directives.
+ */
+export function extractMermaidLabelSpans(
+  mermaidCode: string
+): MermaidLabelSpan[] {
+  if (!mermaidCode || typeof mermaidCode !== 'string') return []
+  const rawSpans: Array<Omit<MermaidLabelSpan, 'index'>> = []
+
+  const overlapsExisting = (start: number, end: number): boolean =>
+    rawSpans.some((s) => start < s.end && end > s.start)
+
+  const isTranslatableLabelText = (text: string): boolean => {
+    const trimmed = text.trim()
+    if (!trimmed || trimmed.length < 2) return false
+    if (!/\p{L}/u.test(trimmed)) return false
+    if (MERMAID_KEYWORD_ONLY.has(trimmed.toLowerCase())) return false
+    if (/^(https?:\/\/|#[0-9a-f]{3,8}$)/i.test(trimmed)) return false
+    return true
+  }
+
+  // 1. Quoted labels inside node shapes, edge labels, subgraph titles, or state aliases:
+  //    e.g. A["Label"], B("Label"), C{"Label"}, |"Label"|, subgraph "Label", state "Label" as S1
+  const quotedPattern =
+    /(?:\[\s*|(\(\s*)|\{\s*|\|\s*|\bsubgraph\s+(?:[A-Za-z0-9_-]+\s+)?|\bstate\s+)"([^"\r\n]+)"/g
+  let match: RegExpExecArray | null
+  while ((match = quotedPattern.exec(mermaidCode)) !== null) {
+    const labelText = match[2]
+    if (!labelText || !isTranslatableLabelText(labelText)) continue
+    const quoteIdx = match[0].indexOf(`"${labelText}"`)
+    if (quoteIdx === -1) continue
+    const contentStart = match.index + quoteIdx + 1
+    const contentEnd = contentStart + labelText.length
+    if (!overlapsExisting(contentStart, contentEnd)) {
+      rawSpans.push({
+        start: contentStart,
+        end: contentEnd,
+        text: labelText,
+        wasQuoted: true,
+      })
+    }
+  }
+
+  // 2. Unquoted simple node/edge labels:
+  //    e.g. A[User Request], B(Process Incident), C{Is Approved?}, -->|Yes|
+  const unquotedNodePattern =
+    /\b([A-Za-z0-9_]+)\s*(\[|\(|\{)([^[\](){}|"\r\n;]+)(\]|\)|\})/g
+  while ((match = unquotedNodePattern.exec(mermaidCode)) !== null) {
+    const nodeId = match[1]
+    const openChar = match[2]
+    const labelText = match[3]
+    const closeChar = match[4]
+    if (!labelText || !isTranslatableLabelText(labelText)) continue
+    if (MERMAID_KEYWORD_ONLY.has(nodeId.toLowerCase())) continue
+    const validPair =
+      (openChar === '[' && closeChar === ']') ||
+      (openChar === '(' && closeChar === ')') ||
+      (openChar === '{' && closeChar === '}')
+    if (!validPair) continue
+
+    const prefixLen = match[0].indexOf(openChar) + 1
+    const contentStart = match.index + prefixLen
+    const contentEnd = contentStart + labelText.length
+    if (!overlapsExisting(contentStart, contentEnd)) {
+      rawSpans.push({
+        start: contentStart,
+        end: contentEnd,
+        text: labelText,
+        wasQuoted: false,
+      })
+    }
+  }
+
+  // 3. Unquoted edge labels: -->|Approve Request|
+  const unquotedEdgePattern = /\|([^[\](){}|"\r\n;]+)\|/g
+  while ((match = unquotedEdgePattern.exec(mermaidCode)) !== null) {
+    const labelText = match[1]
+    if (!labelText || !isTranslatableLabelText(labelText)) continue
+    const contentStart = match.index + 1
+    const contentEnd = contentStart + labelText.length
+    if (!overlapsExisting(contentStart, contentEnd)) {
+      rawSpans.push({
+        start: contentStart,
+        end: contentEnd,
+        text: labelText,
+        wasQuoted: false,
+      })
+    }
+  }
+
+  rawSpans.sort((a, b) => a.start - b.start)
+  return rawSpans.map((span, index) => ({
+    index,
+    ...span,
+  }))
+}
+
 export interface ExtractManifestOptions {
   sourcePage?: NotionPageLike | null
   articleTitle?: string
@@ -349,6 +484,37 @@ export function extractTranslationManifest(
               nextBlockText,
             })
           })
+        }
+      }
+
+      if (
+        blockType === 'code' &&
+        classification.isMermaidCodeBlock &&
+        Array.isArray(payload.rich_text) &&
+        payload.rich_text.length > 0
+      ) {
+        const fullMermaidCode = formatRichTextContext(payload.rich_text)
+        const mermaidSpans = extractMermaidLabelSpans(fullMermaidCode)
+        for (const span of mermaidSpans) {
+          addItem({
+            id: `block:${blockId}:mermaid_label:${span.index}`,
+            kind: 'block',
+            sourceBlockId: blockId,
+            blockType: 'mermaid_label',
+            fieldPath: `code.mermaid_label.${span.index}`,
+            runIndex: span.index,
+            text: span.text,
+            leadingSpace: getLeadingWhitespace(span.text),
+            trailingSpace: getTrailingWhitespace(span.text),
+            annotations: null,
+            href: null,
+            context: {
+              articleTitle: resolvedArticleTitle,
+              parentHeading: activeHeading || 'Mermaid Diagram',
+              fullBlockText: fullMermaidCode,
+            },
+          })
+          extractedInBlock += 1
         }
       }
 

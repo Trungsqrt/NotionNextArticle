@@ -21,6 +21,10 @@ import type {
   NotionBlockTree,
   NotionPageLike,
   PendingWriteOperation,
+  ResourceMappingEntry,
+  ResourceMappingStoreData,
+  SegmentCacheEntry,
+  SegmentCacheStoreData,
   TranslateManifestResult,
   UploadedAssetRecord,
   WriteIssuesCollection,
@@ -42,6 +46,7 @@ const JobCheckpointSchema = z.object({
     'translating',
     'translated',
     'writing',
+    'paused_quota',
     'failed',
     'needs_review',
     'completed',
@@ -75,6 +80,7 @@ const JobCheckpointSchema = z.object({
     })
   ),
   sourceToTargetBlockMap: z.record(z.string()),
+  childTargetPageIdsBySourceId: z.record(z.string()).optional(),
   writeIssues: z.object({
     missingMedia: z.array(z.any()),
     unsupportedBlocks: z.array(z.any()),
@@ -279,6 +285,9 @@ export function createCheckpointController(
     sourceToTargetBlockMap: {
       ...(initialCheckpoint?.sourceToTargetBlockMap || {}),
     },
+    childTargetPageIdsBySourceId: {
+      ...(initialCheckpoint?.childTargetPageIdsBySourceId || {}),
+    },
     writeIssues: initialCheckpoint?.writeIssues || {
       missingMedia: [],
       unsupportedBlocks: [],
@@ -449,6 +458,23 @@ export function createCheckpointController(
       }
       save()
     },
+    getChildTargetPageId(sourceChildPageId: string): string | null {
+      const normKey = normalizeNotionId(sourceChildPageId)
+      if (!normKey) return null
+      return state.childTargetPageIdsBySourceId?.[normKey] || null
+    },
+    recordChildTargetPageId(
+      sourceChildPageId: string,
+      targetChildPageId: string
+    ) {
+      const normSource = normalizeNotionId(sourceChildPageId)
+      if (!normSource || !targetChildPageId) return
+      if (!state.childTargetPageIdsBySourceId) {
+        state.childTargetPageIdsBySourceId = {}
+      }
+      state.childTargetPageIdsBySourceId[normSource] = targetChildPageId
+      save()
+    },
     getPendingOperation(): PendingWriteOperation | null {
       return state.pendingOperation
     },
@@ -495,4 +521,358 @@ export function createCheckpointController(
     },
   }
 }
+
+const ResourceMappingEntrySchema = z.object({
+  sourcePageId: z.string().min(1),
+  targetPageId: z.string().min(1),
+  targetLocale: z.string().min(1),
+  translationGroupId: z.string(),
+  sourceSlug: z.string(),
+  targetSlug: z.string(),
+  sourceTitle: z.string(),
+  targetTitle: z.string(),
+  parentKind: z.enum(['database', 'page']),
+  parentDatabaseId: z.string().nullable(),
+  parentTargetPageId: z.string().nullable(),
+  updatedAt: z.string(),
+})
+
+const ResourceMappingStoreSchema = z.object({
+  version: z.literal(1),
+  mappingsBySourceKey: z.record(ResourceMappingEntrySchema),
+  updatedAt: z.string(),
+})
+
+export function getResourceMappingStorePath(
+  config: Partial<TranslationConfig> = {}
+): string {
+  return path.join(getStateDirectoryPath(config), 'resource-map.json')
+}
+
+export function buildResourceMappingKey(
+  sourcePageId: string,
+  targetLocale = 'vi'
+): string {
+  return `${normalizeNotionId(sourcePageId)}:${String(targetLocale || 'vi')
+    .trim()
+    .toLowerCase()}`
+}
+
+export function readResourceMappingStore(
+  config: Partial<TranslationConfig> = {}
+): ResourceMappingStoreData {
+  const filePath = getResourceMappingStorePath(config)
+  if (!fs.existsSync(filePath)) {
+    return {
+      version: 1,
+      mappingsBySourceKey: {},
+      updatedAt: new Date().toISOString(),
+    }
+  }
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8')
+    const parsed = JSON.parse(raw) as unknown
+    const validated = ResourceMappingStoreSchema.safeParse(parsed)
+    if (!validated.success) {
+      return {
+        version: 1,
+        mappingsBySourceKey: {},
+        updatedAt: new Date().toISOString(),
+      }
+    }
+    return validated.data as ResourceMappingStoreData
+  } catch {
+    return {
+      version: 1,
+      mappingsBySourceKey: {},
+      updatedAt: new Date().toISOString(),
+    }
+  }
+}
+
+export function writeResourceMappingStore(
+  storeData: ResourceMappingStoreData,
+  config: Partial<TranslationConfig> = {}
+): ResourceMappingStoreData | null {
+  if (config?.dryRun) return storeData
+  const filePath = getResourceMappingStorePath(config)
+  const dirPath = path.dirname(filePath)
+  fs.mkdirSync(dirPath, { recursive: true })
+
+  const safePayload = sanitizeCheckpointValue<ResourceMappingStoreData>({
+    version: 1,
+    mappingsBySourceKey: storeData.mappingsBySourceKey || {},
+    updatedAt: new Date().toISOString(),
+  })
+
+  const serialized = JSON.stringify(safePayload, null, 2)
+  const rand = crypto.randomBytes(4).toString('hex')
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}.${rand}`
+
+  fs.writeFileSync(tmpPath, serialized, 'utf8')
+  try {
+    fs.renameSync(tmpPath, filePath)
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmpPath)
+    } catch {
+      // Ignore cleanup error
+    }
+    throw err
+  }
+  return safePayload
+}
+
+export function recordPageTranslationMapping(
+  entry: Omit<ResourceMappingEntry, 'updatedAt'> & { updatedAt?: string },
+  config: Partial<TranslationConfig> = {}
+): ResourceMappingEntry | null {
+  const normSource = normalizeNotionId(entry.sourcePageId)
+  const normTarget = normalizeNotionId(entry.targetPageId)
+  if (!normSource || !normTarget) return null
+
+  const store = readResourceMappingStore(config)
+  const key = buildResourceMappingKey(entry.sourcePageId, entry.targetLocale)
+  const fullEntry: ResourceMappingEntry = {
+    sourcePageId: entry.sourcePageId,
+    targetPageId: entry.targetPageId,
+    targetLocale: String(entry.targetLocale || 'vi')
+      .trim()
+      .toLowerCase(),
+    translationGroupId: entry.translationGroupId || '',
+    sourceSlug: entry.sourceSlug || '',
+    targetSlug: entry.targetSlug || '',
+    sourceTitle: entry.sourceTitle || '',
+    targetTitle: entry.targetTitle || '',
+    parentKind: entry.parentKind || 'database',
+    parentDatabaseId: entry.parentDatabaseId || null,
+    parentTargetPageId: entry.parentTargetPageId || null,
+    updatedAt: entry.updatedAt || new Date().toISOString(),
+  }
+
+  store.mappingsBySourceKey[key] = fullEntry
+  writeResourceMappingStore(store, config)
+  return fullEntry
+}
+
+export function getMappedTargetPage(
+  sourcePageId: string,
+  targetLocale = 'vi',
+  config: Partial<TranslationConfig> = {}
+): ResourceMappingEntry | null {
+  const key = buildResourceMappingKey(sourcePageId, targetLocale)
+  const store = readResourceMappingStore(config)
+  return store.mappingsBySourceKey[key] || null
+}
+
+export function getAllResourceMappings(
+  targetLocale = 'vi',
+  config: Partial<TranslationConfig> = {}
+): ResourceMappingEntry[] {
+  const normalizedLocale = String(targetLocale || 'vi')
+    .trim()
+    .toLowerCase()
+  const store = readResourceMappingStore(config)
+  return Object.values(store.mappingsBySourceKey || {}).filter(
+    (entry) =>
+      String(entry.targetLocale || '')
+        .trim()
+        .toLowerCase() === normalizedLocale
+  )
+}
+
+const SegmentCacheEntrySchema = z.object({
+  translatedText: z.string(),
+  targetLocale: z.string(),
+  updatedAt: z.string(),
+})
+
+const SegmentCacheStoreSchema = z.object({
+  version: z.literal(1),
+  entries: z.record(SegmentCacheEntrySchema),
+  updatedAt: z.string(),
+})
+
+let inMemorySegmentCachePath = ''
+let inMemorySegmentCache: SegmentCacheStoreData | null = null
+
+export function getSegmentCacheStorePath(
+  config: Partial<TranslationConfig> = {}
+): string {
+  return path.join(getStateDirectoryPath(config), 'segment-cache.json')
+}
+
+export function computeSegmentCacheKey(params: {
+  text: string
+  sourceLocale?: string
+  targetLocale?: string
+  promptVersion?: string
+  glossaryHash?: string
+  contextKey?: string
+}): string {
+  const normalizedText = String(params.text || '').trim()
+  const sourceLocale = String(params.sourceLocale || 'en')
+    .trim()
+    .toLowerCase()
+  const targetLocale = String(params.targetLocale || 'vi')
+    .trim()
+    .toLowerCase()
+  const promptVersion = String(params.promptVersion || 'sn-v2').trim()
+  const glossaryHash = String(params.glossaryHash || 'default').trim()
+  const contextKey = String(params.contextKey || '').trim()
+
+  return crypto
+    .createHash('sha256')
+    .update(
+      JSON.stringify([
+        normalizedText,
+        sourceLocale,
+        targetLocale,
+        promptVersion,
+        glossaryHash,
+        contextKey,
+      ])
+    )
+    .digest('hex')
+    .slice(0, 32)
+}
+
+export function readSegmentCacheStore(
+  config: Partial<TranslationConfig> = {}
+): SegmentCacheStoreData {
+  const filePath = getSegmentCacheStorePath(config)
+  if (inMemorySegmentCache && inMemorySegmentCachePath === filePath) {
+    return inMemorySegmentCache
+  }
+
+  if (!fs.existsSync(filePath)) {
+    const empty: SegmentCacheStoreData = {
+      version: 1,
+      entries: {},
+      updatedAt: new Date().toISOString(),
+    }
+    inMemorySegmentCachePath = filePath
+    inMemorySegmentCache = empty
+    return empty
+  }
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8')
+    const parsed = JSON.parse(raw) as unknown
+    const validated = SegmentCacheStoreSchema.safeParse(parsed)
+    if (!validated.success) {
+      const empty: SegmentCacheStoreData = {
+        version: 1,
+        entries: {},
+        updatedAt: new Date().toISOString(),
+      }
+      inMemorySegmentCachePath = filePath
+      inMemorySegmentCache = empty
+      return empty
+    }
+    inMemorySegmentCachePath = filePath
+    inMemorySegmentCache = validated.data as SegmentCacheStoreData
+    return inMemorySegmentCache
+  } catch {
+    const empty: SegmentCacheStoreData = {
+      version: 1,
+      entries: {},
+      updatedAt: new Date().toISOString(),
+    }
+    inMemorySegmentCachePath = filePath
+    inMemorySegmentCache = empty
+    return empty
+  }
+}
+
+export function writeSegmentCacheStore(
+  storeData: SegmentCacheStoreData,
+  config: Partial<TranslationConfig> = {}
+): SegmentCacheStoreData | null {
+  const filePath = getSegmentCacheStorePath(config)
+  inMemorySegmentCachePath = filePath
+  inMemorySegmentCache = storeData
+  if (config?.dryRun) return storeData
+
+  const dirPath = path.dirname(filePath)
+  fs.mkdirSync(dirPath, { recursive: true })
+
+  const safePayload = sanitizeCheckpointValue<SegmentCacheStoreData>({
+    version: 1,
+    entries: storeData.entries || {},
+    updatedAt: new Date().toISOString(),
+  })
+
+  const serialized = JSON.stringify(safePayload, null, 2)
+  const rand = crypto.randomBytes(4).toString('hex')
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}.${rand}`
+
+  fs.writeFileSync(tmpPath, serialized, 'utf8')
+  try {
+    fs.renameSync(tmpPath, filePath)
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmpPath)
+    } catch {
+      // Ignore cleanup error
+    }
+    throw err
+  }
+  inMemorySegmentCache = safePayload
+  return safePayload
+}
+
+export function getCachedSegmentTranslation(
+  cacheKey: string,
+  targetLocale = 'vi',
+  config: Partial<TranslationConfig> = {}
+): string | null {
+  if (!cacheKey) return null
+  const store = readSegmentCacheStore(config)
+  const entry = store.entries[cacheKey]
+  if (!entry) return null
+  if (
+    String(entry.targetLocale || '')
+      .trim()
+      .toLowerCase() !==
+    String(targetLocale || 'vi')
+      .trim()
+      .toLowerCase()
+  ) {
+    return null
+  }
+  return entry.translatedText
+}
+
+export function recordCachedSegmentTranslations(
+  newEntries: ReadonlyArray<{
+    cacheKey: string
+    translatedText: string
+    targetLocale: string
+  }>,
+  config: Partial<TranslationConfig> = {}
+): void {
+  if (!newEntries || newEntries.length === 0) return
+  const store = readSegmentCacheStore(config)
+  const nowIso = new Date().toISOString()
+  let changed = false
+
+  for (const item of newEntries) {
+    if (!item.cacheKey || !item.translatedText?.trim()) continue
+    store.entries[item.cacheKey] = {
+      translatedText: item.translatedText,
+      targetLocale: String(item.targetLocale || 'vi')
+        .trim()
+        .toLowerCase(),
+      updatedAt: nowIso,
+    }
+    changed = true
+  }
+
+  if (changed) {
+    writeSegmentCacheStore(store, config)
+  }
+}
+
+
 

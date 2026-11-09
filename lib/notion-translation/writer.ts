@@ -14,6 +14,7 @@ import { normalizeTreeNodes, listAllRawBlockChildren } from './reader'
 import type {
   ArticlesDataSourceInfo,
   CheckpointController,
+  DiscoveredPageParentKind,
   LinkedResourceIssue,
   MissingMediaIssue,
   NotionBlockNode,
@@ -119,6 +120,9 @@ export function computeBlockFingerprint(blockObj: unknown): string {
     case 'link_to_page':
     case 'child_page':
     case 'child_database': {
+      if (type === 'child_page' && typeof payload.title === 'string') {
+        return `child_page:${payload.title}`
+      }
       const refId = String(payload.page_id || payload.database_id || '')
         .replace(/-/g, '')
         .toLowerCase()
@@ -127,6 +131,35 @@ export function computeBlockFingerprint(blockObj: unknown): string {
     default:
       return `${type}:${extractPlainFromRichTextArray(payload.rich_text)}`
   }
+}
+
+export function isExistingTargetPrefixValid(
+  sourceTree: NotionBlockTree | NotionBlockNode[],
+  existingTargetTree: NotionBlockTree | NotionBlockNode[]
+): boolean {
+  const srcNodes = normalizeTreeNodes(sourceTree)
+  const tgtNodes = normalizeTreeNodes(existingTargetTree)
+  if (tgtNodes.length === 0) return true
+  if (tgtNodes.length > srcNodes.length) return false
+
+  const normType = (t: string): string => {
+    if (t === 'child_database') return 'link_to_page'
+    if (t === 'heading_5' || t === 'heading_6') return 'heading_4'
+    return t
+  }
+
+  for (let i = 0; i < tgtNodes.length; i++) {
+    const sType = normType(
+      String(srcNodes[i]?.type || srcNodes[i]?.raw?.type || '')
+    )
+    const tType = normType(
+      String(tgtNodes[i]?.type || tgtNodes[i]?.raw?.type || '')
+    )
+    if (sType !== tType && !(sType === 'child_page' && tType === 'link_to_page')) {
+      return false
+    }
+  }
+  return true
 }
 
 export interface AmbiguousReconciliationError extends Error {
@@ -319,6 +352,19 @@ export interface BuiltSingleBlockResult {
   columnFollowUps?: ColumnFollowUp[]
 }
 
+export interface ChildPageWriteRequest {
+  sourceChildPageNode: NotionBlockNode
+  sourceChildPageId: string
+  targetParentPageId: string
+  expectedStartIndex: number
+  existingTargetBlock: NotionRawBlock | null
+}
+
+export interface ChildPageWriteResponse {
+  targetChildPageId: string
+  title?: string
+}
+
 export interface BlockWriteContext {
   client: Client
   missingMedia: MissingMediaIssue[]
@@ -326,6 +372,10 @@ export interface BlockWriteContext {
   linkedResources: LinkedResourceIssue[]
   syncedBlocks: SyncedBlockIssue[]
   localizedPageMap?: Map<string, PageWorkflowMeta>
+  translatedDatabaseIds?: Set<string>
+  onWriteChildPage?: (
+    params: ChildPageWriteRequest
+  ) => Promise<ChildPageWriteResponse | null>
   maxBlocksPerAppend: number
   depth: number
   parentKey?: string
@@ -829,9 +879,15 @@ export async function buildSingleBlockRequest(
       type === 'link_to_page'
         ? String(payload.page_id || payload.database_id || blockId)
         : blockId
-    const localizedCounterpart =
-      localizedPageMap?.get(refId.replace(/-/g, '').toLowerCase()) || null
+    const normRefId = refId.replace(/-/g, '').toLowerCase()
+    const localizedCounterpart = localizedPageMap?.get(normRefId) || null
+    const isTranslatedDatabase =
+      (type === 'child_database' ||
+        (type === 'link_to_page' && Boolean(payload.database_id))) &&
+      Boolean(context.translatedDatabaseIds?.has(normRefId))
     const targetRefId = localizedCounterpart?.id || refId
+    const usedLocalizedCounterpart =
+      Boolean(localizedCounterpart) || isTranslatedDatabase
 
     linkedResources.push({
       id: blockId,
@@ -840,10 +896,12 @@ export async function buildSingleBlockRequest(
       title: String(payload.title || node.text || ''),
       originalReferencedId: refId,
       resolvedTargetId: targetRefId,
-      usedLocalizedCounterpart: Boolean(localizedCounterpart),
+      usedLocalizedCounterpart,
       note: localizedCounterpart
         ? `Linked to localized counterpart page (${localizedCounterpart.id})`
-        : `Preserved reference to original ${type} (${refId}); linked resource itself was not duplicated/translated.`,
+        : isTranslatedDatabase
+          ? `Linked to shared nested database (${targetRefId}) containing translated Vietnamese entries`
+          : `Preserved reference to original ${type} (${refId}); linked resource itself was not duplicated/translated.`,
     })
 
     if (
@@ -956,6 +1014,100 @@ export async function appendTranslatedBlockTree(
   const maxBlocksPerAppend = context.maxBlocksPerAppend || 100
   const checkpoint = context.checkpoint || null
   const parentKey = context.parentKey || 'root'
+
+  // If onWriteChildPage is provided at depth === 0 and there are child_page nodes,
+  // write segments in exact positional order so child_page blocks created via
+  // pages.create(parent: { page_id }) appear at their exact position.
+  if (
+    (context.depth || 0) === 0 &&
+    typeof context.onWriteChildPage === 'function' &&
+    Array.isArray(nodes) &&
+    nodes.some((n) => (n?.type || n?.raw?.type) === 'child_page')
+  ) {
+    let runningExpectedIndex = Number(context.initialExistingChildCount) || 0
+    let segmentIndex = 0
+    let currentSegment: NotionBlockNode[] = []
+
+    const flushSegment = async (segNodes: NotionBlockNode[], segIdx: number) => {
+      if (segNodes.length === 0) return
+      await appendTranslatedBlockTree(client, parentBlockId, segNodes, {
+        ...context,
+        onWriteChildPage: undefined,
+        parentKey: `${parentKey}:seg:${segIdx}`,
+        initialExistingChildCount: runningExpectedIndex,
+      })
+      runningExpectedIndex += segNodes.length
+    }
+
+    for (const node of nodes) {
+      const nodeType = String(node?.type || node?.raw?.type || '')
+      if (nodeType !== 'child_page') {
+        currentSegment.push(node)
+        continue
+      }
+
+      await flushSegment(currentSegment, segmentIndex)
+      currentSegment = []
+      segmentIndex += 1
+
+      const sourceChildPageId = String(node.id || node.raw?.id || '')
+      let existingTargetBlock: NotionRawBlock | null = null
+      if (
+        (context.isResuming ||
+          checkpoint?.getChildTargetPageId?.(sourceChildPageId)) &&
+        typeof client?.blocks?.children?.list === 'function'
+      ) {
+        try {
+          const currentTargetBlocks = await listAllRawBlockChildren(
+            client,
+            parentBlockId,
+            {
+              ...(context.options || {}),
+              logger,
+              retryOptions: context.retryOptions,
+            }
+          )
+          const blockAtPos = currentTargetBlocks[runningExpectedIndex]
+          if (blockAtPos && blockAtPos.type === 'child_page') {
+            existingTargetBlock = blockAtPos
+          }
+        } catch {
+          existingTargetBlock = null
+        }
+      }
+
+      const childResult = await context.onWriteChildPage({
+        sourceChildPageNode: node,
+        sourceChildPageId,
+        targetParentPageId: parentBlockId,
+        expectedStartIndex: runningExpectedIndex,
+        existingTargetBlock,
+      })
+
+      if (childResult?.targetChildPageId) {
+        checkpoint?.recordChildTargetPageId?.(
+          sourceChildPageId,
+          childResult.targetChildPageId
+        )
+        context.linkedResources.push({
+          id: sourceChildPageId,
+          type: 'child_page',
+          position: node.position || String(runningExpectedIndex),
+          title: childResult.title || node.text || '',
+          originalReferencedId: sourceChildPageId,
+          resolvedTargetId: childResult.targetChildPageId,
+          usedLocalizedCounterpart: true,
+          note: `Created translated Vietnamese child page (${childResult.targetChildPageId})`,
+        })
+        context.stats.totalWrittenTopOrBatchBlocks += 1
+        runningExpectedIndex += 1
+      }
+    }
+
+    await flushSegment(currentSegment, segmentIndex)
+    return
+  }
+
   const preparedItems: PreparedBlockDescriptor[] = []
 
   for (const node of nodes || []) {
@@ -1061,7 +1213,9 @@ export async function appendTranslatedBlockTree(
           )
         }
 
+  const parentHasMoreSegments = parentKey.includes(':seg:')
         if (
+          !parentHasMoreSegments &&
           batchIdx === batches.length - 1 &&
           existingChildren.length > expectedStartIndex + batch.length
         ) {
@@ -1299,6 +1453,8 @@ export async function appendTranslatedBlockTree(
 export interface CreateTranslatedNotionPageOptions extends AssetWriteOptions {
   client?: Client
   dataSourceInfo?: Partial<ArticlesDataSourceInfo> | null
+  parentKind?: DiscoveredPageParentKind
+  parentTargetPageId?: string | null
   pagePropertiesPayload?:
     | TranslatedPagePropertiesPayload
     | Record<string, unknown>
@@ -1307,10 +1463,14 @@ export interface CreateTranslatedNotionPageOptions extends AssetWriteOptions {
     url?: string
     properties?: Record<string, unknown>
   }) => Promise<void> | void
+  onWriteChildPage?: (
+    params: ChildPageWriteRequest
+  ) => Promise<ChildPageWriteResponse | null>
   reconcileCreatedPage?: () => Promise<NotionPageLike | null>
   resumeTargetPageId?: string | null
   isResuming?: boolean
   localizedPageMap?: Map<string, PageWorkflowMeta>
+  translatedDatabaseIds?: Set<string>
   maxBlocksPerAppend?: number
 }
 
@@ -1326,13 +1486,17 @@ export async function createTranslatedNotionPage(
   const {
     client,
     dataSourceInfo,
+    parentKind = 'database',
+    parentTargetPageId = null,
     pagePropertiesPayload,
     onTargetPageCreated,
+    onWriteChildPage,
     reconcileCreatedPage,
     resumeTargetPageId = null,
     isResuming = false,
     checkpoint = null,
     localizedPageMap = new Map(),
+    translatedDatabaseIds = new Set(),
     maxBlocksPerAppend = 100,
     dryRun = false,
     logger = defaultLogger,
@@ -1371,6 +1535,7 @@ export async function createTranslatedNotionPage(
       linkedResources,
       syncedBlocks,
       localizedPageMap,
+      translatedDatabaseIds,
       maxBlocksPerAppend,
       depth: 0,
       stats,
@@ -1378,6 +1543,29 @@ export async function createTranslatedNotionPage(
       options,
     }
     for (const node of rootNodes) {
+      const nodeType = String(node?.type || node?.raw?.type || '')
+      if (nodeType === 'child_page' && typeof onWriteChildPage === 'function') {
+        const dryChild = await onWriteChildPage({
+          sourceChildPageNode: node,
+          sourceChildPageId: String(node.id || ''),
+          targetParentPageId: 'dry-run-target-page-id',
+          expectedStartIndex: stats.totalWrittenTopOrBatchBlocks,
+          existingTargetBlock: null,
+        })
+        if (dryChild?.targetChildPageId) {
+          linkedResources.push({
+            id: String(node.id || ''),
+            type: 'child_page',
+            position: node.position || '0',
+            title: dryChild.title || node.text || '',
+            originalReferencedId: String(node.id || ''),
+            resolvedTargetId: dryChild.targetChildPageId,
+            usedLocalizedCounterpart: true,
+          })
+          stats.totalWrittenTopOrBatchBlocks += 1
+        }
+        continue
+      }
       await buildSingleBlockRequest(node, dryContext)
     }
 
@@ -1484,19 +1672,27 @@ export async function createTranslatedNotionPage(
     })
 
     try {
+      const parentPayload =
+        parentKind === 'page' && parentTargetPageId
+          ? { type: 'page_id', page_id: parentTargetPageId }
+          : dataSourceId
+            ? { type: 'data_source_id', data_source_id: dataSourceId }
+            : { type: 'database_id', database_id: databaseId! }
+
       const created = await withNotionRetry(
         () =>
           client.pages.create({
-            parent: dataSourceId
-              ? { type: 'data_source_id', data_source_id: dataSourceId }
-              : { type: 'database_id', database_id: databaseId! },
+            parent: parentPayload,
             properties: rawProperties,
             ...(icon ? { icon } : {}),
             ...(cover ? { cover } : {}),
           } as unknown as CreatePageParameters),
         {
           isIdempotent: false,
-          label: 'pages.create(data_source_id)',
+          label:
+            parentKind === 'page'
+              ? `pages.create(page_id:${parentTargetPageId})`
+              : 'pages.create(data_source_id)',
           logger,
           ...options.retryOptions,
         }
@@ -1516,6 +1712,7 @@ export async function createTranslatedNotionPage(
 
       if (
         !targetPage &&
+        parentKind !== 'page' &&
         databaseId &&
         dataSourceId &&
         dataSourceId !== databaseId
@@ -1576,6 +1773,8 @@ export async function createTranslatedNotionPage(
     linkedResources,
     syncedBlocks,
     localizedPageMap,
+    translatedDatabaseIds,
+    onWriteChildPage,
     maxBlocksPerAppend,
     depth: 0,
     parentKey: 'root',
