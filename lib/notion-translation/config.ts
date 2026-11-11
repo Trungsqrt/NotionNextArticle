@@ -247,6 +247,7 @@ export const TranslationConfigSchema = z.object({
   notionToken: z.string(),
   translationDatabaseId: z.string(),
   rootPageId: z.string(),
+  translationMappingDatabaseId: z.string().default(''),
   aiProvider: z.string().min(1),
   aiApiKey: z.string(),
   aiBaseUrl: z.string().min(1),
@@ -338,6 +339,10 @@ export function getTranslationConfig(
       env.NOTION_ROOT_PAGE_ID ||
       env.NOTION_DATABASE_ID ||
       '',
+    translationMappingDatabaseId:
+      overrides.translationMappingDatabaseId ||
+      env.NOTION_TRANSLATION_MAPPING_DATABASE_ID ||
+      '415ac39b-0efb-8050-9ab4-ecb760e41cc5',
     aiProvider,
     aiApiKey: resolveProviderApiKey(aiProvider, env, overrides.aiApiKey),
     aiBaseUrl: (

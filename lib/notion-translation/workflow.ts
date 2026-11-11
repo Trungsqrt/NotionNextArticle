@@ -15,6 +15,7 @@ import {
   findPropertyKey,
   findTitlePropertyKey,
   getPropertyPlainText,
+  upsertNotionTranslationMappingRecord,
   type NotionOperationOptions,
 } from './notion-client'
 import { normalizeTreeNodes, readRawNotionTree } from './reader'
@@ -1281,6 +1282,24 @@ export async function processTranslationJob(
             },
             { ...config, dryRun }
           )
+          if (config.translationMappingDatabaseId) {
+            await upsertNotionTranslationMappingRecord(
+              client,
+              config.translationMappingDatabaseId,
+              {
+                name: pagePropertiesPayload.translatedTitle || sourceMeta.title,
+                enPageId: sourceMeta.id,
+                viPageId: targetPage.id,
+                status: 'Draft',
+              },
+              { config, dryRun, logger, retryOptions: options.retryOptions }
+            ).catch((err: any) => {
+              logger.warn(
+                `Failed to upsert Draft mapping into Notion mapping database: ${err?.message || err}`,
+                { sourcePageId: sourceMeta.id, targetPageId: targetPage.id }
+              )
+            })
+          }
           await updateSourcePageWorkflowState(
             client,
             sourcePage,
@@ -1410,6 +1429,36 @@ export async function processTranslationJob(
 
     // Step 13: Clean up completed local checkpoint file
     checkpointController.remove()
+
+    if (
+      config.translationMappingDatabaseId &&
+      (targetPage?.id || createdOrResumedTargetPageId)
+    ) {
+      const resolvedTargetId =
+        targetPage?.id || createdOrResumedTargetPageId || ''
+      const isReady =
+        finalTranslationStatus === TRANSLATION_STATUS.DRAFT_READY
+      await upsertNotionTranslationMappingRecord(
+        client,
+        config.translationMappingDatabaseId,
+        {
+          name: pagePropertiesPayload.translatedTitle || sourceMeta.title,
+          enPageId: sourceMeta.id,
+          viPageId: resolvedTargetId,
+          status: isReady ? 'Ready' : 'Draft',
+        },
+        { config, dryRun, logger, retryOptions: options.retryOptions }
+      ).catch((err: any) => {
+        logger.warn(
+          `Failed to upsert final translation mapping into Notion mapping database: ${err?.message || err}`,
+          {
+            sourcePageId: sourceMeta.id,
+            targetPageId: resolvedTargetId,
+            status: isReady ? 'Ready' : 'Draft',
+          }
+        )
+      })
+    }
 
     logger.info(
       `Completed translation job for "${sourceMeta.title}" -> status="${finalTranslationStatus}"`,
@@ -1724,6 +1773,28 @@ async function executeHierarchicalTranslationPlan(
           },
           { ...config, dryRun }
         )
+
+        if (config.translationMappingDatabaseId && existingTarget.page?.id) {
+          await upsertNotionTranslationMappingRecord(
+            client,
+            config.translationMappingDatabaseId,
+            {
+              name: existingTarget.meta?.title || task.node.meta.title,
+              enPageId: task.sourcePageId,
+              viPageId: existingTarget.page.id,
+              status: 'Ready',
+            },
+            { config, dryRun, logger, retryOptions: options.retryOptions }
+          ).catch((err: any) => {
+            logger.warn(
+              `Failed to upsert Ready mapping for existing child page: ${err?.message || err}`,
+              {
+                sourcePageId: task.sourcePageId,
+                targetPageId: existingTarget.page.id,
+              }
+            )
+          })
+        }
 
         const reusedValidation =
           structuralValidation ||
