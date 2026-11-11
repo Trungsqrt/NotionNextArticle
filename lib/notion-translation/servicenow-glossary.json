@@ -44,7 +44,8 @@
     "Reconciliation Rule",
     "Import Set",
     "Transform Map",
-    "Data Source"
+    "Data Source",
+    "Instance"
   ],
   "preserveCaseSensitiveAcronyms": [
     "CMDB",
@@ -149,4 +150,3 @@
     "New Hire Hardware Request"
   ]
 }
-
