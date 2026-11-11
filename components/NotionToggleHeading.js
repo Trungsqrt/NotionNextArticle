@@ -12,28 +12,24 @@ const HEADING_CONFIG = {
     typography: 'text-2xl sm:text-3xl font-semibold text-neutral-800 dark:text-neutral-100 tracking-tight',
     margins: 'mt-12 mb-4',
     chevronSize: 22,
-    chevronOffset: 'mt-1 sm:mt-1.5',
   },
   2: {
     tag: 'h2',
     typography: 'text-xl sm:text-2xl font-medium text-neutral-800 dark:text-neutral-100',
     margins: 'mt-10 mb-3',
     chevronSize: 20,
-    chevronOffset: 'mt-1',
   },
   3: {
     tag: 'h3',
     typography: 'text-lg sm:text-xl font-medium text-neutral-700 dark:text-neutral-200',
     margins: 'mt-8 mb-2.5',
     chevronSize: 18,
-    chevronOffset: 'mt-0.5',
   },
   4: {
     tag: 'h4',
     typography: 'text-base sm:text-lg font-medium text-neutral-700 dark:text-neutral-200',
     margins: 'mt-4 mb-2',
     chevronSize: 16,
-    chevronOffset: 'mt-0.5',
   },
 }
 
@@ -102,22 +98,24 @@ export default function NotionToggleHeading({
           aria-controls={contentId}
           className="group/btn w-full text-left flex items-start gap-2.5 cursor-pointer select-none focus:outline-none rounded-md transition-colors duration-150 group-hover/btn:text-matcha-600 dark:group-hover/btn:text-matcha-400"
         >
-          <svg
-            width={config.chevronSize}
-            height={config.chevronSize}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={`text-matcha-600 dark:text-matcha-400 transition-transform duration-300 ease-out shrink-0 ${config.chevronOffset} ${
-              isOpen ? 'rotate-90' : 'rotate-0'
-            }`}
-            aria-hidden="true"
-          >
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
+          <span className="inline-flex items-center justify-center shrink-0 self-start h-[1.375em] w-5 select-none">
+            <svg
+              width={config.chevronSize}
+              height={config.chevronSize}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={`text-matcha-600 dark:text-matcha-400 transition-transform duration-300 ease-out shrink-0 translate-y-[1px] ${
+                isOpen ? 'rotate-90' : 'rotate-0'
+              }`}
+              aria-hidden="true"
+            >
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </span>
           <span
             className="flex-1 min-w-0 leading-snug"
             dangerouslySetInnerHTML={{ __html: titleHtml || `Heading ${level}` }}
