@@ -17,20 +17,28 @@ import {
   getPropertyPlainText,
   type NotionOperationOptions,
 } from './notion-client'
-import { readRawNotionTree } from './reader'
+import { normalizeTreeNodes, readRawNotionTree } from './reader'
 import { extractTranslationManifest } from './extractor'
-import { isQuotaExhaustedError, translateManifest } from './translator'
+import {
+  QuotaExhaustedError,
+  isQuotaExhaustedError,
+  translateManifest,
+} from './translator'
 import {
   buildTranslatedBlockTree,
   buildTranslatedPageProperties,
 } from './builder'
-import { createTranslatedNotionPage } from './writer'
+import {
+  createTranslatedNotionPage,
+  isExistingTargetPrefixValid,
+} from './writer'
 import { validateTranslation, generateTranslationReport } from './validator'
 import {
   computeSourceContentFingerprint,
   createCheckpointController,
   deleteJobCheckpoint,
   getJobCheckpointPath,
+  getMappedTargetPage,
   readJobCheckpoint,
   recordPageTranslationMapping,
   writeJobCheckpoint,
@@ -57,6 +65,7 @@ import type {
   RecoveredJobSummary,
   ReferenceResolutionMap,
   TranslateManifestResult,
+  TranslationFailureStage,
   TranslationJobResult,
   TranslationPlan,
   TranslationStatus,
@@ -90,6 +99,63 @@ export function markPageActiveInTranslationJob(pageId: string): void {
 export function unmarkPageActiveInTranslationJob(pageId: string): void {
   const norm = normalizeNotionId(pageId)
   if (norm) activeJobResourceIds.delete(norm)
+}
+
+export class ChildTaskTranslationError extends Error {
+  readonly isChildTaskError = true
+  readonly childPageTitle: string
+  readonly childSourcePageId: string
+  readonly failureStage: TranslationFailureStage
+  readonly provider: string
+  readonly model: string
+  readonly shortError: string
+
+  constructor(params: {
+    childPageTitle: string
+    childSourcePageId: string
+    failureStage: TranslationFailureStage
+    provider: string
+    model: string
+    shortError: string
+  }) {
+    const cleanShort = String(params.shortError || 'Unknown error')
+      .replace(/\s+/g, ' ')
+      .trim()
+    super(
+      `Child page "${params.childPageTitle}" (${params.childSourcePageId}) failed at stage "${params.failureStage}" (${params.provider}/${params.model}): ${cleanShort}`
+    )
+    this.name = 'ChildTaskTranslationError'
+    this.childPageTitle = params.childPageTitle
+    this.childSourcePageId = params.childSourcePageId
+    this.failureStage = params.failureStage
+    this.provider = params.provider
+    this.model = params.model
+    this.shortError = cleanShort
+  }
+}
+
+export function summarizeShortErrorMessage(rawError: string): string {
+  const oneLine = String(rawError || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return oneLine.length > 360 ? `${oneLine.slice(0, 357)}...` : oneLine
+}
+
+export function formatNotionTranslationErrorSummary(params: {
+  pageTitle: string
+  isChildPage?: boolean
+  failureStage: TranslationFailureStage
+  provider: string
+  model: string
+  rawError: string
+  failedAt: string
+}): string {
+  const shortMsg = summarizeShortErrorMessage(params.rawError)
+  const label = params.isChildPage ? 'Child page' : 'Page'
+  return `[Failed at ${params.failedAt}] ${label}: "${params.pageTitle}" | Stage: ${params.failureStage} | Model: ${params.provider}/${params.model} | Error: ${shortMsg}`.slice(
+    0,
+    1950
+  )
 }
 
 export function extractPageWorkflowMeta(
@@ -433,10 +499,12 @@ export async function inspectExistingTranslationState(
     }
   }
 
-  // 2. Also check explicit Translation Target Page ID on the source page or checkpoint targetPageId
+  // 2. Also check explicit Translation Target Page ID on the source page, checkpoint targetPageId, or persistent resource-map
+  const mappedTarget = getMappedTargetPage(sourceMeta.id, targetLocale, config)
   const explicitTargetIds = [
     sourceMeta.translationTargetPageId,
     checkpoint?.targetPageId,
+    mappedTarget?.targetPageId,
   ].filter((val): val is string => Boolean(val))
 
   for (const rawTargetId of explicitTargetIds) {
@@ -791,12 +859,10 @@ export async function processTranslationJob(
 
   // Step 4: Inspect existing translation state & resume eligibility before creating any page
   let existingCheck: ExistingTranslationInspection
-  if (parentKind === 'page') {
-    if (options. existingCheckOverride) {
-      existingCheck = options.existingCheckOverride
-    } else {
-      existingCheck = { action: 'create_new', checkpoint: existingCheckpoint }
-    }
+  if (options.existingCheckOverride) {
+    existingCheck = options.existingCheckOverride
+  } else if (parentKind === 'page') {
+    existingCheck = { action: 'create_new', checkpoint: existingCheckpoint }
   } else {
     existingCheck = await inspectExistingTranslationState(
       client,
@@ -876,6 +942,8 @@ export async function processTranslationJob(
     )
   }
 
+  let currentStage: TranslationFailureStage = 'Source Tree Read'
+
   try {
     // Step 5: Mark source page as Processing
     await updateSourcePageWorkflowState(
@@ -894,6 +962,7 @@ export async function processTranslationJob(
     )
 
     // Step 6: Read raw Notion block tree recursively & compute source content fingerprint
+    currentStage = 'Source Tree Read'
     logger.info(
       `Reading raw Notion block tree for "${sourceMeta.title}" (${sourceMeta.id})...`
     )
@@ -967,6 +1036,7 @@ export async function processTranslationJob(
     }
 
     // Step 7: Extract translatable text manifest
+    currentStage = 'Manifest Extraction'
     const manifest = extractTranslationManifest(sourceTree, {
       sourcePage,
       articleTitle: sourceMeta.title,
@@ -979,7 +1049,9 @@ export async function processTranslationJob(
     })
 
     // Step 8: Reuse cached AI translation result from checkpoint or call AI provider
+    currentStage = 'AI Translation'
     let translationResult: TranslateManifestResult | null = null
+    let partialCachedMap: Map<string, string> | undefined
     const cachedTranslation = checkpointController.getCachedTranslationResult(
       sourceFingerprint,
       targetLocale
@@ -1009,6 +1081,11 @@ export async function processTranslationJob(
           },
           issues: cachedTranslation.issues || [],
         }
+      } else if (translationsMap.size > 0) {
+        logger.info(
+          `Reusing ${translationsMap.size}/${manifest.items.length} partially cached AI translation items from local checkpoint for "${sourceMeta.title}"`
+        )
+        partialCachedMap = translationsMap
       }
     }
 
@@ -1021,7 +1098,26 @@ export async function processTranslationJob(
         batchSize: options.batchSize ?? config.batchSize,
         maxBatchChars: options.maxBatchChars ?? config.maxBatchChars,
         concurrency: options.concurrency ?? config.concurrency,
-        maxRetries: options.maxAiRetries ?? 3,
+        maxRetries: options.maxAiRetries ?? 2,
+        preTranslatedById: partialCachedMap,
+        onBatchTranslated: (partialMap) => {
+          checkpointController.setCachedTranslationResult(
+            {
+              targetLocale,
+              translationsById: new Map(partialMap),
+              translations: Object.fromEntries(partialMap),
+              stats: {
+                totalRequested: manifest.items.length,
+                totalTranslated: partialMap.size,
+                batchCount: 0,
+                retryCount: 0,
+              },
+              issues: [],
+            },
+            sourceFingerprint
+          )
+          checkpointController.setJobState('translating')
+        },
       })
 
       if (translationResult.stats.usage) {
@@ -1029,13 +1125,21 @@ export async function processTranslationJob(
         logger.info(`AI translation usage summary for "${sourceMeta.title}"`, {
           provider: u.provider,
           model: u.model,
-          apiRequests: u.apiRequests,
+          initialBatchCount: u.plannedBatches,
+          actualApiRequests: u.apiRequests,
+          successfulRequests: u.successfulRequests,
+          failedOrRetriedRequests: u.failedOrRetriedRequests,
+          splitBatchCount: u.splitBatchCount,
           inputTokens: u.inputTokens,
           outputTokens: u.outputTokens,
+          avgOutputTokensPerRequest: u.avgOutputTokensPerRequest,
           cachedSegments: u.cachedSegments,
           skippedTechnicalSegments: u.skippedTechnicalSegments,
           translatedSegments: u.translatedSegments,
           failedBatches: u.failedBatches,
+          ...(u.excessRequestReasons.length > 0
+            ? { excessRequestReasons: u.excessRequestReasons }
+            : {}),
           ...(u.estimatedCostUsd !== null
             ? { estimatedCostUsd: u.estimatedCostUsd }
             : {}),
@@ -1049,6 +1153,7 @@ export async function processTranslationJob(
     }
 
     // Step 9: Build translated block tree & target page properties (Status = Draft, Locale = vi)
+    currentStage = 'Block Tree Build'
     const referenceMap = options.referenceMap || null
     if (referenceMap) {
       for (const [normSrcId, meta] of referenceMap.localizedPageMetaBySourcePageId.entries()) {
@@ -1112,6 +1217,7 @@ export async function processTranslationJob(
     }
 
     // Step 10: Create or resume target Vietnamese page and write all blocks in batches
+    currentStage = 'Notion Page Write'
     const writeResult = await createTranslatedNotionPage(
       sourcePage,
       translatedTree,
@@ -1201,6 +1307,7 @@ export async function processTranslationJob(
       targetPage?.id || createdOrResumedTargetPageId
 
     // Step 11: Verify generated structure after writing
+    currentStage = 'Post-Write Validation'
     let writtenTargetTree: NotionBlockTree = translatedTree
     if (!dryRun && targetPage?.id) {
       try {
@@ -1374,6 +1481,8 @@ export async function processTranslationJob(
           sourceMeta.translationTargetPageId ||
           '',
         reason: errorDetail,
+        provider: config.aiProvider,
+        model: config.aiModel,
         dryRun,
       }
     }
@@ -1425,10 +1534,37 @@ export async function processTranslationJob(
       }
     }
 
+    const isChildFailure = err instanceof ChildTaskTranslationError
+    const attachedFailureStage =
+      err && typeof err === 'object'
+        ? (err as { failureStage?: TranslationFailureStage }).failureStage
+        : undefined
+    const failureStage: TranslationFailureStage = isChildFailure
+      ? err.failureStage
+      : attachedFailureStage || currentStage
+    const providerName = isChildFailure ? err.provider : config.aiProvider
+    const modelName = isChildFailure ? err.model : config.aiModel
+    const failedResourceTitle = isChildFailure
+      ? err.childPageTitle
+      : sourceMeta.title
+    const shortError = isChildFailure
+      ? err.shortError
+      : summarizeShortErrorMessage(errorDetail)
+
+    const formattedNotionError = formatNotionTranslationErrorSummary({
+      pageTitle: failedResourceTitle,
+      isChildPage: isChildFailure || Boolean(options.isChildTask),
+      failureStage,
+      provider: providerName,
+      model: modelName,
+      rawError: shortError,
+      failedAt,
+    })
+
     logger.error(
-      `Translation job failed for "${sourceMeta.title}" (${sourceMeta.id}): ${errorDetail}`
+      `Translation job failed for "${sourceMeta.title}" (${sourceMeta.id}) [stage="${failureStage}", resource="${failedResourceTitle}", provider="${providerName}", model="${modelName}"]: ${errorDetail}`
     )
-    checkpointController.setJobState('failed', errorDetail)
+    checkpointController.setJobState('failed', formattedNotionError)
 
     await updateSourcePageWorkflowState(
       client,
@@ -1439,7 +1575,7 @@ export async function processTranslationJob(
         ...(createdOrResumedTargetPageId
           ? { translationTargetPageId: createdOrResumedTargetPageId }
           : {}),
-        translationError: `[Failed at ${failedAt}] ${errorDetail}`,
+        translationError: formattedNotionError,
         translationUpdatedAt: failedAt,
       },
       { dryRun, logger, retryOptions: options.retryOptions }
@@ -1460,7 +1596,12 @@ export async function processTranslationJob(
         createdOrResumedTargetPageId ||
         sourceMeta.translationTargetPageId ||
         '',
-      error: errorDetail,
+      error: formattedNotionError,
+      shortError,
+      failureStage,
+      failedResourceTitle,
+      provider: providerName,
+      model: modelName,
       dryRun,
     }
   }
@@ -1518,78 +1659,147 @@ async function executeHierarchicalTranslationPlan(
         ) || null
       : null
 
-    let nodeResult: TranslationJobResult
+    let nodeResult: TranslationJobResult | null = null
 
     // If a child resource (depth > 0) already has a single existing Vietnamese page,
-    // reuse it instead of treating it as a duplicate error so interrupted parent jobs
-    // can complete their remaining children cleanly.
+    // inspect whether it is published, complete, or an incomplete draft that should be resumed.
+    // Never overwrite published or manually edited Vietnamese content, and never mark an
+    // incomplete child page as Draft Ready automatically.
     if (
       !isRoot &&
       task.existingInspection.action === 'duplicate_exists' &&
       task.existingInspection.existingPages.length === 1
     ) {
       const existingTarget = task.existingInspection.primaryPage
-      logger.info(
-        `[Hierarchy Progress] Reusing existing Vietnamese child page "${existingTarget.meta.title}" (${existingTarget.page.id}) for source "${task.node.meta.title}" (${task.sourcePageId})`
+      const targetStatusLower = (existingTarget.meta.status || '').toLowerCase()
+      const isPublishedOrNonDraft =
+        task.node.parentKind === 'database' &&
+        Boolean(targetStatusLower) &&
+        targetStatusLower !== 'draft'
+
+      const existingTree = task.existingInspection.existingTree || null
+      const existingBlockCount = Number(
+        existingTree?.totalBlocks ?? existingTree?.length ?? 0
       )
-      registerResolvedPageInReferenceMap(plan.referenceMap, {
-        sourcePageId: task.sourcePageId,
-        targetPageId: existingTarget.page.id,
-        sourceSlug: task.node.meta.slug,
-        targetSlug: existingTarget.meta.slug,
-        targetTitle: existingTarget.meta.title,
-        translationGroupId: task.translationGroupId,
-        targetLocale,
-      })
-      recordPageTranslationMapping(
-        {
+      const sourceBlockCount = Number(
+        task.node.blockTree.totalBlocks ?? task.node.blockTree.length ?? 0
+      )
+      const childCheckpoint = readJobCheckpoint(task.sourcePageId, config)
+      const structuralValidation = existingTree
+        ? validateTranslation(task.node.blockTree, existingTree)
+        : null
+
+      const isStructurallyComplete =
+        Boolean(existingTree) &&
+        (sourceBlockCount === 0 || existingBlockCount > 0) &&
+        Boolean(structuralValidation?.valid) &&
+        childCheckpoint?.jobState !== 'failed'
+
+      if (isPublishedOrNonDraft || isStructurallyComplete) {
+        logger.info(
+          `[Hierarchy Progress] Reusing existing complete/published Vietnamese child page "${existingTarget.meta.title}" (${existingTarget.page.id}) for source "${task.node.meta.title}" (${task.sourcePageId})`
+        )
+        registerResolvedPageInReferenceMap(plan.referenceMap, {
           sourcePageId: task.sourcePageId,
           targetPageId: existingTarget.page.id,
-          targetLocale,
-          translationGroupId: task.translationGroupId,
           sourceSlug: task.node.meta.slug,
           targetSlug: existingTarget.meta.slug,
-          sourceTitle: task.node.meta.title,
           targetTitle: existingTarget.meta.title,
-          parentKind: task.node.parentKind,
-          parentDatabaseId: task.node.parentDatabaseId,
-          parentTargetPageId,
-        },
-        { ...config, dryRun }
-      )
+          translationGroupId: task.translationGroupId,
+          targetLocale,
+        })
+        recordPageTranslationMapping(
+          {
+            sourcePageId: task.sourcePageId,
+            targetPageId: existingTarget.page.id,
+            targetLocale,
+            translationGroupId: task.translationGroupId,
+            sourceSlug: task.node.meta.slug,
+            targetSlug: existingTarget.meta.slug,
+            sourceTitle: task.node.meta.title,
+            targetTitle: existingTarget.meta.title,
+            parentKind: task.node.parentKind,
+            parentDatabaseId: task.node.parentDatabaseId,
+            parentTargetPageId,
+          },
+          { ...config, dryRun }
+        )
 
-      const dummyValidation = validateTranslation(
-        task.node.blockTree,
-        task.existingInspection.existingTree || task.node.blockTree
-      )
-      const dummyReport = generateTranslationReport({
-        sourcePageTitle: task.node.meta.title,
-        sourcePageId: task.sourcePageId,
-        targetPageId: existingTarget.page.id,
-        targetPageUrl: existingTarget.page.url || '',
-        totalSourceBlocks: task.manifest.stats.totalSourceBlocks,
-        totalTranslatedTextFields: 0,
-        totalPreservedBlocks: task.manifest.stats.totalPreservedBlocks,
-        totalRecreatedNestedBlocks: task.manifest.stats.totalNestedBlocks,
-      })
+        const reusedValidation =
+          structuralValidation ||
+          validateTranslation(
+            task.node.blockTree,
+            existingTree || task.node.blockTree
+          )
+        const reusedReport = generateTranslationReport({
+          sourcePageTitle: task.node.meta.title,
+          sourcePageId: task.sourcePageId,
+          targetPageId: existingTarget.page.id,
+          targetPageUrl: existingTarget.page.url || '',
+          totalSourceBlocks: task.manifest.stats.totalSourceBlocks,
+          totalTranslatedTextFields: 0,
+          totalPreservedBlocks: task.manifest.stats.totalPreservedBlocks,
+          totalRecreatedNestedBlocks: task.manifest.stats.totalNestedBlocks,
+        })
 
-      nodeResult = {
-        status: TRANSLATION_STATUS.DRAFT_READY,
-        sourcePageId: task.sourcePageId,
-        targetPageId: existingTarget.page.id,
-        targetPageUrl: existingTarget.page.url || '',
-        translationGroupId: task.translationGroupId,
-        slug: existingTarget.meta.slug,
-        translatedTitle: existingTarget.meta.title,
-        targetStatus: 'Draft',
-        targetLocale,
-        resumed: true,
-        reusedCachedAi: true,
-        validation: dummyValidation,
-        report: dummyReport,
-        dryRun,
+        nodeResult = {
+          status: reusedValidation.needsReview
+            ? TRANSLATION_STATUS.NEEDS_REVIEW
+            : TRANSLATION_STATUS.DRAFT_READY,
+          sourcePageId: task.sourcePageId,
+          targetPageId: existingTarget.page.id,
+          targetPageUrl: existingTarget.page.url || '',
+          translationGroupId: task.translationGroupId,
+          slug: existingTarget.meta.slug,
+          translatedTitle: existingTarget.meta.title,
+          targetStatus: 'Draft',
+          targetLocale,
+          resumed: true,
+          reusedCachedAi: true,
+          validation: reusedValidation,
+          report: reusedReport,
+          dryRun,
+        }
+      } else if (existingTree && existingBlockCount === 0 && sourceBlockCount > 0) {
+        logger.info(
+          `[Hierarchy Progress] Existing Vietnamese child page "${existingTarget.meta.title}" (${existingTarget.page.id}) is an empty Draft shell; resuming child translation.`
+        )
+        task.existingInspection = {
+          action: 'resume_empty',
+          targetPageId: existingTarget.page.id,
+          existingPage: existingTarget,
+          checkpoint: childCheckpoint,
+        }
+      } else if (
+        existingTree &&
+        isExistingTargetPrefixValid(task.node.blockTree, existingTree)
+      ) {
+        logger.info(
+          `[Hierarchy Progress] Existing Vietnamese child page "${existingTarget.meta.title}" (${existingTarget.page.id}) has partial Draft content (${existingBlockCount}/${sourceBlockCount} blocks); resuming child translation safely.`
+        )
+        task.existingInspection = {
+          action: 'resume_partial',
+          targetPageId: existingTarget.page.id,
+          existingPage: existingTarget,
+          existingTree,
+          checkpoint: childCheckpoint,
+        }
+      } else {
+        const reviewReason =
+          `[Incomplete or Modified Draft Child Page] Existing Vietnamese child page "${existingTarget.meta.title}" ` +
+          `(${existingTarget.page.id}) does not match expected block structure (${existingBlockCount}/${sourceBlockCount} blocks) and will not be overwritten automatically.`
+        logger.warn(reviewReason)
+        nodeResult = {
+          status: TRANSLATION_STATUS.NEEDS_REVIEW,
+          sourcePageId: task.sourcePageId,
+          targetPageId: existingTarget.page.id,
+          reason: reviewReason,
+          dryRun,
+        }
       }
-    } else {
+    }
+
+    if (!nodeResult) {
       nodeResult = await processTranslationJob(task.node.page, {
         ...options,
         client,
@@ -1605,8 +1815,7 @@ async function executeHierarchicalTranslationPlan(
         parentTargetPageId,
         referenceMap: plan.referenceMap,
         preloadedSourceTree: task.node.blockTree,
-        existingCheckOverride:
-          task.node.parentKind === 'page' ? task.existingInspection : null,
+        existingCheckOverride: task.existingInspection,
         deferFinalSourceStatusUpdate: isRoot,
         onWriteChildPage: async ({
           sourceChildPageId,
@@ -1622,17 +1831,54 @@ async function executeHierarchicalTranslationPlan(
             existingTargetBlock?.id &&
             childTask.existingInspection.action === 'create_new'
           ) {
-            childTask.existingInspection = {
-              action: 'resume_empty',
-              targetPageId: existingTargetBlock.id,
-              existingPage: {
-                page: { id: existingTargetBlock.id },
-                meta: extractPageWorkflowMeta(
-                  { id: existingTargetBlock.id },
-                  childTask.dataSourceInfo
-                ),
-              },
-              checkpoint: readJobCheckpoint(childTask.sourcePageId, config),
+            const childCheckpoint = readJobCheckpoint(
+              childTask.sourcePageId,
+              config
+            )
+            const existingPageMeta = extractPageWorkflowMeta(
+              { id: existingTargetBlock.id },
+              childTask.dataSourceInfo
+            )
+            let inspectedChildTree: NotionBlockTree | null = null
+            if (!dryRun) {
+              try {
+                inspectedChildTree = await readRawNotionTree(
+                  existingTargetBlock.id,
+                  {
+                    client,
+                    config,
+                    logger,
+                    retryOptions: options.retryOptions,
+                  }
+                )
+              } catch {
+                inspectedChildTree = null
+              }
+            }
+            const childExistingBlocks = Number(
+              inspectedChildTree?.totalBlocks ?? inspectedChildTree?.length ?? 0
+            )
+            if (inspectedChildTree && childExistingBlocks > 0) {
+              childTask.existingInspection = {
+                action: 'resume_partial',
+                targetPageId: existingTargetBlock.id,
+                existingPage: {
+                  page: { id: existingTargetBlock.id },
+                  meta: existingPageMeta,
+                },
+                existingTree: inspectedChildTree,
+                checkpoint: childCheckpoint,
+              }
+            } else {
+              childTask.existingInspection = {
+                action: 'resume_empty',
+                targetPageId: existingTargetBlock.id,
+                existingPage: {
+                  page: { id: existingTargetBlock.id },
+                  meta: existingPageMeta,
+                },
+                checkpoint: childCheckpoint,
+              }
             }
           }
 
@@ -1640,10 +1886,41 @@ async function executeHierarchicalTranslationPlan(
             childTask,
             currentTargetParentId
           )
-          if (!childRes.targetPageId) {
-            throw new Error(
-              `Failed to create Vietnamese child page for "${childTask.node.meta.title}" (${childTask.sourcePageId})`
-            )
+          if (childRes.status === 'paused_quota') {
+            throw new QuotaExhaustedError(childRes.reason, {
+              provider: childRes.provider || config.aiProvider,
+              model: childRes.model || config.aiModel,
+            })
+          }
+          if (
+            childRes.status === TRANSLATION_STATUS.FAILED ||
+            !childRes.targetPageId
+          ) {
+            throw new ChildTaskTranslationError({
+              childPageTitle:
+                childRes.status === TRANSLATION_STATUS.FAILED &&
+                childRes.failedResourceTitle
+                  ? childRes.failedResourceTitle
+                  : childTask.node.meta.title || childTask.sourcePageId,
+              childSourcePageId: childTask.sourcePageId,
+              failureStage:
+                childRes.status === TRANSLATION_STATUS.FAILED
+                  ? childRes.failureStage || 'AI Translation'
+                  : 'Notion Page Write',
+              provider:
+                childRes.status === TRANSLATION_STATUS.FAILED
+                  ? childRes.provider || config.aiProvider
+                  : config.aiProvider,
+              model:
+                childRes.status === TRANSLATION_STATUS.FAILED
+                  ? childRes.model || config.aiModel
+                  : config.aiModel,
+              shortError:
+                childRes.status === TRANSLATION_STATUS.FAILED
+                  ? childRes.shortError ||
+                    summarizeShortErrorMessage(childRes.error)
+                  : 'Child page creation did not return a target page ID',
+            })
           }
           return {
             targetChildPageId: childRes.targetPageId,
@@ -1663,9 +1940,21 @@ async function executeHierarchicalTranslationPlan(
       parentKind: task.node.parentKind,
       status: nodeResult.status,
       targetPageId: nodeResult.targetPageId || '',
+      failureStage:
+        nodeResult.status === TRANSLATION_STATUS.FAILED
+          ? nodeResult.failureStage
+          : undefined,
+      provider:
+        nodeResult.status === TRANSLATION_STATUS.FAILED
+          ? nodeResult.provider || config.aiProvider
+          : undefined,
+      model:
+        nodeResult.status === TRANSLATION_STATUS.FAILED
+          ? nodeResult.model || config.aiModel
+          : undefined,
       error:
         nodeResult.status === TRANSLATION_STATUS.FAILED
-          ? nodeResult.error
+          ? nodeResult.shortError || nodeResult.error
           : nodeResult.status === 'paused_quota'
             ? nodeResult.reason
             : nodeResult.status === TRANSLATION_STATUS.NEEDS_REVIEW
@@ -1847,7 +2136,10 @@ async function executeHierarchicalTranslationPlan(
       summaryParts.push(
         `Child failures (${failedChildren.length}/${childOutcomes.length}): ` +
           failedChildren
-            .map((c) => `"${c.title}" (${c.sourcePageId}: ${c.error || 'failed'})`)
+            .map(
+              (c) =>
+                `Child page: "${c.title}" | Stage: ${c.failureStage || 'AI Translation'} | Provider/Model: ${c.provider || config.aiProvider}/${c.model || config.aiModel} | Error: ${c.error || 'failed'}`
+            )
             .join('; ')
       )
     }

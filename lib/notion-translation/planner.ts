@@ -90,26 +90,30 @@ export function canSafelyResumePartialTarget(params: {
     return false
   }
 
-  const cachedAi =
-    checkpoint.cachedTranslationResult &&
-    checkpoint.cachedTranslationResult.targetLocale === targetLocale &&
-    checkpoint.cachedTranslationResult.translations &&
-    typeof checkpoint.cachedTranslationResult.translations === 'object'
-      ? checkpoint.cachedTranslationResult
-      : null
-
-  if (!cachedAi) {
-    return false
-  }
-
   const completedBatchEntries = Object.values(checkpoint.completedBatches || {})
+  const completedChildEntries = Object.values(
+    checkpoint.childTargetPageIdsBySourceId || {}
+  )
   const hasPendingAppend =
     checkpoint.pendingOperation?.type === 'append_blocks'
-  if (completedBatchEntries.length === 0 && !hasPendingAppend) {
+  const hasMatchingTargetPageId =
+    Boolean(checkpoint.targetPageId) &&
+    normalizeNotionId(checkpoint.targetPageId) ===
+      normalizeNotionId(targetPageId)
+
+  if (
+    completedBatchEntries.length === 0 &&
+    completedChildEntries.length === 0 &&
+    !hasPendingAppend &&
+    !hasMatchingTargetPageId
+  ) {
     return false
   }
 
-  return isExistingTargetPrefixValid(sourceTree, existingTargetTree)
+  return isExistingTargetPrefixValid(
+    sourceTree,
+    existingTargetTree
+  ) && (!checkpoint.targetLocale || checkpoint.targetLocale === targetLocale)
 }
 
 export async function inspectExistingTranslationState(params: {
@@ -122,6 +126,7 @@ export async function inspectExistingTranslationState(params: {
   targetLocale: string
   indices: DatabasePageIndices
   checkpoint?: JobCheckpoint | null
+  config?: Partial<TranslationConfig>
   options?: NotionOperationOptions
 }): Promise<ExistingTranslationInspection> {
   const {
@@ -134,13 +139,17 @@ export async function inspectExistingTranslationState(params: {
     targetLocale,
     indices,
     checkpoint = null,
+    config = {},
     options = {},
   } = params
 
   const candidatesMap = new Map<string, IndexedDatabasePage>()
 
   if (translationGroupId) {
-    const byLocale = indices.pagesByGroupAndLocale.get(translationGroupId)
+    const groupKey = translationGroupId.trim().toLowerCase()
+    const byLocale =
+      indices.pagesByGroupAndLocale.get(groupKey) ||
+      indices.pagesByGroupAndLocale.get(translationGroupId)
     const groupMatches = byLocale?.get(targetLocale) || []
     for (const item of groupMatches) {
       if (!item.meta.inTrash) {
@@ -149,8 +158,17 @@ export async function inspectExistingTranslationState(params: {
     }
   }
 
-  if (sourceMeta.translationTargetPageId) {
-    const normTargetId = normalizeNotionId(sourceMeta.translationTargetPageId)
+  const mappedEntry = getMappedTargetPage(sourceMeta.id, targetLocale, config)
+  const explicitTargetIds = [
+    sourceMeta.translationTargetPageId,
+    checkpoint?.targetPageId,
+    mappedEntry?.targetPageId,
+  ].filter((id): id is string => Boolean(id && String(id).trim()))
+
+  for (const rawTargetId of explicitTargetIds) {
+    const normTargetId = normalizeNotionId(rawTargetId)
+    if (!normTargetId || candidatesMap.has(normTargetId)) continue
+
     const targetEntry = indices.metaByPageId.get(normTargetId)
     if (
       targetEntry &&
@@ -158,16 +176,16 @@ export async function inspectExistingTranslationState(params: {
       targetEntry.meta.locale === targetLocale
     ) {
       candidatesMap.set(normTargetId, targetEntry)
-    } else if (!targetEntry && typeof client?.pages?.retrieve === 'function') {
+    } else if (typeof client?.pages?.retrieve === 'function') {
       try {
         const retrieved = (await withNotionRetry(
           () =>
             client.pages.retrieve({
-              page_id: sourceMeta.translationTargetPageId,
+              page_id: rawTargetId,
             }),
           {
             isIdempotent: true,
-            label: `pages.retrieve(${sourceMeta.translationTargetPageId})`,
+            label: `pages.retrieve(${rawTargetId})`,
             logger: options.logger || defaultLogger,
             ...options.retryOptions,
           }
@@ -179,7 +197,7 @@ export async function inspectExistingTranslationState(params: {
             targetLocale
           )
           if (meta.locale === targetLocale) {
-            candidatesMap.set(normalizeNotionId(retrieved.id), {
+            candidatesMap.set(normTargetId, {
               page: retrieved,
               meta,
             })
@@ -187,44 +205,6 @@ export async function inspectExistingTranslationState(params: {
         }
       } catch {
         // Target page does not exist or is inaccessible
-      }
-    }
-  }
-
-  if (checkpoint?.targetPageId) {
-    const normCpTargetId = normalizeNotionId(checkpoint.targetPageId)
-    if (!candidatesMap.has(normCpTargetId)) {
-      const targetEntry = indices.metaByPageId.get(normCpTargetId)
-      if (
-        targetEntry &&
-        !targetEntry.meta.inTrash &&
-        targetEntry.meta.locale === targetLocale
-      ) {
-        candidatesMap.set(normCpTargetId, targetEntry)
-      } else if (typeof client?.pages?.retrieve === 'function') {
-        try {
-          const retrieved = (await withNotionRetry(
-            () => client.pages.retrieve({ page_id: checkpoint.targetPageId! }),
-            {
-              isIdempotent: true,
-              label: `pages.retrieve(${checkpoint.targetPageId})`,
-              logger: options.logger || defaultLogger,
-              ...options.retryOptions,
-            }
-          )) as NotionPageLike
-          if (retrieved && !retrieved.in_trash && !retrieved.archived) {
-            const meta = extractPageWorkflowMeta(
-              retrieved,
-              dataSourceInfo,
-              targetLocale
-            )
-            if (meta.locale === targetLocale) {
-              candidatesMap.set(normCpTargetId, { page: retrieved, meta })
-            }
-          }
-        } catch {
-          // Ignore inaccessible checkpoint target page
-        }
       }
     }
   }
@@ -238,18 +218,33 @@ export async function inspectExistingTranslationState(params: {
     return {
       action: 'duplicate_exists',
       existingPages: candidates,
-      primaryPage: candidates[0],
+      primaryPage: candidates[0]!,
       reason: `Multiple (${candidates.length}) target pages already exist for Translation Group ID "${translationGroupId}" and locale "${targetLocale}".`,
     }
   }
 
-  const singleCandidate = candidates[0]
+  const singleCandidate = candidates[0]!
+  const isTargetDraft =
+    singleCandidate.meta.status.trim().toLowerCase() === 'draft'
+
   try {
     const existingTree = await readRawNotionTree(
       client,
       singleCandidate.page.id,
       options
     )
+
+    // Never overwrite or resume a Published page
+    if (!isTargetDraft) {
+      return {
+        action: 'duplicate_exists',
+        existingPages: [singleCandidate],
+        primaryPage: singleCandidate,
+        existingTree,
+        reason: `Existing ${targetLocale.toUpperCase()} page "${singleCandidate.meta.title}" (id: ${singleCandidate.page.id}) has status "${singleCandidate.meta.status}" (not Draft) and will not be overwritten.`,
+      }
+    }
+
     const rootBlocks = normalizeTreeNodes(existingTree)
     if (rootBlocks.length === 0) {
       return {
@@ -568,6 +563,7 @@ export async function buildTranslationPlan(
         targetLocale,
         indices: parentDbNode.indices,
         checkpoint,
+        config,
         options,
       })
     } else {

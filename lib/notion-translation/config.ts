@@ -107,6 +107,19 @@ function nonNegativeFloatWithDefault(fallback: number) {
   }, z.number().min(0))
 }
 
+function boundedFloatWithDefault(
+  fallback: number,
+  min = 1.0,
+  max = 10.0
+) {
+  return z.preprocess((raw) => {
+    if (raw === undefined || raw === null || raw === '') return fallback
+    const num = Number(raw)
+    if (!Number.isFinite(num) || num <= 0) return fallback
+    return Math.min(max, Math.max(min, num))
+  }, z.number().min(min).max(max))
+}
+
 export function inferAiProvider(env: Record<string, string | undefined>): string {
   const explicit = (env.AI_PROVIDER || '').trim().toLowerCase()
   if (explicit) return explicit
@@ -241,10 +254,15 @@ export const TranslationConfigSchema = z.object({
   pollIntervalMs: positiveIntWithDefault(60000, 1000),
   targetLocale: z.string().min(1),
   sourceLocale: z.string().min(1),
-  batchSize: positiveIntWithDefault(20, 1),
-  maxBatchChars: positiveIntWithDefault(6000, 500),
-  maxInputTokensPerBatch: positiveIntWithDefault(1800, 200),
-  maxOutputTokens: positiveIntWithDefault(4096, 256),
+  batchSize: positiveIntWithDefault(60, 1, 80),
+  maxBatchSegments: positiveIntWithDefault(80, 1, 80),
+  maxBatchChars: positiveIntWithDefault(12000, 500),
+  maxInputTokensPerBatch: positiveIntWithDefault(4500, 200),
+  targetOutputTokensPerBatch: positiveIntWithDefault(5000, 1024, 32768),
+  minOutputTokens: positiveIntWithDefault(2048, 256, 32768),
+  maxOutputTokens: positiveIntWithDefault(8192, 512, 65536),
+  outputTokenSafetyMargin: boundedFloatWithDefault(1.8, 1.1, 5.0),
+  assumedOutputTokensPerSec: positiveIntWithDefault(53, 5, 1000),
   rpmLimit: nonNegativeIntWithDefault(0),
   tpmLimit: nonNegativeIntWithDefault(0),
   rpdLimit: nonNegativeIntWithDefault(0),
@@ -344,12 +362,24 @@ export function getTranslationConfig(
       .trim()
       .toLowerCase(),
     batchSize: overrides.batchSize ?? env.TRANSLATION_BATCH_SIZE,
+    maxBatchSegments:
+      overrides.maxBatchSegments ?? env.TRANSLATION_MAX_BATCH_SEGMENTS,
     maxBatchChars: overrides.maxBatchChars ?? env.TRANSLATION_MAX_BATCH_CHARS,
     maxInputTokensPerBatch:
       overrides.maxInputTokensPerBatch ??
       env.TRANSLATION_MAX_INPUT_TOKENS_PER_BATCH,
+    targetOutputTokensPerBatch:
+      overrides.targetOutputTokensPerBatch ??
+      env.TRANSLATION_TARGET_OUTPUT_TOKENS_PER_BATCH,
+    minOutputTokens:
+      overrides.minOutputTokens ?? env.TRANSLATION_MIN_OUTPUT_TOKENS,
     maxOutputTokens:
       overrides.maxOutputTokens ?? env.TRANSLATION_MAX_OUTPUT_TOKENS,
+    outputTokenSafetyMargin:
+      overrides.outputTokenSafetyMargin ??
+      env.TRANSLATION_OUTPUT_SAFETY_MARGIN,
+    assumedOutputTokensPerSec:
+      overrides.assumedOutputTokensPerSec ?? env.TRANSLATION_ASSUMED_OUTPUT_TPS,
     rpmLimit: overrides.rpmLimit ?? env.TRANSLATION_RPM_LIMIT,
     tpmLimit: overrides.tpmLimit ?? env.TRANSLATION_TPM_LIMIT,
     rpdLimit: overrides.rpdLimit ?? env.TRANSLATION_RPD_LIMIT,

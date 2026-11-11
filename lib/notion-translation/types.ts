@@ -218,17 +218,29 @@ export interface TranslationManifest {
   syncedBlocks: SyncedBlockIssue[]
 }
 
+export type TranslationFailureStage =
+  | 'Hierarchy Discovery'
+  | 'Source Tree Read'
+  | 'Manifest Extraction'
+  | 'AI Translation'
+  | 'Block Tree Build'
+  | 'Notion Page Write'
+  | 'Post-Write Validation'
+
 export interface AiProviderTokenUsage {
   inputTokens?: number
   outputTokens?: number
   totalTokens?: number
+  reasoningTokens?: number
 }
 
 export interface AiProviderStructuredResponse {
   __isStructuredAiResponse: true
   data: unknown
+  rawText?: string
   usage?: AiProviderTokenUsage
   finishReason?: string
+  maxOutputTokensUsed?: number
 }
 
 export interface AiProviderRequest {
@@ -238,6 +250,7 @@ export interface AiProviderRequest {
   targetLocale: string
   attempt: number
   estimatedOutputTokens?: number
+  maxOutputTokensOverride?: number
 }
 
 export type AiProviderAdapter = (
@@ -247,14 +260,20 @@ export type AiProviderAdapter = (
 export interface TranslationUsageStats {
   provider: string
   model: string
+  plannedBatches: number
   apiRequests: number
+  successfulRequests: number
+  failedOrRetriedRequests: number
+  splitBatchCount: number
   inputTokens: number
   outputTokens: number
   totalTokens: number
+  avgOutputTokensPerRequest: number
   cachedSegments: number
   skippedTechnicalSegments: number
   translatedSegments: number
   failedBatches: number
+  excessRequestReasons: string[]
   estimatedCostUsd: number | null
 }
 
@@ -511,7 +530,7 @@ export type ExistingTranslationInspection =
       targetPageId: string
       existingPage: IndexedDatabasePage
       existingTree: NotionBlockTree
-      checkpoint: JobCheckpoint
+      checkpoint?: JobCheckpoint | null
     }
   | {
       action: 'duplicate_exists'
@@ -567,6 +586,11 @@ export type TranslationJobResult =
       sourcePageId: string
       targetPageId: string
       error: string
+      shortError?: string
+      failureStage?: TranslationFailureStage
+      failedResourceTitle?: string
+      provider?: string
+      model?: string
       dryRun: boolean
     }
   | {
@@ -574,6 +598,10 @@ export type TranslationJobResult =
       sourcePageId: string
       targetPageId: string
       reason: string
+      failureStage?: TranslationFailureStage
+      failedResourceTitle?: string
+      provider?: string
+      model?: string
       dryRun: boolean
     }
 
@@ -708,6 +736,10 @@ export interface ChildJobOutcome {
   status: TranslationStatus | 'skipped_locale' | 'paused_quota'
   targetPageId: string
   error?: string
+  shortError?: string
+  failureStage?: TranslationFailureStage
+  provider?: string
+  model?: string
 }
 
 export interface SegmentCacheEntry {
