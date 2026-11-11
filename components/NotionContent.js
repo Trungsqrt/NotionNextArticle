@@ -13,6 +13,7 @@ import { useEffect, useRef } from 'react'
 import parse from 'html-react-parser'
 import NotionCodeBlock from './NotionCodeBlock'
 import NotionToggleBlock from './NotionToggleBlock'
+import NotionToggleHeading from './NotionToggleHeading'
 import ImageSlider from './ImageSlider'
 
 // ── Lightweight zoom lightbox ──────────────────────────────────────────────
@@ -158,6 +159,26 @@ export default function NotionContent({ html, className }) {
           }
         } catch (err) {
           console.error('Failed to parse NotionToggleBlock props:', err)
+        }
+      } else if (domNode.attribs['data-notion-component'] === 'NotionToggleHeading') {
+        try {
+          const rawProps = domNode.attribs['data-props']
+          if (rawProps) {
+            const props = JSON.parse(rawProps)
+            return (
+              <NotionToggleHeading
+                blockId={props.blockId}
+                level={props.level}
+                titleHtml={props.titleHtml}
+                anchorId={props.anchorId}
+                color={props.color}
+                colorClass={props.colorClass}
+                hasChildren={props.hasChildren}
+              />
+            )
+          }
+        } catch (err) {
+          console.error('Failed to parse NotionToggleHeading props:', err)
         }
       } else if (domNode.attribs['data-notion-component'] === 'ImageSlider') {
         // Replace the sentinel div emitted by the custom_slider renderer
