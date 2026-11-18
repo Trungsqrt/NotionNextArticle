@@ -177,6 +177,14 @@ export default function Layout({
                     >
                       GitHub
                     </a>
+                    <a
+                      href="https://www.linkedin.com/in/trung-mai-quang-05490a217"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-ink-500 dark:text-sage-400 hover:text-matcha-600 dark:hover:text-matcha-300 transition-colors duration-200 motion-reduce:transition-none no-underline"
+                    >
+                      LinkedIn
+                    </a>
                   </nav>
                   <span className="hidden sm:inline text-rice-paper-500 dark:text-tea-slate-50" aria-hidden="true">·</span>
                   <p className="text-[0.72rem] text-ink-300 dark:text-sage-600 m-0">
