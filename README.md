@@ -430,6 +430,72 @@ Because this initial setup intentionally avoids custom events and backend pipeli
 
 ---
 
+## Contact & Feedback
+
+The website provides a lightweight, bilingual (EN / VI) contact and article-feedback workflow at `/contact`, backed by **Formspree** — with no custom database, user accounts, SMTP server, or backend API routes required.
+
+If `NEXT_PUBLIC_FORMSPREE_FORM_ID` is not set, `/contact` renders safely with a friendly configuration notice and does not attempt any submissions.
+
+### 1. Create a Free Formspree Account
+
+1. Visit [formspree.io](https://formspree.io/) and sign up for a free account.
+2. Verify your email address when prompted — this is the default inbox where contact messages will be delivered.
+
+### 2. Create a Contact Form in Formspree
+
+1. In your Formspree dashboard, click **+ New Form** (or **New Project → New Form**).
+2. Give the form a clear name (for example, `ServiceNow Knowledge Hub Contact`).
+3. Confirm the **Target Email** is set to the email address where you want to receive reader questions and article corrections.
+4. Keep Formspree's built-in **Spam Filtering** enabled under the form's **Settings** tab (the contact form also includes Formspree's `_gotcha` honeypot field).
+
+### 3. Obtain the Form ID
+
+1. Open your newly created form in Formspree and go to the **Integration** tab.
+2. Locate the endpoint URL, which looks like:
+   ```text
+   https://formspree.io/f/xabcdefg
+   ```
+3. Copy only the short Form ID at the end (for example, `xabcdefg`).
+
+### 4. Configure `NEXT_PUBLIC_FORMSPREE_FORM_ID` Locally
+
+Add the Form ID to `.env.local` (never commit `.env.local`):
+
+```env
+NEXT_PUBLIC_FORMSPREE_FORM_ID=xabcdefg
+```
+
+Restart the development server (`pnpm dev`) after updating `.env.local`.
+
+### 5. Configure on Vercel
+
+1. Open your project in the [Vercel Dashboard](https://vercel.com/dashboard).
+2. Go to **Settings → Environment Variables**.
+3. Add:
+   - **Key**: `NEXT_PUBLIC_FORMSPREE_FORM_ID`
+   - **Value**: your Formspree Form ID (for example, `xabcdefg`)
+   - **Environments**: Production (and Preview/Development if desired)
+4. Save and trigger a **Redeploy** so Next.js bundles the `NEXT_PUBLIC_*` variable into the build.
+
+### 6. Verify Email Delivery
+
+1. Open `/contact` on your running site.
+2. Fill in **Email**, choose a **Subject**, enter a **Message** (at least 10 characters), and click **Send Message**.
+3. Confirm the page displays the success confirmation and that the email arrives in your Formspree inbox (and check your Formspree **Submissions** tab if needed).
+
+### 7. Free-Tier Limitations
+
+- Formspree's free tier includes a monthly submission allowance (commonly 50 submissions/month — check Formspree's current pricing page for up-to-date limits) and standard spam filtering.
+- File attachments, custom webhooks, and higher monthly quotas require a paid Formspree plan.
+
+### 8. How Article-Specific Feedback Works
+
+- Every English and Vietnamese article page renders a subtle **Found something incorrect?** (`Phát hiện nội dung chưa chính xác?`) card near the bottom of the article using metadata already fetched for that page (no extra Notion API requests).
+- Clicking **Suggest a Correction** (`Đề xuất chỉnh sửa`) navigates to `/contact` with URL query parameters (`subject=article-correction`, `title`, `url`, and `lang=vi` on Vietnamese articles).
+- The contact form validates those query parameters, pre-selects **Article Correction**, and pre-fills the **Related Article** title and URL without overwriting anything the visitor has already edited manually.
+
+---
+
 ## 🔍 Typecheck & Verification
 
 Verify TypeScript types for the translation worker:

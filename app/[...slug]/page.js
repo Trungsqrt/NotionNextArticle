@@ -4,6 +4,7 @@ import { DEFAULT_LOCALE, getLocaleMeta } from '../../lib/locales'
 import NotionContent from '../../components/NotionContent'
 import TableOfContents from '../../components/TableOfContents'
 import ArticleCover from '../../components/ArticleCover'
+import ArticleFeedback from '../../components/ArticleFeedback'
 import SiblingNavigation from '../../components/SiblingNavigation'
 import LanguageSwitcher from '../../components/LanguageSwitcher'
 
@@ -303,6 +304,13 @@ export default async function ArticlePage({ params }) {
               </p>
             </div>
           )}
+
+          {/* ── Article Feedback / Suggest a Correction ── */}
+          <ArticleFeedback
+            title={title}
+            articleUrl={`${SITE_URL}/${canonicalSlug}`}
+            locale={locale}
+          />
 
           {/* ── Sibling Article Navigation (Previous / Next) ── */}
           <SiblingNavigation prevPage={prevPage} nextPage={nextPage} />

@@ -21,6 +21,7 @@
  */
 
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import Header from './Header'
 import Sidebar from './Sidebar'
@@ -39,7 +40,8 @@ export default function Layout({
 }) {
   const pathname = usePathname() || ''
   const isHomePage = pathname === '/'
-  const shouldShowSidebar = showSidebar && !isHomePage
+  const isContactPage = pathname === '/contact'
+  const shouldShowSidebar = showSidebar && !isHomePage && !isContactPage
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
@@ -159,9 +161,28 @@ export default function Layout({
                   <span className="text-rice-paper-500 dark:text-tea-slate-50">·</span>
                   <span>Built with calm intention</span>
                 </div>
-                <p className="text-[0.72rem] text-ink-300 dark:text-sage-600">
-                  Curated by Jun Mai - Trungsqrt
-                </p>
+                <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[0.74rem]">
+                  <nav aria-label="Footer links" className="flex items-center gap-4">
+                    <Link
+                      href="/contact"
+                      className="text-ink-500 dark:text-sage-400 hover:text-matcha-600 dark:hover:text-matcha-300 transition-colors duration-200 motion-reduce:transition-none no-underline"
+                    >
+                      Contact
+                    </Link>
+                    <a
+                      href="https://github.com/Trungsqrt"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-ink-500 dark:text-sage-400 hover:text-matcha-600 dark:hover:text-matcha-300 transition-colors duration-200 motion-reduce:transition-none no-underline"
+                    >
+                      GitHub
+                    </a>
+                  </nav>
+                  <span className="hidden sm:inline text-rice-paper-500 dark:text-tea-slate-50" aria-hidden="true">·</span>
+                  <p className="text-[0.72rem] text-ink-300 dark:text-sage-600 m-0">
+                    Curated by Jun Mai - Trungsqrt
+                  </p>
+                </div>
               </div>
             </footer>
           </main>
