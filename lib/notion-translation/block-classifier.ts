@@ -209,7 +209,7 @@ export const BLOCK_RULES: Readonly<Record<string, BlockClassification>> =
       type: 'code',
       supported: true,
       category: 'non_translatable',
-      translatableFields: ['caption'], // NEVER translate code body directly; captions and safe Mermaid display labels are handled explicitly
+      translatableFields: [], // Code blocks are immutable passthrough content (never translated)
       preserveFields: ['rich_text', 'language', 'caption'],
       canHaveChildren: false,
     },
@@ -332,18 +332,7 @@ export function classifyBlock(blockNodeOrRaw: unknown): BlockClassification {
     }
   }
 
-  if (type === 'code') {
-    const codePayload = raw.code as { language?: string } | undefined
-    const lang = String(codePayload?.language || '')
-      .trim()
-      .toLowerCase()
-    if (lang === 'mermaid') {
-      return {
-        ...baseRule,
-        isMermaidCodeBlock: true,
-      }
-    }
-  }
+
 
   return { ...baseRule }
 }

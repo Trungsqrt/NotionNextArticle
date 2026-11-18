@@ -322,29 +322,29 @@ export function validateTranslation(
         }
       }
 
-      // 4. Code block contents verification
+      // 4. Code block contents verification (immutable passthrough)
       if (sType === 'code') {
         const sCodeObj = sRaw.code as
-          | { rich_text?: unknown; language?: string }
+          | { rich_text?: unknown; caption?: unknown; language?: string }
           | undefined
         const tCodeObj = tRaw.code as
-          | { rich_text?: unknown; language?: string }
+          | { rich_text?: unknown; caption?: unknown; language?: string }
           | undefined
         const sCode = getRichTextPlain(sCodeObj?.rich_text)
         const tCode = getRichTextPlain(tCodeObj?.rich_text)
+        const sCaption = getRichTextPlain(sCodeObj?.caption)
+        const tCaption = getRichTextPlain(tCodeObj?.caption)
         const sLang = sCodeObj?.language || 'plain text'
         const tLang = tCodeObj?.language || 'plain text'
-        const isMermaid = sLang.trim().toLowerCase() === 'mermaid'
 
-        if (isMermaid) {
-          if (sCode.trim() && !tCode.trim()) {
-            validationErrors.push(
-              `Mermaid diagram block at ${itemPath} is empty in translated output`
-            )
-          }
-        } else if (sCode !== tCode) {
+        if (sCode !== tCode) {
           validationErrors.push(
             `Code block content was altered at ${itemPath}`
+          )
+        }
+        if (sCaption !== tCaption) {
+          validationErrors.push(
+            `Code block caption was altered at ${itemPath}`
           )
         }
         if (sLang !== tLang) {

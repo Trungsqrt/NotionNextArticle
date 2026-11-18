@@ -487,36 +487,7 @@ export function extractTranslationManifest(
         }
       }
 
-      if (
-        blockType === 'code' &&
-        classification.isMermaidCodeBlock &&
-        Array.isArray(payload.rich_text) &&
-        payload.rich_text.length > 0
-      ) {
-        const fullMermaidCode = formatRichTextContext(payload.rich_text)
-        const mermaidSpans = extractMermaidLabelSpans(fullMermaidCode)
-        for (const span of mermaidSpans) {
-          addItem({
-            id: `block:${blockId}:mermaid_label:${span.index}`,
-            kind: 'block',
-            sourceBlockId: blockId,
-            blockType: 'mermaid_label',
-            fieldPath: `code.mermaid_label.${span.index}`,
-            runIndex: span.index,
-            text: span.text,
-            leadingSpace: getLeadingWhitespace(span.text),
-            trailingSpace: getTrailingWhitespace(span.text),
-            annotations: null,
-            href: null,
-            context: {
-              articleTitle: resolvedArticleTitle,
-              parentHeading: activeHeading || 'Mermaid Diagram',
-              fullBlockText: fullMermaidCode,
-            },
-          })
-          extractedInBlock += 1
-        }
-      }
+
 
       if (extractedInBlock > 0) {
         totalTranslatableBlocks += 1

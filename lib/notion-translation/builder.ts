@@ -425,36 +425,64 @@ export function toNotionRichTextRequest(
   richTextArray: unknown
 ): Record<string, unknown>[] {
   if (!Array.isArray(richTextArray)) return []
-  return richTextArray.map((rawItem) => {
+  const result: Record<string, unknown>[] = []
+
+  for (const rawItem of richTextArray) {
     const item = (rawItem || {}) as Record<string, unknown>
     const type = String(item.type || 'text')
-    const clean: Record<string, unknown> = { type }
+    const annotations = item.annotations
+      ? sanitizeAnnotations(item.annotations)
+      : undefined
 
     if (type === 'equation') {
       const eq = item.equation as { expression?: string } | undefined
-      clean.equation = { expression: eq?.expression || '' }
-    } else if (type === 'mention') {
-      clean.mention = sanitizeMention(item.mention)
-    } else {
-      const textObj = item.text as
-        | { content?: string; link?: { url?: string } | null }
-        | undefined
-      const content =
-        textObj?.content ??
-        (typeof item.plain_text === 'string' ? item.plain_text : '')
-      const linkUrl =
-        textObj?.link?.url ||
-        (typeof item.href === 'string' ? item.href : null)
-      clean.text = {
-        content,
-        ...(linkUrl ? { link: { url: linkUrl } } : {}),
+      const clean: Record<string, unknown> = {
+        type,
+        equation: { expression: eq?.expression || '' },
       }
+      if (annotations) clean.annotations = annotations
+      result.push(clean)
+      continue
     }
-    if (item.annotations) {
-      clean.annotations = sanitizeAnnotations(item.annotations)
+
+    if (type === 'mention') {
+      const clean: Record<string, unknown> = {
+        type,
+        mention: sanitizeMention(item.mention),
+      }
+      if (annotations) clean.annotations = annotations
+      result.push(clean)
+      continue
     }
-    return clean
-  })
+
+    const textObj = item.text as
+      | { content?: string; link?: { url?: string } | null }
+      | undefined
+    const content =
+      textObj?.content ??
+      (typeof item.plain_text === 'string' ? item.plain_text : '')
+    const linkUrl =
+      textObj?.link?.url ||
+      (typeof item.href === 'string' ? item.href : null)
+    const chunks =
+      content.length > NOTION_MAX_RICH_TEXT_LENGTH
+        ? chunkTextContent(content)
+        : [content]
+
+    for (const chunk of chunks) {
+      const clean: Record<string, unknown> = {
+        type,
+        text: {
+          content: chunk,
+          ...(linkUrl ? { link: { url: linkUrl } } : {}),
+        },
+      }
+      if (annotations) clean.annotations = annotations
+      result.push(clean)
+    }
+  }
+
+  return result
 }
 
 /**
@@ -514,27 +542,7 @@ export function buildTranslatedBlockTree(
         }
       }
 
-      if (
-        blockType === 'code' &&
-        classification.isMermaidCodeBlock &&
-        Array.isArray(payload.rich_text) &&
-        payload.rich_text.length > 0
-      ) {
-        const origMermaidCode = formatRichTextContext(payload.rich_text)
-        const rebuiltMermaidCode = rebuildMermaidCode(
-          origMermaidCode,
-          blockId,
-          translationResult
-        )
-        if (rebuiltMermaidCode !== origMermaidCode) {
-          const chunks = chunkTextContent(rebuiltMermaidCode)
-          payload.rich_text = chunks.map((chunk) => ({
-            type: 'text',
-            text: { content: chunk },
-            plain_text: chunk,
-          }))
-        }
-      }
+
 
       if (blockType === 'child_page' && referenceMap) {
         const localizedMeta =
