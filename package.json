@@ -11,6 +11,7 @@
     "typecheck:worker": "tsc -p tsconfig.worker.json --noEmit"
   },
   "dependencies": {
+    "@next/third-parties": "^16.4.6",
     "@notion-render/client": "^0.0.2",
     "@notion-render/hljs-plugin": "^0.0.2",
     "@notionhq/client": "^5.23.3",
