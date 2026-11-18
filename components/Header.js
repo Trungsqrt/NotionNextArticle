@@ -81,6 +81,7 @@ const NAV_LINKS = [
   { href: '/modules', label: 'Modules' },
   { href: '/labs', label: 'Labs' },
   { href: '/resources', label: 'Resources' },
+  { href: '/contact', label: 'Contact' },
 ]
 
 // ════════════════════════════════════════════════════════════
