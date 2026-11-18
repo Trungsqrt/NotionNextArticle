@@ -1,5 +1,6 @@
 import '../styles/globals.css'
 import Layout from '../components/Layout'
+import { GoogleAnalytics } from '@next/third-parties/google'
 import { Plus_Jakarta_Sans, Noto_Serif_JP, Fira_Code } from 'next/font/google'
 
 // ── Font initialisation (module-level, as required by next/font) ─────────────
@@ -23,6 +24,7 @@ const firaCode = Fira_Code({
 })
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
+const GA_MEASUREMENT_ID = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim()
 const AUTHOR_NAME = 'Jun Mai - Trungsqrt'
 const SITE_TITLE = 'ServiceNow Knowledge Hub · Jun Mai - Trungsqrt'
 const SITE_DESCRIPTION = 'Master ServiceNow with calm clarity — curated architecture notes, CSDM/CMDB labs, performance deep-dives, and reference cards by Jun Mai - Trungsqrt.'
@@ -162,6 +164,7 @@ export default function RootLayout({ children }) {
       <body suppressHydrationWarning>
         <Layout>{children}</Layout>
       </body>
+      {GA_MEASUREMENT_ID ? <GoogleAnalytics gaId={GA_MEASUREMENT_ID} /> : null}
     </html>
   )
 }

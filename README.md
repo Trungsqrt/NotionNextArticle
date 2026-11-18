@@ -334,6 +334,102 @@ Press `Ctrl+C` in PowerShell at any time for a **graceful shutdown** — the wor
 
 ---
 
+## Google Analytics 4 (GA4)
+
+This application includes an optional, lightweight integration with **Google Analytics 4 (GA4)** using Next.js's official `@next/third-parties/google` package. It tracks homepage visits, dynamic article pages (`/[...slug]`), and both English and Vietnamese articles using GA4's built-in automatic events and Enhanced Measurement — with no custom database, authentication, or backend API required.
+
+If `NEXT_PUBLIC_GA_MEASUREMENT_ID` is not set, GA4 is completely disabled and no analytics scripts are loaded.
+
+### 1. Create a GA4 Property
+
+1. Sign in to [Google Analytics](https://analytics.google.com/).
+2. Click **Admin** (gear icon in the bottom-left corner).
+3. Under the **Account** column, select an existing account or click **Create Account**.
+4. Under the **Property** column, click **Create Property**.
+5. Enter a property name (for example, `ServiceNow Knowledge Hub`), select your reporting time zone and currency, and complete the setup prompts.
+
+### 2. Create a Web Data Stream
+
+1. In **Admin → Data collection and modification → Data streams**, click **Add stream** → **Web**.
+2. Enter your production website URL (for example, `https://your-domain.vercel.app`) and a stream name.
+3. Keep **Enhanced measurement** toggled **ON**.
+4. Click **Create & continue**.
+
+### 3. Obtain Your Measurement ID
+
+1. Open your newly created Web Data Stream in **Admin → Data streams**.
+2. Copy the **Measurement ID** at the top-right of the stream details panel. It starts with `G-` (for example, `G-XXXXXXXXXX`).
+
+### 4. Configure `NEXT_PUBLIC_GA_MEASUREMENT_ID`
+
+#### Locally (`.env.local`)
+
+Add your Measurement ID to `.env.local` (never commit `.env.local`):
+
+```env
+NEXT_PUBLIC_GA_MEASUREMENT_ID=G-XXXXXXXXXX
+```
+
+Restart the development server (`pnpm dev`) after updating `.env.local`.
+
+#### On Vercel
+
+1. Open your project in the [Vercel Dashboard](https://vercel.com/dashboard).
+2. Go to **Settings → Environment Variables**.
+3. Add a new variable:
+   - **Key**: `NEXT_PUBLIC_GA_MEASUREMENT_ID`
+   - **Value**: `G-XXXXXXXXXX` (your GA4 Measurement ID)
+   - **Environments**: Select **Production** (optionally **Preview** if you want to track preview deployments; keeping it Production-only avoids polluting production metrics).
+4. Click **Save** and trigger a **Redeploy** (Next.js inlines `NEXT_PUBLIC_*` environment variables at build time).
+
+### 5. Enable & Verify Enhanced Measurement
+
+1. In Google Analytics, go to **Admin → Data collection and modification → Data streams** and select your Web Data Stream.
+2. Ensure **Enhanced measurement** is enabled, then click the gear icon to review individual toggles:
+   - **Page views** (ON) — expand **Show advanced settings** and confirm **Page changes based on browser history events** is checked. This enables automatic `page_view` tracking across Next.js client-side navigation without duplicate events.
+   - **Scrolls** (ON) — automatically tracks 90% scroll depth.
+   - **Outbound clicks** (ON) — automatically tracks clicks on external links.
+   - **File downloads** / **Video engagement** (optional, ON by default).
+3. Click **Save**.
+
+### 6. Verify `page_view` Events in GA4 Realtime
+
+1. Open your deployed site (or local dev server with `NEXT_PUBLIC_GA_MEASUREMENT_ID` set) in a browser without an ad blocker.
+2. Navigate between the homepage, an English article, and a Vietnamese article.
+3. In Google Analytics, open **Reports → Realtime** (wait 10–30 seconds).
+4. Confirm:
+   - Active users appear on the Realtime map/cards.
+   - `page_view` events appear in the **Event count by Event name** card.
+   - Each route change generates **one** `page_view` event (no duplicates) with the expected page title and URL path.
+
+### 7. Find the Most Visited Articles
+
+1. Go to **Reports → Engagement → Pages and screens**.
+2. Change the primary dimension dropdown to **Page path and screen class** (to see article slugs like `/your-article-slug`) or **Page title and screen name**.
+3. Sort by **Views** or **Active users** to see your most popular ServiceNow articles.
+
+### 8. View Engagement, Traffic Sources & Audience Metrics
+
+- **Engagement & Reading Time**: Go to **Reports → Engagement → Overview** and **Pages and screens** to view **Average engagement time per active user**, **Engaged sessions**, `user_engagement`, `scroll`, and outbound `click` events.
+- **Traffic Sources**: Go to **Reports → Acquisition → Traffic acquisition** to see where visitors come from (Organic Search, Direct, Referral, Social, etc.).
+- **Locations & Devices**: Go to **Reports → User → User attributes (Demographic details)** and **Tech → Tech details** for country/city and device category breakdowns.
+
+### 9. Limitations Without Additional Custom Tracking
+
+Because this initial setup intentionally avoids custom events and backend pipelines, the following limitations apply:
+
+- **Automatic scroll tracking**: GA4 Enhanced Measurement only records a single `scroll` event when a visitor reaches **90% vertical depth** of a page. Intermediate depth milestones (25%, 50%, 75%) or custom read-completion events require custom event tracking.
+- **Internal site search**: The site's built-in search bar filters articles client-side in memory without updating URL query parameters (such as `?q=...`). GA4's automatic **Site search** Enhanced Measurement relies on URL query parameters, so internal searches are not recorded unless URL query sync or a custom `search` event is added later.
+- **Category-level popularity & bilingual (EN/VI) article aggregation**: Articles use flat URL slugs (`/<slug>`) without category or locale path segments, so GA4 tracks each English and Vietnamese URL separately. To analyze traffic by Notion `Category`, `Tags`, `Locale`, or aggregate EN + VI views under a shared `Translation Group ID`, you can later send custom GA4 event parameters (for example, `article_category`, `article_locale`, `translation_group_id`) via `sendGAEvent` or page-level config and register them as **Custom Dimensions** in GA4 Admin.
+
+### Privacy & Consent Notice
+
+- This integration uses the official `@next/third-parties/google` loader and does **not** send personally identifiable information (PII), store IP addresses in application code, or add custom tracking cookies/fingerprinting.
+- Before deploying to production, publish a **Privacy Policy** informing visitors that Google Analytics 4 is used to measure site traffic and engagement.
+- If your audience includes visitors in jurisdictions with strict privacy/cookie consent laws (such as the EEA/UK under GDPR/ePrivacy), implement a consent banner integrated with **Google Consent Mode v2** so analytics storage only activates after visitor consent.
+
+---
+
 ## 🔍 Typecheck & Verification
 
 Verify TypeScript types for the translation worker:
