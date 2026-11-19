@@ -19,16 +19,38 @@
  *   images — Array<{ url: string, caption: string }>
  */
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { refreshNotionImageUrl } from '../lib/notion-image-recovery'
 
 export default function ImageSlider({ images = [] }) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [zoomed, setZoomed]             = useState(false)
   // Track whether we are mounted (needed for createPortal on SSR)
   const [mounted, setMounted]           = useState(false)
+  const [resolvedUrls, setResolvedUrls] = useState({})
+  const [failedSlides, setFailedSlides] = useState({})
+  const retriedRef                      = useRef(new Set())
+  const mountedRef                      = useRef(true)
 
-  useEffect(() => { setMounted(true) }, [])
+  useEffect(() => {
+    setMounted(true)
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  const handleSlideError = useCallback(async (idx, img) => {
+    if (img?.blockId && !retriedRef.current.has(idx)) {
+      retriedRef.current.add(idx)
+      const freshUrl = await refreshNotionImageUrl({ blockId: img.blockId })
+      if (!mountedRef.current) return
+      if (freshUrl) {
+        setResolvedUrls(prev => ({ ...prev, [idx]: freshUrl }))
+        return
+      }
+    }
+    setFailedSlides(prev => ({ ...prev, [idx]: true }))
+  }, [])
 
   // --- Navigation ---
 
@@ -59,10 +81,12 @@ export default function ImageSlider({ images = [] }) {
 
   if (!images || images.length === 0) return null
   const current = images[currentIndex]
+  const currentUrl = resolvedUrls[currentIndex] || current.url
+  const currentFailed = Boolean(failedSlides[currentIndex])
 
   // ── Lightbox (portal to <body>) ──────────────────────────────────────────
   // Rendered via createPortal so it escapes every overflow/z-index ancestor.
-  const lightbox = zoomed && mounted && createPortal(
+  const lightbox = zoomed && mounted && !currentFailed && createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -99,8 +123,9 @@ export default function ImageSlider({ images = [] }) {
       {/* Full-resolution image — click stops propagation so it doesn't close */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={current.url}
+        src={currentUrl}
         alt={current.caption || `Slide ${currentIndex + 1} of ${images.length}`}
+        data-notion-recovery-managed="true"
         style={{ maxWidth: '90vw', maxHeight: '88vh', objectFit: 'contain',
                  borderRadius: '0.75rem', boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
                  cursor: 'default', pointerEvents: 'auto' }}
@@ -172,17 +197,31 @@ export default function ImageSlider({ images = [] }) {
                   pointerEvents: idx === currentIndex ? 'auto' : 'none',
                 }}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={img.url}
-                  alt={img.caption || `Slide ${idx + 1} of ${images.length}`}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover',
-                           cursor: 'zoom-in', display: 'block' }}
-                  loading={idx === 0 ? 'eager' : 'lazy'}
-                  decoding="async"
-                  onClick={() => setZoomed(true)}
-                  title="Click to enlarge"
-                />
+                {failedSlides[idx] ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-center text-ink-400 dark:text-sage-400 bg-rice-paper-200/70 dark:bg-tea-slate-200/70 px-4">
+                    <svg className="w-7 h-7 mb-2 opacity-40 text-matcha-600 dark:text-matcha-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="3" y="3" width="18" height="18" rx="2" strokeWidth="1.5" />
+                      <circle cx="8.5" cy="8.5" r="1.5" strokeWidth="1.5" />
+                      <path d="m21 15-5-5L5 21" strokeWidth="1.5" />
+                    </svg>
+                    <span className="text-xs font-mono opacity-70">Image unavailable</span>
+                  </div>
+                ) : (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    src={resolvedUrls[idx] || img.url}
+                    alt={img.caption || `Slide ${idx + 1} of ${images.length}`}
+                    data-notion-image-id={img.blockId || undefined}
+                    data-notion-recovery-managed="true"
+                    style={{ width: '100%', height: '100%', objectFit: 'cover',
+                             cursor: 'zoom-in', display: 'block' }}
+                    loading={idx === 0 ? 'eager' : 'lazy'}
+                    decoding="async"
+                    onError={() => handleSlideError(idx, img)}
+                    onClick={() => setZoomed(true)}
+                    title="Click to enlarge"
+                  />
+                )}
               </div>
             ))}
           </div>

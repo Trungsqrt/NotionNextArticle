@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { refreshNotionImageUrl } from '../lib/notion-image-recovery'
 
 /**
  * ArticleCover.js — Hero Cover Image for Lesson & Article Pages
@@ -37,8 +38,44 @@ function renderArticleIcon(icon) {
   return null
 }
 
-export default function ArticleCover({ src, title = 'Cover Image', icon = null }) {
+export default function ArticleCover({ src, title = 'Cover Image', icon = null, pageId = null }) {
+  const [currentSrc, setCurrentSrc] = useState(src)
   const [imgError, setImgError] = useState(false)
+  const hasRetriedRef = useRef(false)
+  const mountedRef = useRef(true)
+  const imgRef = useRef(null)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  useEffect(() => {
+    setCurrentSrc(src)
+    setImgError(false)
+    hasRetriedRef.current = false
+  }, [src, pageId])
+
+  const handleImageError = useCallback(async () => {
+    if (pageId && !hasRetriedRef.current) {
+      hasRetriedRef.current = true
+      const freshUrl = await refreshNotionImageUrl({ pageId })
+      if (!mountedRef.current) return
+      if (freshUrl) {
+        setCurrentSrc(freshUrl)
+        return
+      }
+    }
+    setImgError(true)
+  }, [pageId])
+
+  // Recover if the eager cover image already failed before hydration attached onError
+  useEffect(() => {
+    const img = imgRef.current
+    if (img && img.complete && img.naturalWidth === 0 && !imgError) {
+      handleImageError()
+    }
+  }, [currentSrc, imgError, handleImageError])
 
   if (!src && !icon) return null
 
@@ -46,13 +83,14 @@ export default function ArticleCover({ src, title = 'Cover Image', icon = null }
 
   return (
     <div className="w-full h-[30vh] min-h-[250px] max-h-[380px] overflow-hidden relative bg-rice-paper-200 dark:bg-tea-slate-200">
-      {src && !imgError ? (
+      {currentSrc && !imgError ? (
         <img
-          src={src}
+          ref={imgRef}
+          src={currentSrc}
           alt={title || 'Cover Image'}
           loading="eager"
           decoding="async"
-          onError={() => setImgError(true)}
+          onError={handleImageError}
           className="w-full h-full object-cover"
         />
       ) : (
