@@ -22,8 +22,9 @@
 
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
+import { refreshNotionImageUrl, invalidateNotionImageUrl } from '../lib/notion-image-recovery'
 
 // ── Icon helpers
 const ClockIcon = () => (
@@ -132,18 +133,58 @@ function renderCardIcon(icon) {
 }
 
 // ── Cover image with filmic / evening-garden treatment in dark mode
-function CardCover({ src, icon, title }) {
+function CardCover({ src, icon, title, pageId = null }) {
+  const [currentSrc, setCurrentSrc] = useState(src)
   const [imgError, setImgError] = useState(false)
+  const hasRetriedRef = useRef(false)
+  const mountedRef = useRef(true)
+  const imgRef = useRef(null)
 
-  if (src && !imgError) {
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  useEffect(() => {
+    setCurrentSrc(src)
+    setImgError(false)
+    hasRetriedRef.current = false
+  }, [src, pageId])
+
+  const handleImageError = useCallback(async () => {
+    if (pageId && !hasRetriedRef.current) {
+      hasRetriedRef.current = true
+      const failedUrl = imgRef.current?.currentSrc || currentSrc || null
+      const freshUrl = await refreshNotionImageUrl({ pageId, failedUrl })
+      if (!mountedRef.current) return
+      if (freshUrl) {
+        setCurrentSrc(freshUrl)
+        return
+      }
+    } else if (pageId && hasRetriedRef.current) {
+      invalidateNotionImageUrl({ pageId })
+    }
+    setImgError(true)
+  }, [pageId, currentSrc])
+
+  // Recover if the cover image already failed before hydration attached onError
+  useEffect(() => {
+    const img = imgRef.current
+    if (img && img.complete && img.naturalWidth === 0 && !imgError) {
+      handleImageError()
+    }
+  }, [currentSrc, imgError, handleImageError])
+
+  if (currentSrc && !imgError) {
     return (
       <div className="relative aspect-[16/7] overflow-hidden flex-shrink-0 bg-rice-paper-200 dark:bg-tea-slate-400">
         <img
-          src={src}
+          ref={imgRef}
+          src={currentSrc}
           alt={`Cover image for ${title || 'lesson'}`}
           loading="lazy"
           decoding="async"
-          onError={() => setImgError(true)}
+          onError={handleImageError}
           className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
         />
       </div>
@@ -178,10 +219,12 @@ function CardCover({ src, icon, title }) {
 //  CourseCard Component
 // ════════════════════════════════════════════════════════════
 export default function CourseCard({
+  id = null,
   title = 'Untitled Lesson',
   slug = '#',
   tags = [],
   cover = null,
+  coverIsNotionHosted = false,
   icon = null,
   summary = '',
   date = null,
@@ -222,7 +265,12 @@ export default function CourseCard({
 
       {/* ── Card Cover / Hero */}
       <Link href={href} tabIndex="-1" aria-hidden="true" className="relative block">
-        <CardCover src={cover} icon={icon} title={title} />
+        <CardCover
+          src={cover}
+          icon={icon}
+          title={title}
+          pageId={coverIsNotionHosted ? id : null}
+        />
       </Link>
 
       {/* ── Card Body */}

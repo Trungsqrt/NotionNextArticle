@@ -15,7 +15,7 @@ import NotionCodeBlock from './NotionCodeBlock'
 import NotionToggleBlock from './NotionToggleBlock'
 import NotionToggleHeading from './NotionToggleHeading'
 import ImageSlider from './ImageSlider'
-import { refreshNotionImageUrl } from '../lib/notion-image-recovery'
+import { refreshNotionImageUrl, invalidateNotionImageUrl } from '../lib/notion-image-recovery'
 
 // ── Lightweight zoom lightbox ──────────────────────────────────────────────
 function useLightbox(containerRef) {
@@ -111,21 +111,41 @@ function useImageErrorFallback(containerRef) {
       if (!img || img.tagName !== 'IMG') return
       if (img.dataset.notionRecoveryManaged === 'true') return
 
+      // Guard against nested <NotionContent> listeners (e.g. inside toggle blocks
+      // or toggle headings) reacting to the same error event while recovery is in flight.
+      const recoveryState = img.dataset.notionRecoveryState
+      if (recoveryState === 'recovering') return
+
       const blockId = img.getAttribute('data-notion-image-id')
       const coverPageId = img.getAttribute('data-notion-cover-page-id')
+      const recoveryTarget = {
+        blockId: blockId || null,
+        pageId: !blockId ? coverPageId : null,
+      }
+
+      // If a previously recovered URL failed again, evict it from client cache
+      if (recoveryState === 'recovered') {
+        img.dataset.notionRecoveryState = 'failed'
+        if (blockId || coverPageId) {
+          invalidateNotionImageUrl(recoveryTarget)
+        }
+        showImageFallback(img)
+        return
+      }
 
       // Only attempt recovery for eligible Notion-hosted images, and at most once per image
-      if ((blockId || coverPageId) && img.dataset.notionRetried !== 'true') {
-        img.dataset.notionRetried = 'true'
+      if ((blockId || coverPageId) && recoveryState !== 'failed') {
+        img.dataset.notionRecoveryState = 'recovering'
 
         const freshUrl = await refreshNotionImageUrl({
-          blockId: blockId || null,
-          pageId: !blockId ? coverPageId : null,
+          ...recoveryTarget,
+          failedUrl: img.currentSrc || img.src || null,
         })
 
         if (!active || !img.isConnected) return
 
         if (freshUrl) {
+          img.dataset.notionRecoveryState = 'recovered'
           const figure = img.closest('figure')
           const existingFallback = figure?.querySelector('.notion-img-fallback')
           if (existingFallback) existingFallback.remove()
@@ -133,6 +153,8 @@ function useImageErrorFallback(containerRef) {
           img.src = freshUrl
           return
         }
+
+        img.dataset.notionRecoveryState = 'failed'
       }
 
       showImageFallback(img)
@@ -151,7 +173,7 @@ function useImageErrorFallback(containerRef) {
       'img[data-notion-image-id], img[data-notion-cover-page-id]'
     )
     preFailed.forEach((img) => {
-      if (img.complete && img.naturalWidth === 0 && img.dataset.notionRetried !== 'true') {
+      if (img.complete && img.naturalWidth === 0 && !img.dataset.notionRecoveryState) {
         recoverOrFallback(img)
       }
     })
