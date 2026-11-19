@@ -256,7 +256,12 @@ export default async function ArticlePage({ params }) {
       />
 
       {coverUrl && (
-        <ArticleCover src={coverUrl} title={title} icon={page.icon} />
+        <ArticleCover
+          src={coverUrl}
+          title={title}
+          icon={page.icon}
+          pageId={page.coverIsNotionHosted ? page.id : null}
+        />
       )}
       <div className="notion-viewport max-w-[90rem] mx-auto px-4 sm:px-6 md:px-8 py-8 md:py-12 flex items-start justify-center gap-8 relative">
         <article className="flex-1 max-w-4xl mx-auto min-w-0">
