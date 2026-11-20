@@ -21,7 +21,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { refreshNotionImageUrl } from '../lib/notion-image-recovery'
+import { refreshNotionImageUrl, invalidateNotionImageUrl } from '../lib/notion-image-recovery'
 
 export default function ImageSlider({ images = [] }) {
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -42,12 +42,17 @@ export default function ImageSlider({ images = [] }) {
   const handleSlideError = useCallback(async (idx, img) => {
     if (img?.blockId && !retriedRef.current.has(idx)) {
       retriedRef.current.add(idx)
-      const freshUrl = await refreshNotionImageUrl({ blockId: img.blockId })
+      const freshUrl = await refreshNotionImageUrl({
+        blockId: img.blockId,
+        failedUrl: img.url || null,
+      })
       if (!mountedRef.current) return
       if (freshUrl) {
         setResolvedUrls(prev => ({ ...prev, [idx]: freshUrl }))
         return
       }
+    } else if (img?.blockId && retriedRef.current.has(idx)) {
+      invalidateNotionImageUrl({ blockId: img.blockId })
     }
     setFailedSlides(prev => ({ ...prev, [idx]: true }))
   }, [])

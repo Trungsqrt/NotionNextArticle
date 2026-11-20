@@ -7,15 +7,27 @@ import {
 
 export const dynamic = 'force-dynamic'
 
-// Lightweight in-memory sliding-window rate limiter per IP
+// Best-effort per-instance sliding-window limiter.
+// Note: On Vercel Serverless, in-memory Maps are scoped to individual warm
+// instances and are not a global rate limit. Pair with Vercel Firewall (WAF)
+// rate-limiting rules on /api/notion/image for true global edge enforcement.
 const RATE_LIMIT_WINDOW_MS = 60 * 1000
 const RATE_LIMIT_MAX_REQUESTS = 60
 const rateLimitStore = new Map()
 
 function getClientIp(request) {
+  const vercelIp = request.headers.get('x-vercel-forwarded-for')
+  if (vercelIp) return vercelIp.split(',')[0].trim()
+  const realIp = request.headers.get('x-real-ip')
+  if (realIp) return realIp.trim()
   const forwarded = request.headers.get('x-forwarded-for')
   if (forwarded) return forwarded.split(',')[0].trim()
-  return request.headers.get('x-real-ip') || 'unknown'
+  return 'unknown'
+}
+
+function isCrossSiteRequest(request) {
+  const fetchSite = (request.headers.get('sec-fetch-site') || '').trim().toLowerCase()
+  return fetchSite === 'cross-site'
 }
 
 function checkRateLimit(ip) {
@@ -53,6 +65,13 @@ const NO_STORE_HEADERS = {
 }
 
 export async function GET(request) {
+  if (isCrossSiteRequest(request)) {
+    return NextResponse.json(
+      { error: 'Forbidden' },
+      { status: 403, headers: NO_STORE_HEADERS }
+    )
+  }
+
   const ip = getClientIp(request)
   const { allowed, retryAfterSec } = checkRateLimit(ip)
   if (!allowed) {
@@ -92,7 +111,13 @@ export async function GET(request) {
           { status: 404, headers: NO_STORE_HEADERS }
         )
       }
-      return NextResponse.json({ url: result.url }, { status: 200, headers: NO_STORE_HEADERS })
+      return NextResponse.json(
+        {
+          url: result.url,
+          ...(result.expiryTime ? { expiresAt: result.expiryTime } : {}),
+        },
+        { status: 200, headers: NO_STORE_HEADERS }
+      )
     } catch {
       return NextResponse.json(
         { error: 'Unable to refresh image' },
@@ -117,7 +142,13 @@ export async function GET(request) {
           { status: 404, headers: NO_STORE_HEADERS }
         )
       }
-      return NextResponse.json({ url: result.url }, { status: 200, headers: NO_STORE_HEADERS })
+      return NextResponse.json(
+        {
+          url: result.url,
+          ...(result.expiryTime ? { expiresAt: result.expiryTime } : {}),
+        },
+        { status: 200, headers: NO_STORE_HEADERS }
+      )
     } catch {
       return NextResponse.json(
         { error: 'Unable to refresh image' },

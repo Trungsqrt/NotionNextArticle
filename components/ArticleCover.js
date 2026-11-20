@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { refreshNotionImageUrl } from '../lib/notion-image-recovery'
+import { refreshNotionImageUrl, invalidateNotionImageUrl } from '../lib/notion-image-recovery'
 
 /**
  * ArticleCover.js — Hero Cover Image for Lesson & Article Pages
@@ -59,15 +59,18 @@ export default function ArticleCover({ src, title = 'Cover Image', icon = null, 
   const handleImageError = useCallback(async () => {
     if (pageId && !hasRetriedRef.current) {
       hasRetriedRef.current = true
-      const freshUrl = await refreshNotionImageUrl({ pageId })
+      const failedUrl = imgRef.current?.currentSrc || currentSrc || null
+      const freshUrl = await refreshNotionImageUrl({ pageId, failedUrl })
       if (!mountedRef.current) return
       if (freshUrl) {
         setCurrentSrc(freshUrl)
         return
       }
+    } else if (pageId && hasRetriedRef.current) {
+      invalidateNotionImageUrl({ pageId })
     }
     setImgError(true)
-  }, [pageId])
+  }, [pageId, currentSrc])
 
   // Recover if the eager cover image already failed before hydration attached onError
   useEffect(() => {
