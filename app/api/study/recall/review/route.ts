@@ -4,14 +4,17 @@ import { requireStudyApiSession } from '../../../../../lib/study/auth/guard'
 import {
   NO_STORE_PRIVATE_HEADERS,
   getClientIp,
-  checkApiRateLimit,
+  checkApiRateLimitAsync,
 } from '../../../../../lib/study/auth/security'
 import {
   createNotionStudyRepositories,
   ConcurrencyConflictError,
 } from '../../../../../lib/study/repositories'
 import { stableIdSchema, studyRatingSchema } from '../../../../../lib/study/schemas'
-import { submitRecallReview } from '../../../../../lib/study/services/recall-service'
+import {
+  submitRecallReview,
+  EventIdConflictError,
+} from '../../../../../lib/study/services/recall-service'
 
 export const dynamic = 'force-dynamic'
 
@@ -23,7 +26,12 @@ const reviewBodySchema = z.object({
 })
 
 export async function POST(request: Request) {
-  const rate = checkApiRateLimit(getClientIp(request), 'study-recall-review', 120, 60 * 1000)
+  const rate = await checkApiRateLimitAsync(
+    getClientIp(request),
+    'study-recall-review',
+    120,
+    60 * 1000
+  )
   if (!rate.allowed) {
     return NextResponse.json(
       { error: 'Too many requests' },
@@ -67,6 +75,15 @@ export async function POST(request: Request) {
           code: err.code,
           expectedRevision: err.expectedRevision,
           actualRevision: err.actualRevision,
+        },
+        { status: 409, headers: NO_STORE_PRIVATE_HEADERS }
+      )
+    }
+    if (err instanceof EventIdConflictError) {
+      return NextResponse.json(
+        {
+          error: 'Review event ID conflicts with a previous submission.',
+          code: err.code,
         },
         { status: 409, headers: NO_STORE_PRIVATE_HEADERS }
       )

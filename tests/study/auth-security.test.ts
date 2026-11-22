@@ -21,10 +21,13 @@ import {
 } from '../../lib/study/auth/session'
 import {
   checkLoginRateLimit,
+  checkLoginRateLimitAsync,
+  checkApiRateLimitAsync,
   resetLoginRateLimit,
   clearAllStudyRateLimits,
   verifyCsrfOrigin,
 } from '../../lib/study/auth/security'
+import { verifyAuthorizedQuestionImageBlock } from '../../lib/study/notion-client'
 import {
   assertUserDataAccess,
   hasRequiredRole,
@@ -368,5 +371,109 @@ describe('Study Authz, CSRF, Rate Limiting, Proxy & SEO Isolation', () => {
       assert.ok(rule.disallow.includes('/study'))
       assert.ok(rule.disallow.includes('/study/'))
     }
+  })
+
+  it('enforces distributed Upstash Redis rate limiting when configured', async () => {
+    const origUrl = process.env.UPSTASH_REDIS_REST_URL
+    const origToken = process.env.UPSTASH_REDIS_REST_TOKEN
+    const origFetch = globalThis.fetch
+
+    try {
+      process.env.UPSTASH_REDIS_REST_URL = 'https://mock-upstash.example'
+      process.env.UPSTASH_REDIS_REST_TOKEN = 'test-token'
+
+      const counters = new Map<string, number>()
+      globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+        const commands = JSON.parse(String(init?.body || '[]')) as string[][]
+        const key = commands[0]?.[1] || ''
+        const nextCount = (counters.get(key) || 0) + 1
+        counters.set(key, nextCount)
+        return new Response(
+          JSON.stringify([{ result: nextCount }, { result: 1 }, { result: 60000 }]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      }) as typeof fetch
+
+      const ok1 = await checkApiRateLimitAsync('198.51.100.1', 'study-image', 2, 60000)
+      const ok2 = await checkApiRateLimitAsync('198.51.100.1', 'study-image', 2, 60000)
+      const blocked = await checkApiRateLimitAsync('198.51.100.1', 'study-image', 2, 60000)
+      assert.equal(ok1.allowed, true)
+      assert.equal(ok2.allowed, true)
+      assert.equal(blocked.allowed, false)
+      assert.equal(blocked.retryAfterSec, 60)
+
+      // Login async rate limit uses Upstash pipeline as well
+      const loginOk = await checkLoginRateLimitAsync('198.51.100.2', 'student.dist')
+      assert.equal(loginOk.allowed, true)
+    } finally {
+      globalThis.fetch = origFetch
+      if (origUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL
+      else process.env.UPSTASH_REDIS_REST_URL = origUrl
+      if (origToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN
+      else process.env.UPSTASH_REDIS_REST_TOKEN = origToken
+    }
+  })
+
+  it('rejects image blocks that do not belong to an authorized Study Question page', async () => {
+    const QUESTIONS_DB = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const OTHER_DB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+
+    const blocks: Record<string, Parameters<typeof verifyAuthorizedQuestionImageBlock>[1]['retrieveBlock'] extends (id: string) => Promise<infer R> ? R : never> = {
+      'blk-published': {
+        type: 'image',
+        parent: { type: 'page_id', page_id: 'page-published' },
+        image: { type: 'file', file: { url: 'https://s3.example/pub.png', expiry_time: null as unknown as string } },
+      },
+      'blk-draft': {
+        type: 'image',
+        parent: { type: 'page_id', page_id: 'page-draft' },
+        image: { type: 'file', file: { url: 'https://s3.example/draft.png' } },
+      },
+      'blk-other-db': {
+        type: 'image',
+        parent: { type: 'page_id', page_id: 'page-other-db' },
+        image: { type: 'file', file: { url: 'https://s3.example/secret.png' } },
+      },
+    }
+
+    const pages: Record<string, Parameters<typeof verifyAuthorizedQuestionImageBlock>[1]['retrievePage'] extends (id: string) => Promise<infer R> ? R : never> = {
+      'page-published': {
+        id: 'page-published',
+        parent: { type: 'database_id', database_id: QUESTIONS_DB },
+        properties: { Status: { select: { name: 'published' } } },
+      },
+      'page-draft': {
+        id: 'page-draft',
+        parent: { type: 'database_id', database_id: QUESTIONS_DB },
+        properties: { Status: { select: { name: 'draft' } } },
+      },
+      'page-other-db': {
+        id: 'page-other-db',
+        parent: { type: 'database_id', database_id: OTHER_DB },
+        properties: { Status: { select: { name: 'published' } } },
+      },
+    }
+
+    const deps = {
+      allowedQuestionsDbIds: [QUESTIONS_DB],
+      retrieveBlock: async (id: string) => blocks[id] || null,
+      retrievePage: async (id: string) => pages[id] || null,
+    }
+
+    // Student can access image attached to a published Question in QUESTIONS_DB
+    const pub = await verifyAuthorizedQuestionImageBlock('blk-published', { ...deps, allowDraft: false })
+    assert.ok(pub && pub.url === 'https://s3.example/pub.png')
+
+    // Student is DENIED image attached to a draft Question
+    const draftForStudent = await verifyAuthorizedQuestionImageBlock('blk-draft', { ...deps, allowDraft: false })
+    assert.equal(draftForStudent, null)
+
+    // Admin is ALLOWED image attached to a draft Question
+    const draftForAdmin = await verifyAuthorizedQuestionImageBlock('blk-draft', { ...deps, allowDraft: true })
+    assert.ok(draftForAdmin && draftForAdmin.url === 'https://s3.example/draft.png')
+
+    // Even admin is DENIED an image block owned by a page outside STUDY_NOTION_QUESTIONS_DB_ID
+    const foreignBlock = await verifyAuthorizedQuestionImageBlock('blk-other-db', { ...deps, allowDraft: true })
+    assert.equal(foreignBlock, null)
   })
 })

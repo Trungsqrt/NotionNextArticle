@@ -126,5 +126,10 @@ This guide documents the private Notion databases that back the **Private Study 
 - **Concurrency & append-only safeguards**:
   - Notion does **not** support SQL transactions or atomic compare-and-swap (CAS).
   - `ReviewEventRepository.appendIfNotExists(event)` writes immutable append-only records keyed by `eventId`, preventing duplicate logs on retried requests.
-  - `FsrsCardStateRepository.save(state, { expectedRevision })` performs a read-before-write revision check and throws `ConcurrencyConflictError` if another write advanced `Revision`. Callers should reload state, recompute from `ReviewEvent` history if needed, and retry.
+  - `lib/study/services/recall-service.ts` serializes concurrent reviews per `(userId, questionId)` within an instance, rejects reused `eventId`s with different payloads (`409 Conflict`), reconciles partial failures (when `ReviewEvent` succeeded but `FsrsCardState` write failed) on retry, and recovers missing/stale card states from the latest `ReviewEvent`.
+  - `FsrsCardStateRepository.save(state, { expectedRevision })` performs a read-before-write revision check and throws `ConcurrencyConflictError` (`409 Conflict`) if another write advanced `Revision`.
+- **Distributed Rate Limiting (Production on Vercel)**:
+  - Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in Vercel Environment Variables to enable shared Redis-backed rate limiting across all serverless instances for `/api/study/auth/login`, `/api/study/recall/review`, and `/api/study/images/[blockId]`.
+  - Additionally, configure a **Vercel Firewall (WAF)** rate-limit rule on `/api/study/auth/login` (e.g., 15 requests / 15 min per IP) for edge-level brute-force protection.
+  - When Upstash env vars are not set (e.g., local development), `lib/study/auth/security.ts` automatically falls back to per-instance in-memory rate limiting.
 - **Replaceable storage**: All domain logic depends strictly on the interfaces in `lib/study/repositories/interfaces.ts`, allowing `FsrsCardStateRepository` and `ReviewEventRepository` to be migrated to a transactional SQL database (Postgres / Turso / Supabase) later without altering FSRS scheduling, grading, or UI code.

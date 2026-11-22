@@ -23,6 +23,7 @@ import {
   getRecallQueue,
   revealRecallAnswer,
   submitRecallReview,
+  EventIdConflictError,
 } from '../../lib/study/services/recall-service'
 import {
   getPracticeExamPayload,
@@ -262,6 +263,184 @@ describe('Phase 5 — Active Recall, Cross-Device Concurrency & Multi-User Isola
     const userBDash = await getStudyDashboardData('usr-other-002', repos, nowIso)
     assert.equal(userBDash.totalCardsStudied, 0)
     assert.equal(userBDash.newCards, 2)
+  })
+
+  it('reconciles partial failure (event written, card state save failed) on retry with same eventId', async () => {
+    const repos = createInMemoryRepos()
+    const origSave = repos.cardStates.save.bind(repos.cardStates)
+    let failOnce = true
+    repos.cardStates.save = async (state, options) => {
+      if (failOnce) {
+        failOnce = false
+        throw new Error('Simulated Notion 503 during cardState write')
+      }
+      return origSave(state, options)
+    }
+
+    // First attempt: ReviewEvent succeeds, cardState save throws
+    await assert.rejects(() =>
+      submitRecallReview(
+        {
+          userId: SYNTHETIC_USER.userId,
+          questionId: 'q-synth-001',
+          rating: 'good',
+          eventId: 'evt-partial-001',
+          expectedRevision: 0,
+          nowIso: '2026-03-01T10:00:00.000Z',
+        },
+        repos
+      )
+    )
+
+    // Verify ReviewEvent was recorded while CardState is still missing
+    assert.ok(await repos.reviewEvents.findByEventId('evt-partial-001'))
+    assert.equal(
+      await repos.cardStates.findByUserAndQuestion(SYNTHETIC_USER.userId, 'q-synth-001'),
+      null
+    )
+
+    // Retry with same eventId -> reconciles CardState cleanly instead of returning stale state
+    const retried = await submitRecallReview(
+      {
+        userId: SYNTHETIC_USER.userId,
+        questionId: 'q-synth-001',
+        rating: 'good',
+        eventId: 'evt-partial-001',
+        expectedRevision: 0,
+        nowIso: '2026-03-01T10:00:00.000Z',
+      },
+      repos
+    )
+    assert.equal(retried.reconciled, true)
+    assert.equal(retried.duplicate, false)
+    assert.equal(retried.cardState.revision, 1)
+    assert.equal(retried.cardState.card.reps, 1)
+  })
+
+  it('rejects reused eventId with different rating or questionId using EventIdConflictError', async () => {
+    const repos = createInMemoryRepos()
+    await submitRecallReview(
+      {
+        userId: SYNTHETIC_USER.userId,
+        questionId: 'q-synth-001',
+        rating: 'good',
+        eventId: 'evt-conflict-001',
+        expectedRevision: 0,
+        nowIso: '2026-03-01T10:00:00.000Z',
+      },
+      repos
+    )
+
+    // Same eventId with different rating
+    await assert.rejects(
+      () =>
+        submitRecallReview(
+          {
+            userId: SYNTHETIC_USER.userId,
+            questionId: 'q-synth-001',
+            rating: 'again',
+            eventId: 'evt-conflict-001',
+            nowIso: '2026-03-01T10:01:00.000Z',
+          },
+          repos
+        ),
+      EventIdConflictError
+    )
+
+    // Same eventId with different questionId
+    await assert.rejects(
+      () =>
+        submitRecallReview(
+          {
+            userId: SYNTHETIC_USER.userId,
+            questionId: 'q-synth-002',
+            rating: 'good',
+            eventId: 'evt-conflict-001',
+            nowIso: '2026-03-01T10:01:00.000Z',
+          },
+          repos
+        ),
+      EventIdConflictError
+    )
+  })
+
+  it('recovers missing card state from latest ReviewEvent and serializes concurrent submissions', async () => {
+    const repos = createInMemoryRepos()
+
+    // Seed a ReviewEvent without a matching FsrsCardState row (simulating lost/unwritten card state)
+    const step1 = await scheduleCardReview({
+      cardId: 'q-synth-001',
+      previous: null,
+      rating: 'easy',
+      nowIso: '2026-03-01T10:00:00.000Z',
+    })
+    await repos.reviewEvents.appendIfNotExists({
+      eventId: 'evt-orphan-001',
+      userId: SYNTHETIC_USER.userId,
+      questionId: 'q-synth-001',
+      reviewedAt: '2026-03-01T10:00:00.000Z',
+      rating: 'easy',
+      previousState: step1.previous,
+      resultingState: step1.resulting,
+      schedulerVersion: step1.schedulerVersion,
+      parametersVersion: step1.parametersVersion,
+    })
+
+    // Queue recovers reps=1 from ReviewEvent rather than showing it as New
+    const queueAfterDue = await getRecallQueue(SYNTHETIC_USER.userId, repos, {
+      nowIso: step1.resulting.due,
+    })
+    const recoveredItem = queueAfterDue.items.find((i) => i.prompt.questionId === 'q-synth-001')
+    assert.ok(recoveredItem)
+    assert.equal(recoveredItem.bucket, 'due')
+    assert.equal(recoveredItem.reps, 1)
+
+    // Next review schedules from recovered reps=1 (so resulting reps === 2, not reset to 1)
+    const nextReview = await submitRecallReview(
+      {
+        userId: SYNTHETIC_USER.userId,
+        questionId: 'q-synth-001',
+        rating: 'good',
+        eventId: 'evt-after-recover-002',
+        nowIso: step1.resulting.due,
+      },
+      repos
+    )
+    assert.equal(nextReview.cardState.card.reps, 2)
+
+    // Two concurrent reviews on q-synth-002 with expectedRevision=0 serialize cleanly: 1 succeeds, 1 gets 409 conflict
+    const results = await Promise.allSettled([
+      submitRecallReview(
+        {
+          userId: SYNTHETIC_USER.userId,
+          questionId: 'q-synth-002',
+          rating: 'good',
+          eventId: 'evt-conc-001',
+          expectedRevision: 0,
+          nowIso: '2026-03-01T11:00:00.000Z',
+        },
+        repos
+      ),
+      submitRecallReview(
+        {
+          userId: SYNTHETIC_USER.userId,
+          questionId: 'q-synth-002',
+          rating: 'hard',
+          eventId: 'evt-conc-002',
+          expectedRevision: 0,
+          nowIso: '2026-03-01T11:00:01.000Z',
+        },
+        repos
+      ),
+    ])
+    const fulfilled = results.filter((r) => r.status === 'fulfilled')
+    const rejected = results.filter((r) => r.status === 'rejected')
+    assert.equal(fulfilled.length, 1)
+    assert.equal(rejected.length, 1)
+    assert.ok(
+      rejected[0].status === 'rejected' &&
+        rejected[0].reason instanceof ConcurrencyConflictError
+    )
   })
 })
 

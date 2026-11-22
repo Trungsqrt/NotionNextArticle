@@ -99,6 +99,7 @@ export interface ImportExecutionSummary {
   questionsCreated: number
   questionsUpdated: number
   questionsSkippedUnchanged: number
+  questionsRepaired: number
   imagesUploaded: number
   imagesReusedFromCheckpoint: number
   stateFilePath?: string
@@ -120,13 +121,15 @@ interface CompletedQuestionCheckpoint {
 }
 
 interface ImportStateFile {
-  version: 1
+  version: 2
   sourceDir: string
   updatedAt: string
-  /** Keyed by `${questionId}::${placement}::${optionId||''}::${order}::${sha256}` */
+  /**
+   * Keyed by `${questionId}::${placement}::${optionId||''}::${order}::${sha256}`.
+   * Intentionally scoped per questionId so every Question page owns its own
+   * Notion image blocks (never reusing a block ID across different Question pages).
+   */
   uploadedImagesByKey: Record<string, UploadedImageCheckpoint>
-  /** Keyed by image file SHA-256 so identical images are uploaded once and reused */
-  uploadedImagesBySha256: Record<string, UploadedImageCheckpoint>
   completedQuestions: Record<string, CompletedQuestionCheckpoint>
 }
 
@@ -179,8 +182,11 @@ function deriveStableExamId(filename: string, index: number): string {
 }
 
 function deriveStableQuestionId(examId: string, q: ParsedRawQuestion): string {
-  if (q.sourceQuestionId && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{1,127}$/.test(q.sourceQuestionId)) {
-    return q.sourceQuestionId
+  if (q.sourceQuestionId && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(q.sourceQuestionId)) {
+    if (q.sourceQuestionId.startsWith(`${examId}-`)) {
+      return q.sourceQuestionId.slice(0, 128)
+    }
+    return `${examId}-q-${q.sourceQuestionId}`.slice(0, 128)
   }
   return `${examId}-q-${String(q.index + 1).padStart(3, '0')}`
 }
@@ -463,14 +469,16 @@ export function analyzeSourceDirectory(
 function loadImportState(stateFilePath: string, sourceDir: string): ImportStateFile {
   if (fs.existsSync(stateFilePath)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(stateFilePath, 'utf8')) as ImportStateFile
-      if (parsed && parsed.version === 1) {
+      const parsed = JSON.parse(fs.readFileSync(stateFilePath, 'utf8')) as Omit<
+        Partial<ImportStateFile>,
+        'version'
+      > & { version?: number }
+      if (parsed && (parsed.version === 1 || parsed.version === 2)) {
         return {
-          version: 1,
+          version: 2,
           sourceDir,
           updatedAt: parsed.updatedAt || new Date().toISOString(),
           uploadedImagesByKey: parsed.uploadedImagesByKey || {},
-          uploadedImagesBySha256: parsed.uploadedImagesBySha256 || {},
           completedQuestions: parsed.completedQuestions || {},
         }
       }
@@ -479,11 +487,10 @@ function loadImportState(stateFilePath: string, sourceDir: string): ImportStateF
     }
   }
   return {
-    version: 1,
+    version: 2,
     sourceDir,
     updatedAt: new Date().toISOString(),
     uploadedImagesByKey: {},
-    uploadedImagesBySha256: {},
     completedQuestions: {},
   }
 }
@@ -497,12 +504,14 @@ function saveImportState(stateFilePath: string, state: ImportStateFile): void {
 export async function runStudyExamImport(options: {
   sourceDir: string
   dryRun: boolean
+  repair?: boolean
   maxFileBytes?: number
   stateDir?: string
   client?: StudyNotionClient
   config?: StudyNotionConfig
 }): Promise<ImportExecutionSummary> {
   const maxFileBytes = options.maxFileBytes ?? NOTION_FREE_PLAN_MAX_FILE_BYTES
+  const repairMode = Boolean(options.repair)
   const { report, preparedExams } = analyzeSourceDirectory(options.sourceDir, { maxFileBytes })
 
   if (options.dryRun) {
@@ -513,6 +522,7 @@ export async function runStudyExamImport(options: {
       questionsCreated: 0,
       questionsUpdated: 0,
       questionsSkippedUnchanged: 0,
+      questionsRepaired: 0,
       imagesUploaded: 0,
       imagesReusedFromCheckpoint: 0,
     }
@@ -550,6 +560,7 @@ export async function runStudyExamImport(options: {
   let questionsCreated = 0
   let questionsUpdated = 0
   let questionsSkippedUnchanged = 0
+  let questionsRepaired = 0
   let imagesUploaded = 0
   let imagesReusedFromCheckpoint = 0
 
@@ -564,13 +575,31 @@ export async function runStudyExamImport(options: {
         Boolean(state.uploadedImagesByKey[img.checkpointKey]?.notionBlockId)
       )
 
+      // Verify remote Question page still exists in Notion before skipping from local checkpoint
       if (
+        !repairMode &&
         prevCheckpoint &&
         prevCheckpoint.contentHash === item.contentHash &&
         allImagesCheckpointed
       ) {
-        questionsSkippedUnchanged += 1
-        continue
+        let remotePageAlive = false
+        try {
+          const remotePage = await client.retrievePage(prevCheckpoint.notionPageId)
+          remotePageAlive = Boolean(remotePage && !remotePage.archived && !remotePage.in_trash)
+        } catch {
+          remotePageAlive = false
+        }
+
+        if (remotePageAlive) {
+          questionsSkippedUnchanged += 1
+          continue
+        }
+
+        // Remote page was deleted/archived — invalidate local checkpoint for this question and its images
+        delete state.completedQuestions[q.questionId]
+        for (const img of item.images) {
+          delete state.uploadedImagesByKey[img.checkpointKey]
+        }
       }
 
       // Find or create the Question page in Notion so we have its page ID for attaching image blocks
@@ -584,6 +613,14 @@ export async function runStudyExamImport(options: {
       })
       let notionPageId = existingPages[0]?.id || ''
       const isNewPage = !notionPageId
+
+      // If the page had to be recreated, any previous per-question image block checkpoints
+      // belonged to the old deleted page and must be re-uploaded to the new page.
+      if (isNewPage) {
+        for (const img of item.images) {
+          delete state.uploadedImagesByKey[img.checkpointKey]
+        }
+      }
 
       const nextContentVersion = prevCheckpoint
         ? prevCheckpoint.contentVersion + 1
@@ -601,26 +638,35 @@ export async function runStudyExamImport(options: {
         notionPageId = created.id
       }
 
-      // Upload any new unique local images (individually, never modifying image bytes)
-      // and reuse previously uploaded permanent Notion block IDs by SHA-256.
+      // Upload any new local images individually (never modifying image bytes) and attach
+      // them to THIS Question page. Deduplicate only within the same Question page
+      // (via uploadedImagesByKey and per-question pendingBySha), never across different questions.
       const finalImageRefs: QuestionImageRef[] = []
       const pendingBySha = new Map<string, { img: PreparedImage; indices: number[] }>()
+      let repairedMissingBlock = false
 
       for (let i = 0; i < item.images.length; i++) {
         const img = item.images[i]
-        const cached =
-          state.uploadedImagesByKey[img.checkpointKey] ||
-          state.uploadedImagesBySha256[img.sha256]
+        let cached: UploadedImageCheckpoint | undefined =
+          state.uploadedImagesByKey[img.checkpointKey]
+
+        if (cached?.notionBlockId && repairMode && client.retrieveImageBlockUrl) {
+          try {
+            const liveBlock = await client.retrieveImageBlockUrl(cached.notionBlockId)
+            if (!liveBlock?.url) {
+              delete state.uploadedImagesByKey[img.checkpointKey]
+              cached = undefined
+              repairedMissingBlock = true
+            }
+          } catch {
+            delete state.uploadedImagesByKey[img.checkpointKey]
+            cached = undefined
+            repairedMissingBlock = true
+          }
+        }
 
         if (cached?.notionBlockId) {
           imagesReusedFromCheckpoint += 1
-          state.uploadedImagesByKey[img.checkpointKey] = {
-            notionBlockId: cached.notionBlockId,
-            originalFilename: img.originalFilename,
-            sourceRef: img.sourceRef,
-            sha256: img.sha256,
-            uploadedAt: cached.uploadedAt,
-          }
           finalImageRefs.push({
             id: cached.notionBlockId,
             notionBlockId: cached.notionBlockId,
@@ -690,18 +736,10 @@ export async function runStudyExamImport(options: {
         }
 
         for (let k = 0; k < pendingUniqueUploads.length; k++) {
-          const { img, indices } = pendingUniqueUploads[k]
+          const { indices } = pendingUniqueUploads[k]
           const blockId = createdBlockIds[k]
           const uploadedAt = new Date().toISOString()
           imagesUploaded += 1
-
-          state.uploadedImagesBySha256[img.sha256] = {
-            notionBlockId: blockId,
-            originalFilename: img.originalFilename,
-            sourceRef: img.sourceRef,
-            sha256: img.sha256,
-            uploadedAt,
-          }
 
           for (const idx of indices) {
             const targetImg = item.images[idx]
@@ -743,8 +781,15 @@ export async function runStudyExamImport(options: {
       }
       saveImportState(stateFilePath, state)
 
-      if (isNewPage) questionsCreated += 1
-      else questionsUpdated += 1
+      if (isNewPage) {
+        questionsCreated += 1
+        if (repairMode) questionsRepaired += 1
+      } else {
+        questionsUpdated += 1
+        if (repairMode && (repairedMissingBlock || pendingUniqueUploads.length > 0)) {
+          questionsRepaired += 1
+        }
+      }
     }
   }
 
@@ -755,6 +800,7 @@ export async function runStudyExamImport(options: {
     questionsCreated,
     questionsUpdated,
     questionsSkippedUnchanged,
+    questionsRepaired,
     imagesUploaded,
     imagesReusedFromCheckpoint,
     stateFilePath,

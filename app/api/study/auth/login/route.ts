@@ -10,8 +10,8 @@ import {
 import {
   NO_STORE_PRIVATE_HEADERS,
   getClientIp,
-  checkLoginRateLimit,
-  resetLoginRateLimit,
+  checkLoginRateLimitAsync,
+  resetLoginRateLimitAsync,
   verifyCsrfOrigin,
 } from '../../../../../lib/study/auth/security'
 
@@ -58,7 +58,7 @@ export async function POST(request: Request) {
 
   const { username, accessKey } = parsed.data
   const ip = getClientIp(request)
-  const rate = checkLoginRateLimit(ip, username)
+  const rate = await checkLoginRateLimitAsync(ip, username)
   if (!rate.allowed) {
     return NextResponse.json(
       { error: 'Too many login attempts. Please wait before trying again.' },
@@ -88,7 +88,7 @@ export async function POST(request: Request) {
       )
     }
 
-    resetLoginRateLimit(ip, username)
+    await resetLoginRateLimitAsync(ip, username)
 
     const response = NextResponse.json(
       { user: result.user },

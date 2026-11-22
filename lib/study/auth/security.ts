@@ -1,9 +1,11 @@
 /**
  * lib/study/auth/security.ts — Rate limiting, CSRF protection & private headers
  * ──────────────────────────────────────────────────────────────────────────────
- * Note on Vercel Serverless rate limiting: in-memory Maps provide per-instance
- * brute-force protection. Pair with Vercel Firewall (WAF) rate-limiting rules
- * on /api/study/auth/login for global edge enforcement without Redis/DB.
+ * Supports shared distributed rate limiting via Upstash Redis REST API when
+ * `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are configured, with
+ * automatic fallback to per-instance in-memory Maps for local dev/testing.
+ * For production on Vercel, configure either Upstash Redis env vars or Vercel
+ * Firewall (WAF) rate-limiting rules on /api/study/auth/login.
  */
 
 export const NO_STORE_PRIVATE_HEADERS: Readonly<Record<string, string>> = {
@@ -122,6 +124,132 @@ export function checkApiRateLimit(
 ): RateLimitResult {
   const cleanIp = (ip || 'unknown').trim()
   return consumeBucket(`api:${bucketName}:${cleanIp}`, maxRequests, windowMs, now)
+}
+
+function getUpstashConfig(): { url: string; token: string } | null {
+  const url = (process.env.UPSTASH_REDIS_REST_URL || '').trim().replace(/\/+$/, '')
+  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim()
+  if (!url || !token) return null
+  return { url, token }
+}
+
+async function consumeDistributedBucket(
+  key: string,
+  maxRequests: number,
+  windowMs: number,
+  now: number = Date.now()
+): Promise<RateLimitResult> {
+  const upstash = getUpstashConfig()
+  if (!upstash) {
+    return consumeBucket(key, maxRequests, windowMs, now)
+  }
+
+  const redisKey = `study:rl:${key}`
+  try {
+    const res = await fetch(`${upstash.url}/pipeline`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${upstash.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([
+        ['INCR', redisKey],
+        ['PEXPIRE', redisKey, String(windowMs), 'NX'],
+        ['PTTL', redisKey],
+      ]),
+      signal: AbortSignal.timeout(3000),
+    })
+
+    if (!res.ok) {
+      return consumeBucket(key, maxRequests, windowMs, now)
+    }
+
+    const payload = (await res.json()) as Array<{ result?: unknown }>
+    const count = Number(payload?.[0]?.result)
+    const pttl = Number(payload?.[2]?.result)
+
+    if (!Number.isFinite(count)) {
+      return consumeBucket(key, maxRequests, windowMs, now)
+    }
+
+    if (count > maxRequests) {
+      const remainingMs = Number.isFinite(pttl) && pttl > 0 ? pttl : windowMs
+      return {
+        allowed: false,
+        retryAfterSec: Math.max(1, Math.ceil(remainingMs / 1000)),
+      }
+    }
+
+    return { allowed: true, retryAfterSec: 0 }
+  } catch {
+    // Graceful degradation to per-instance memory if Redis is transiently unreachable
+    return consumeBucket(key, maxRequests, windowMs, now)
+  }
+}
+
+export async function checkLoginRateLimitAsync(
+  ip: string,
+  username: string,
+  now: number = Date.now()
+): Promise<RateLimitResult> {
+  const cleanIp = (ip || 'unknown').trim()
+  const cleanUser = (username || '').trim().toLowerCase()
+
+  const ipCheck = await consumeDistributedBucket(
+    `login:ip:${cleanIp}`,
+    LOGIN_MAX_PER_IP,
+    LOGIN_WINDOW_MS,
+    now
+  )
+  if (!ipCheck.allowed) return ipCheck
+
+  if (cleanUser) {
+    const userCheck = await consumeDistributedBucket(
+      `login:user:${cleanUser}`,
+      LOGIN_MAX_PER_USERNAME,
+      LOGIN_WINDOW_MS,
+      now
+    )
+    if (!userCheck.allowed) return userCheck
+  }
+
+  return { allowed: true, retryAfterSec: 0 }
+}
+
+export async function resetLoginRateLimitAsync(ip: string, username: string): Promise<void> {
+  resetLoginRateLimit(ip, username)
+  const upstash = getUpstashConfig()
+  if (!upstash) return
+
+  const commands: string[][] = []
+  if (ip) commands.push(['DEL', `study:rl:login:ip:${ip.trim()}`])
+  if (username) commands.push(['DEL', `study:rl:login:user:${username.trim().toLowerCase()}`])
+  if (commands.length === 0) return
+
+  try {
+    await fetch(`${upstash.url}/pipeline`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${upstash.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(commands),
+      signal: AbortSignal.timeout(3000),
+    })
+  } catch {
+    // Ignore Redis reset failure
+  }
+}
+
+export async function checkApiRateLimitAsync(
+  ip: string,
+  bucketName: string,
+  maxRequests: number = 60,
+  windowMs: number = 60 * 1000,
+  now: number = Date.now()
+): Promise<RateLimitResult> {
+  const cleanIp = (ip || 'unknown').trim()
+  return consumeDistributedBucket(`api:${bucketName}:${cleanIp}`, maxRequests, windowMs, now)
 }
 
 /**

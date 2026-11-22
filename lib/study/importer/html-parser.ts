@@ -1,13 +1,14 @@
 /**
  * lib/study/importer/html-parser.ts — Safe, zero-eval HTML quizData parser
  * ─────────────────────────────────────────────────────────────────────────
- * Extracts embedded JavaScript `quizData` (or compatible quiz arrays/objects)
- * from local HTML exam files WITHOUT executing any JavaScript (`eval`,
- * `new Function`, or `vm` are never used).
+ * Extracts embedded JavaScript `quizData` (including real CSA HTML format with
+ * `quiz_title`, numeric `id`, `assessment_type`, `prompt.{question,answers,
+ * explanation,feedbacks}`, and `correct_response`, plus legacy synthetic shapes)
+ * WITHOUT executing any JavaScript (`eval`, `new Function`, or `vm` are never used).
  *
- * Also extracts `<img src="...">` references from question text, answer
- * options, per-option feedback, and explanations while preserving exact order
- * and placement.
+ * Preserves structured formatting (headings, paragraphs, lists, fenced & inline
+ * code, safe http/https links, tables, bold/italic, and exact `[[image:...]]`
+ * placement tokens) as clean Markdown while stripping all scripts/unsafe HTML.
  */
 
 import type { QuestionImagePlacement, QuestionType } from '../types'
@@ -120,7 +121,7 @@ class SafeDataParser {
   }
 
   private parseObject(): Record<string, unknown> {
-    this.pos += 1 // skip '{'
+    this.pos += 1
     const obj: Record<string, unknown> = {}
     this.skipWhitespaceAndComments()
     if (this.src[this.pos] === '}') {
@@ -175,7 +176,7 @@ class SafeDataParser {
   }
 
   private parseArray(): unknown[] {
-    this.pos += 1 // skip '['
+    this.pos += 1
     const arr: unknown[] = []
     this.skipWhitespaceAndComments()
     if (this.src[this.pos] === ']') {
@@ -206,7 +207,7 @@ class SafeDataParser {
   }
 
   private parseString(quote: string): string {
-    this.pos += 1 // skip opening quote
+    this.pos += 1
     let out = ''
     while (this.pos < this.src.length) {
       const ch = this.src[this.pos]
@@ -233,7 +234,7 @@ class SafeDataParser {
           case "'": out += "'"; break
           case '`': out += '`'; break
           case '/': out += '/'; break
-          case '\n': break // line continuation
+          case '\n': break
           case '\r':
             if (this.src[this.pos] === '\n') this.pos += 1
             break
@@ -288,10 +289,6 @@ class SafeDataParser {
   }
 }
 
-/**
- * Extracts a balanced `[...]` or `{...}` literal starting at `startIndex`
- * while respecting quotes, escapes, and JS comments.
- */
 function extractBalancedLiteral(source: string, startIndex: number): string {
   const open = source[startIndex]
   const close = open === '[' ? ']' : open === '{' ? '}' : null
@@ -373,7 +370,7 @@ export function extractQuizDataLiteralFromHtml(html: string): unknown {
   throw new Error('Could not find embedded quizData assignment in HTML file')
 }
 
-// ── 2. HTML image extraction & clean text normalization ─────────────────────
+// ── 2. Safe HTML-to-Markdown formatter & image extractor (XSS-safe) ─────────
 
 function decodeBasicHtmlEntities(input: string): string {
   return input
@@ -393,10 +390,58 @@ function extractAttr(tag: string, attrName: string): string {
   return decodeBasicHtmlEntities((m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim())
 }
 
+function isSafeHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url.trim())
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function convertHtmlTableToMarkdown(tableHtml: string): string {
+  const rows: string[][] = []
+  const trRegex = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi
+  let trMatch: RegExpExecArray | null
+  while ((trMatch = trRegex.exec(tableHtml)) !== null) {
+    const cells: string[] = []
+    const cellRegex = /<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi
+    let cellMatch: RegExpExecArray | null
+    while ((cellMatch = cellRegex.exec(trMatch[1])) !== null) {
+      const cleanCell = decodeBasicHtmlEntities(
+        cellMatch[1]
+          .replace(/<br\s*\/?>/gi, ' ')
+          .replace(/<[^>]+>/g, '')
+      )
+        .replace(/\|/g, '\\|')
+        .replace(/\s+/g, ' ')
+        .trim()
+      cells.push(cleanCell)
+    }
+    if (cells.length > 0) rows.push(cells)
+  }
+
+  if (rows.length === 0) return ''
+  const colCount = Math.max(...rows.map((r) => r.length))
+  const pad = (r: string[]) => {
+    const copy = [...r]
+    while (copy.length < colCount) copy.push('')
+    return `| ${copy.join(' | ')} |`
+  }
+
+  const lines = [
+    pad(rows[0]),
+    `| ${Array(colCount).fill('---').join(' | ')} |`,
+    ...rows.slice(1).map(pad),
+  ]
+  return `\n\n${lines.join('\n')}\n\n`
+}
+
 /**
  * Extracts all `<img ...>` references in DOM order and converts the remaining
- * HTML fragment into clean, readable text with deterministic `[Image #N]`
- * placement markers so original image position is preserved.
+ * HTML into clean, XSS-safe Markdown preserving headings, paragraphs, lists,
+ * fenced/inline code blocks, safe http(s) links, tables, bold/italic, and
+ * `[[image:...]]` placement markers.
  */
 export function extractImagesAndCleanText(
   rawHtml: string,
@@ -407,10 +452,18 @@ export function extractImagesAndCleanText(
     return { text: '', images: [] }
   }
 
+  // 1. Strip dangerous executable containers completely before conversion
+  let work = rawHtml
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '')
+
   const images: ExtractedImageTag[] = []
   let order = 0
 
-  const withPlaceholders = rawHtml.replace(/<img\b[^>]*>/gi, (imgTag) => {
+  // 2. Replace <img> tags with deterministic placement tokens in DOM order
+  work = work.replace(/<img\b[^>]*>/gi, (imgTag) => {
     const src = extractAttr(imgTag, 'src')
     const alt = extractAttr(imgTag, 'alt')
     const currentOrder = order
@@ -425,16 +478,90 @@ export function extractImagesAndCleanText(
         order: currentOrder,
       })
     }
-    return ` [[image:${placement}${optionId ? `:${optionId}` : ''}:${currentOrder}]] `
+    return `\n[[image:${placement}${optionId ? `:${optionId}` : ''}:${currentOrder}]]\n`
   })
 
-  const cleaned = decodeBasicHtmlEntities(
-    withPlaceholders
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(?:p|div|li|tr|h[1-6]|blockquote)>/gi, '\n')
-      .replace(/<li\b[^>]*>/gi, '• ')
-      .replace(/<[^>]+>/g, '')
+  // 3. Preserve fenced code blocks (<pre><code>...</code></pre> or <pre>...</pre>)
+  const codeBlockPlaceholders: string[] = []
+  work = work.replace(
+    /<pre\b[^>]*>\s*(?:<code\b[^>]*>)?([\s\S]*?)(?:<\/code>\s*)?<\/pre>/gi,
+    (_, inner) => {
+      const code = decodeBasicHtmlEntities(String(inner).replace(/<[^>]+>/g, '')).trimEnd()
+      const idx = codeBlockPlaceholders.length
+      codeBlockPlaceholders.push(`\n\n\`\`\`\n${code}\n\`\`\`\n\n`)
+      return `\u0000CODEBLOCK_${idx}\u0000`
+    }
   )
+
+  // 4. Preserve HTML tables as Markdown tables
+  work = work.replace(/<table\b[^>]*>[\s\S]*?<\/table>/gi, (tbl) =>
+    convertHtmlTableToMarkdown(tbl)
+  )
+
+  // 5. Preserve headings h1-h6
+  work = work.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, inner) => {
+    const hashes = '#'.repeat(Math.min(Math.max(Number(level), 1), 4))
+    const text = decodeBasicHtmlEntities(String(inner).replace(/<[^>]+>/g, '')).trim()
+    return text ? `\n\n${hashes} ${text}\n\n` : ''
+  })
+
+  // 6. Preserve ordered & unordered lists
+  work = work.replace(/<ol\b[^>]*>([\s\S]*?)<\/ol>/gi, (_, inner) => {
+    let idx = 0
+    const converted = String(inner).replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (__, li) => {
+      idx += 1
+      return `\n${idx}. ${String(li).trim()}`
+    })
+    return `\n\n${converted}\n\n`
+  })
+  work = work.replace(/<ul\b[^>]*>([\s\S]*?)<\/ul>/gi, (_, inner) => {
+    const converted = String(inner).replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (__, li) => {
+      return `\n- ${String(li).trim()}`
+    })
+    return `\n\n${converted}\n\n`
+  })
+  // Fallback for loose <li> outside <ul>/<ol>
+  work = work.replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (_, li) => `\n- ${String(li).trim()}`)
+
+  // 7. Preserve safe links (<a href="https://...">text</a>); strip javascript:/data: links
+  work = work.replace(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi, (full, _attrs, inner) => {
+    const href = extractAttr(full, 'href')
+    const label = decodeBasicHtmlEntities(String(inner).replace(/<[^>]+>/g, '')).trim()
+    if (!label) return ''
+    if (href && isSafeHttpUrl(href)) {
+      return `[${label}](${href})`
+    }
+    return label
+  })
+
+  // 8. Preserve inline <code>, <strong>/<b>, <em>/<i>
+  work = work.replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (_, inner) => {
+    const c = decodeBasicHtmlEntities(String(inner).replace(/<[^>]+>/g, '')).trim()
+    return c ? `\`${c}\`` : ''
+  })
+  work = work.replace(/<(?:strong|b)\b[^>]*>([\s\S]*?)<\/(?:strong|b)>/gi, (_, inner) => {
+    const t = String(inner).trim()
+    return t ? `**${t}**` : ''
+  })
+  work = work.replace(/<(?:em|i)\b[^>]*>([\s\S]*?)<\/(?:em|i)>/gi, (_, inner) => {
+    const t = String(inner).trim()
+    return t ? `*${t}*` : ''
+  })
+
+  // 9. Preserve paragraph/line breaks and strip any remaining raw HTML tags
+  work = work
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|blockquote)>/gi, '\n\n')
+    .replace(/<[^>]+>/g, '')
+
+  let cleaned = decodeBasicHtmlEntities(work)
+
+  // Restore fenced code blocks
+  cleaned = cleaned.replace(/\u0000CODEBLOCK_(\d+)\u0000/g, (_, idx) => {
+    return codeBlockPlaceholders[Number(idx)] || ''
+  })
+
+  cleaned = cleaned
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
@@ -451,6 +578,7 @@ function normalizeCorrectOptionIds(
   options: ParsedRawOption[]
 ): string[] {
   const rawCorrect =
+    rawItem.correct_response ??
     rawItem.correctOptionIds ??
     rawItem.correctAnswers ??
     rawItem.correctAnswer ??
@@ -482,7 +610,6 @@ function normalizeCorrectOptionIds(
         resolved.push(upper)
         continue
       }
-      // Numeric string index e.g. "0"
       if (/^\d+$/.test(trimmed)) {
         const idx = Number.parseInt(trimmed, 10)
         if (idx >= 0 && idx < options.length) {
@@ -490,7 +617,6 @@ function normalizeCorrectOptionIds(
           continue
         }
       }
-      // Match by option text as last resort
       const byText = options.find((o) => o.text === trimmed)
       if (byText) {
         resolved.push(byText.id)
@@ -510,6 +636,28 @@ function extractHtmlDocumentTitle(html: string, fallbackTitle: string): string {
   return fallbackTitle
 }
 
+function resolveQuestionType(
+  rawItem: Record<string, unknown>,
+  correctOptionIds: string[]
+): QuestionType {
+  const rawType = String(
+    rawItem.assessment_type ?? rawItem.questionType ?? rawItem.type ?? ''
+  )
+    .trim()
+    .toLowerCase()
+
+  if (
+    rawType === 'multi-select' ||
+    rawType === 'multi_select' ||
+    rawType === 'multiple-select' ||
+    rawType === 'multiple_select' ||
+    correctOptionIds.length > 1
+  ) {
+    return 'multi_select'
+  }
+  return 'single_choice'
+}
+
 export function parseExamHtmlContent(html: string, fallbackTitle: string): ParsedExamHtml {
   const rawData = extractQuizDataLiteralFromHtml(html)
 
@@ -520,8 +668,12 @@ export function parseExamHtmlContent(html: string, fallbackTitle: string): Parse
     rawQuestions = rawData
   } else if (rawData && typeof rawData === 'object') {
     const obj = rawData as Record<string, unknown>
-    if (typeof obj.title === 'string') embeddedTitle = obj.title.trim()
-    const candidate = obj.questions ?? obj.items ?? obj.quizData
+    if (typeof obj.quiz_title === 'string' && obj.quiz_title.trim()) {
+      embeddedTitle = obj.quiz_title.trim()
+    } else if (typeof obj.title === 'string' && obj.title.trim()) {
+      embeddedTitle = obj.title.trim()
+    }
+    const candidate = obj.questions ?? obj.results ?? obj.items ?? obj.quizData
     if (!Array.isArray(candidate)) {
       throw new Error('Embedded quizData object does not contain a questions array')
     }
@@ -539,22 +691,38 @@ export function parseExamHtmlContent(html: string, fallbackTitle: string): Parse
       throw new Error(`Question at index ${i} is not an object`)
     }
     const rec = item as Record<string, unknown>
+    const promptObj =
+      rec.prompt && typeof rec.prompt === 'object'
+        ? (rec.prompt as Record<string, unknown>)
+        : null
 
+    // Support both real CSA `prompt.question` and synthetic top-level `question` / `questionText`
     const rawQuestionHtml = String(
-      rec.questionText ?? rec.question ?? rec.prompt ?? rec.text ?? ''
+      promptObj?.question ??
+        rec.questionText ??
+        rec.question ??
+        (typeof rec.prompt === 'string' ? rec.prompt : '') ??
+        rec.text ??
+        ''
     )
     const qExtracted = extractImagesAndCleanText(rawQuestionHtml, 'question')
 
-    const rawOptions = Array.isArray(rec.options)
-      ? rec.options
-      : Array.isArray(rec.choices)
-        ? rec.choices
-        : Array.isArray(rec.answers)
-          ? rec.answers
-          : []
+    // Support real CSA `prompt.answers` and synthetic `options` / `choices` / `answers`
+    const rawOptions = Array.isArray(promptObj?.answers)
+      ? promptObj!.answers
+      : Array.isArray(rec.options)
+        ? rec.options
+        : Array.isArray(rec.choices)
+          ? rec.choices
+          : Array.isArray(rec.answers)
+            ? rec.answers
+            : []
 
-    const images: ExtractedImageTag[] = [...qExtracted.images]
-    const options: ParsedRawOption[] = []
+    const promptFeedbacksArray = Array.isArray(promptObj?.feedbacks)
+      ? promptObj!.feedbacks
+      : Array.isArray(rec.feedbacks)
+        ? rec.feedbacks
+        : null
 
     const perOptionFeedbackMap =
       rec.optionFeedback && typeof rec.optionFeedback === 'object'
@@ -562,6 +730,9 @@ export function parseExamHtmlContent(html: string, fallbackTitle: string): Parse
         : rec.feedback && typeof rec.feedback === 'object'
           ? (rec.feedback as Record<string, unknown>)
           : null
+
+    const images: ExtractedImageTag[] = [...qExtracted.images]
+    const options: ParsedRawOption[] = []
 
     for (let optIdx = 0; optIdx < rawOptions.length; optIdx++) {
       const rawOpt = rawOptions[optIdx]
@@ -574,12 +745,16 @@ export function parseExamHtmlContent(html: string, fallbackTitle: string): Parse
       } else if (rawOpt && typeof rawOpt === 'object') {
         const oRec = rawOpt as Record<string, unknown>
         if (typeof oRec.id === 'string' && oRec.id.trim()) {
-          optId = oRec.id.trim()
+          optId = oRec.id.trim().toUpperCase()
         }
         rawOptText = String(oRec.text ?? oRec.label ?? oRec.content ?? '')
         if (typeof oRec.feedback === 'string') {
           rawOptFeedback = oRec.feedback
         }
+      }
+
+      if (!rawOptFeedback && promptFeedbacksArray && typeof promptFeedbacksArray[optIdx] === 'string') {
+        rawOptFeedback = promptFeedbacksArray[optIdx] as string
       }
 
       if (!rawOptFeedback && perOptionFeedbackMap) {
@@ -591,7 +766,7 @@ export function parseExamHtmlContent(html: string, fallbackTitle: string): Parse
       images.push(...optTextExtracted.images)
 
       let cleanFeedback: string | undefined
-      if (rawOptFeedback) {
+      if (rawOptFeedback && rawOptFeedback.trim()) {
         const fbExtracted = extractImagesAndCleanText(rawOptFeedback, 'feedback', optId)
         images.push(...fbExtracted.images)
         if (fbExtracted.text) cleanFeedback = fbExtracted.text
@@ -605,32 +780,37 @@ export function parseExamHtmlContent(html: string, fallbackTitle: string): Parse
     }
 
     const rawExplanationHtml = String(
-      rec.explanation ?? rec.overallExplanation ?? rec.rationale ?? ''
+      promptObj?.explanation ??
+        rec.explanation ??
+        rec.overallExplanation ??
+        rec.rationale ??
+        ''
     )
     const expExtracted = extractImagesAndCleanText(rawExplanationHtml, 'explanation')
     images.push(...expExtracted.images)
 
     const correctOptionIds = normalizeCorrectOptionIds(rec, options)
+    const questionType = resolveQuestionType(rec, correctOptionIds)
 
-    const rawType = String(rec.questionType ?? rec.type ?? '').trim().toLowerCase()
-    const questionType: QuestionType =
-      rawType === 'multi_select' ||
-      rawType === 'multi-select' ||
-      rawType === 'multiple' ||
-      correctOptionIds.length > 1
-        ? 'multi_select'
-        : 'single_choice'
+    const topic =
+      String(
+        rec.topic ??
+          rec.domain ??
+          rec.section ??
+          rec.category ??
+          promptObj?.topic ??
+          'General'
+      ).trim() || 'General'
 
-    const topic = String(
-      rec.topic ?? rec.domain ?? rec.category ?? 'General'
-    ).trim() || 'General'
-
-    const sourceQuestionId =
-      typeof rec.questionId === 'string' && rec.questionId.trim()
-        ? rec.questionId.trim()
-        : typeof rec.id === 'string' && rec.id.trim()
-          ? rec.id.trim()
-          : undefined
+    // Support both string and numeric question IDs (e.g. `id: 158456021`)
+    let sourceQuestionId: string | undefined
+    if (typeof rec.questionId === 'string' && rec.questionId.trim()) {
+      sourceQuestionId = rec.questionId.trim()
+    } else if (typeof rec.id === 'number' && Number.isFinite(rec.id)) {
+      sourceQuestionId = String(Math.trunc(rec.id))
+    } else if (typeof rec.id === 'string' && rec.id.trim()) {
+      sourceQuestionId = rec.id.trim()
+    }
 
     questions.push({
       index: i,

@@ -93,10 +93,11 @@ function printHumanReport(report: ImportDryRunReport): void {
 async function main() {
   const rawSource = parseFlagValue('--source')
   const dryRun = hasFlag('--dry-run')
+  const repair = hasFlag('--repair')
   const jsonOutput = hasFlag('--json')
 
   if (!rawSource) {
-    console.error('Usage: pnpm study:import --source "<absolute-folder-path>" [--dry-run] [--json]')
+    console.error('Usage: pnpm study:import --source "<absolute-folder-path>" [--dry-run] [--repair] [--json]')
     process.exit(1)
   }
 
@@ -121,6 +122,7 @@ async function main() {
     const summary = await runStudyExamImport({
       sourceDir,
       dryRun: false,
+      repair,
       client,
       config,
     })
@@ -134,6 +136,9 @@ async function main() {
       console.log(`  Questions Created            : ${summary.questionsCreated}`)
       console.log(`  Questions Updated            : ${summary.questionsUpdated}`)
       console.log(`  Questions Skipped (Unchanged): ${summary.questionsSkippedUnchanged}`)
+      if (repair) {
+        console.log(`  Questions Repaired           : ${summary.questionsRepaired}`)
+      }
       console.log(`  Images Uploaded              : ${summary.imagesUploaded}`)
       console.log(`  Images Reused (Checkpoint)   : ${summary.imagesReusedFromCheckpoint}`)
       if (summary.stateFilePath) {

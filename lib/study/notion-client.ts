@@ -78,6 +78,10 @@ export interface StudyNotionClient {
     images: AppendImageBlockInput[]
   ): Promise<string[]>
   retrieveImageBlockUrl?(blockId: string): Promise<FreshImageBlockUrl | null>
+  retrieveAuthorizedQuestionImageUrl?(
+    blockId: string,
+    options: { questionsDbId: string; allowDraft?: boolean }
+  ): Promise<FreshImageBlockUrl | null>
 }
 
 const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504])
@@ -133,6 +137,105 @@ async function withTimeout<T>(fn: () => Promise<T>, timeoutMs: number, label: st
     ])
   } finally {
     if (timer) clearTimeout(timer)
+  }
+}
+
+export interface NotionImageBlockLike {
+  archived?: boolean
+  in_trash?: boolean
+  type?: string
+  parent?: {
+    type?: string
+    page_id?: string
+    block_id?: string
+  }
+  image?: {
+    type?: string
+    file?: { url?: string; expiry_time?: string }
+  }
+}
+
+export interface NotionOwnerPageLike extends NotionPageRecord {
+  parent?: {
+    type?: string
+    database_id?: string
+    data_source_id?: string
+  }
+}
+
+function normalizeNotionId(id: string): string {
+  return id.replace(/-/g, '').trim().toLowerCase()
+}
+
+/**
+ * Pure ownership & publication-status verifier for private study image blocks.
+ * Ensures an authenticated user can ONLY stream image blocks attached to a
+ * non-archived Question page inside `STUDY_NOTION_QUESTIONS_DB_ID` (published
+ * for students, or draft/published for admins).
+ */
+export async function verifyAuthorizedQuestionImageBlock(
+  blockId: string,
+  options: {
+    allowedQuestionsDbIds: string[]
+    allowDraft?: boolean
+    retrieveBlock: (id: string) => Promise<NotionImageBlockLike | null>
+    retrievePage: (id: string) => Promise<NotionOwnerPageLike | null>
+  }
+): Promise<FreshImageBlockUrl | null> {
+  const allowedIds = new Set(options.allowedQuestionsDbIds.map(normalizeNotionId).filter(Boolean))
+  const block = await options.retrieveBlock(blockId.trim())
+  if (!block || block.archived || block.in_trash) return null
+  if (block.type !== 'image' || block.image?.type !== 'file') return null
+  const url = block.image.file?.url || ''
+  if (!url) return null
+
+  let ownerPageId: string | null = null
+  let currentParent = block.parent
+  for (let depth = 0; depth < 6 && currentParent; depth++) {
+    if (currentParent.type === 'page_id' && currentParent.page_id) {
+      ownerPageId = currentParent.page_id
+      break
+    }
+    if (currentParent.type === 'block_id' && currentParent.block_id) {
+      const parentBlock = await options.retrieveBlock(currentParent.block_id)
+      if (!parentBlock || parentBlock.archived || parentBlock.in_trash) return null
+      currentParent = parentBlock.parent
+      continue
+    }
+    break
+  }
+
+  if (!ownerPageId) return null
+
+  const ownerPage = await options.retrievePage(ownerPageId)
+  if (!ownerPage || ownerPage.archived || ownerPage.in_trash) return null
+
+  const parentDbId = ownerPage.parent?.database_id
+    ? normalizeNotionId(ownerPage.parent.database_id)
+    : ''
+  const parentDsId = ownerPage.parent?.data_source_id
+    ? normalizeNotionId(ownerPage.parent.data_source_id)
+    : ''
+
+  const belongsToQuestionsDb =
+    (Boolean(parentDbId) && allowedIds.has(parentDbId)) ||
+    (Boolean(parentDsId) && allowedIds.has(parentDsId))
+  if (!belongsToQuestionsDb) return null
+
+  const statusProp = ownerPage.properties?.Status as
+    | { select?: { name?: string } | null; status?: { name?: string } | null }
+    | undefined
+  const statusValue = (statusProp?.select?.name || statusProp?.status?.name || '')
+    .trim()
+    .toLowerCase()
+
+  if (statusValue !== 'published' && !options.allowDraft) {
+    return null
+  }
+
+  return {
+    url,
+    expiryTime: block.image.file?.expiry_time || null,
   }
 }
 
@@ -458,6 +561,38 @@ export function createStudyNotionClient(
           url,
           expiryTime: block.image.file?.expiry_time || null,
         }
+      } catch (err) {
+        const status = getHttpStatus(err)
+        if (status === 404 || status === 400) return null
+        throw err
+      }
+    },
+
+    async retrieveAuthorizedQuestionImageUrl(
+      blockId: string,
+      options: { questionsDbId: string; allowDraft?: boolean }
+    ): Promise<FreshImageBlockUrl | null> {
+      const allowedDbIds = [options.questionsDbId]
+      try {
+        const resolvedDsId = await resolveDataSourceId(options.questionsDbId)
+        if (resolvedDsId) allowedDbIds.push(resolvedDsId)
+      } catch {
+        // Keep raw questionsDbId
+      }
+
+      try {
+        return await verifyAuthorizedQuestionImageBlock(blockId, {
+          allowedQuestionsDbIds: allowedDbIds,
+          allowDraft: options.allowDraft,
+          retrieveBlock: async (id) =>
+            (await executeWithRetry('blocks.retrieve', () =>
+              sdk.blocks.retrieve({ block_id: id })
+            )) as NotionImageBlockLike,
+          retrievePage: async (id) =>
+            (await executeWithRetry('pages.retrieve', () =>
+              sdk.pages.retrieve({ page_id: id })
+            )) as NotionOwnerPageLike,
+        })
       } catch (err) {
         const status = getHttpStatus(err)
         if (status === 404 || status === 400) return null

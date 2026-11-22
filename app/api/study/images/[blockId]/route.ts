@@ -20,8 +20,9 @@ import { requireStudyApiSession } from '../../../../../lib/study/auth/guard'
 import {
   NO_STORE_PRIVATE_HEADERS,
   getClientIp,
-  checkApiRateLimit,
+  checkApiRateLimitAsync,
 } from '../../../../../lib/study/auth/security'
+import { getStudyNotionConfig } from '../../../../../lib/study/config'
 import { getDefaultStudyNotionClient } from '../../../../../lib/study/notion-client'
 
 export const dynamic = 'force-dynamic'
@@ -36,7 +37,12 @@ export async function GET(
   request: Request,
   context: { params: Promise<{ blockId: string }> }
 ) {
-  const rate = checkApiRateLimit(getClientIp(request), 'study-image', 120, 60 * 1000)
+  const rate = await checkApiRateLimitAsync(
+    getClientIp(request),
+    'study-image',
+    120,
+    60 * 1000
+  )
   if (!rate.allowed) {
     return NextResponse.json(
       { error: 'Too many requests' },
@@ -63,15 +69,19 @@ export async function GET(
   }
 
   try {
+    const config = getStudyNotionConfig()
     const client = getDefaultStudyNotionClient()
-    if (!client.retrieveImageBlockUrl) {
+    if (!client.retrieveAuthorizedQuestionImageUrl) {
       return NextResponse.json(
         { error: 'Image delivery unavailable' },
         { status: 503, headers: NO_STORE_PRIVATE_HEADERS }
       )
     }
 
-    const fresh = await client.retrieveImageBlockUrl(cleanBlockId)
+    const fresh = await client.retrieveAuthorizedQuestionImageUrl(cleanBlockId, {
+      questionsDbId: config.questionsDbId,
+      allowDraft: guard.user.role === 'admin',
+    })
     if (!fresh?.url) {
       return NextResponse.json(
         { error: 'Image not available' },
