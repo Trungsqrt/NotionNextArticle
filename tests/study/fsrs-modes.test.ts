@@ -1,0 +1,351 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import type {
+  StudyUser,
+  ExamCollection,
+  StudyQuestion,
+  FsrsCardState,
+  ReviewEvent,
+} from '../../lib/study/types'
+import {
+  ConcurrencyConflictError,
+  type StudyRepositories,
+} from '../../lib/study/repositories'
+import { buildCardStateKey } from '../../lib/study/schemas'
+import {
+  createInitialCardSnapshot,
+  scheduleCardReview,
+  previewAllRatings,
+  FSRS_SCHEDULER_VERSION,
+} from '../../lib/study/fsrs/scheduler'
+import { getStudyDashboardData } from '../../lib/study/services/dashboard-service'
+import {
+  getRecallQueue,
+  revealRecallAnswer,
+  submitRecallReview,
+} from '../../lib/study/services/recall-service'
+import {
+  getPracticeExamPayload,
+  checkPracticeAnswer,
+} from '../../lib/study/services/practice-service'
+import {
+  startExamSession,
+  submitExamSession,
+} from '../../lib/study/services/exam-service'
+import {
+  SYNTHETIC_USER,
+  SYNTHETIC_EXAM,
+  SYNTHETIC_SINGLE_CHOICE_QUESTION,
+  SYNTHETIC_MULTI_SELECT_QUESTION,
+} from './fixtures/synthetic-study-data'
+
+function createInMemoryRepos(): StudyRepositories {
+  const users = new Map<string, StudyUser>([[SYNTHETIC_USER.userId, { ...SYNTHETIC_USER }]])
+  const exams = new Map<string, ExamCollection>([[SYNTHETIC_EXAM.examId, { ...SYNTHETIC_EXAM }]])
+  const questions = new Map<string, StudyQuestion>([
+    [SYNTHETIC_SINGLE_CHOICE_QUESTION.questionId, { ...SYNTHETIC_SINGLE_CHOICE_QUESTION }],
+    [SYNTHETIC_MULTI_SELECT_QUESTION.questionId, { ...SYNTHETIC_MULTI_SELECT_QUESTION }],
+  ])
+  const cardStates = new Map<string, FsrsCardState>()
+  const reviewEvents = new Map<string, ReviewEvent>()
+
+  return {
+    users: {
+      async findByUsername(username) {
+        const u = username.trim().toLowerCase()
+        for (const v of users.values()) if (v.username === u) return { ...v }
+        return null
+      },
+      async findByUserId(userId) {
+        const v = users.get(userId)
+        return v ? { ...v } : null
+      },
+      async upsert(user) {
+        users.set(user.userId, { ...user })
+        return { ...user }
+      },
+    },
+    exams: {
+      async findByExamId(examId) {
+        const v = exams.get(examId)
+        return v ? { ...v } : null
+      },
+      async list(opts) {
+        return [...exams.values()].filter((e) => !opts?.status || e.status === opts.status)
+      },
+      async upsert(exam) {
+        exams.set(exam.examId, { ...exam })
+        return { ...exam }
+      },
+    },
+    questions: {
+      async findByQuestionId(qId) {
+        const v = questions.get(qId)
+        return v ? { ...v } : null
+      },
+      async listByExamId(examId, opts) {
+        return [...questions.values()].filter(
+          (q) => q.examId === examId && (!opts?.status || q.status === opts.status)
+        )
+      },
+      async listByQuestionIds(ids) {
+        return ids.map((id) => questions.get(id)).filter((q): q is StudyQuestion => Boolean(q))
+      },
+      async upsert(q) {
+        questions.set(q.questionId, { ...q })
+        return { ...q }
+      },
+    },
+    cardStates: {
+      async findByUserAndQuestion(userId, questionId) {
+        const v = cardStates.get(buildCardStateKey(userId, questionId))
+        return v ? { ...v, card: { ...v.card } } : null
+      },
+      async listByUser(userId) {
+        return [...cardStates.values()].filter((s) => s.userId === userId)
+      },
+      async listDueByUser(userId, asOfIso) {
+        const asOf = Date.parse(asOfIso)
+        return [...cardStates.values()].filter(
+          (s) => s.userId === userId && Date.parse(s.due) <= asOf
+        )
+      },
+      async save(state, options = {}) {
+        const existing = cardStates.get(state.stateKey)
+        if (existing) {
+          if (
+            typeof options.expectedRevision === 'number' &&
+            existing.revision !== options.expectedRevision
+          ) {
+            throw new ConcurrencyConflictError(
+              state.stateKey,
+              options.expectedRevision,
+              existing.revision
+            )
+          }
+        } else if (typeof options.expectedRevision === 'number' && options.expectedRevision > 0) {
+          throw new ConcurrencyConflictError(state.stateKey, options.expectedRevision, 0)
+        }
+        cardStates.set(state.stateKey, { ...state, card: { ...state.card } })
+        return { ...state }
+      },
+    },
+    reviewEvents: {
+      async findByEventId(eventId) {
+        const v = reviewEvents.get(eventId)
+        return v ? { ...v } : null
+      },
+      async listByUser(userId, opts) {
+        const list = [...reviewEvents.values()]
+          .filter((e) => e.userId === userId)
+          .sort((a, b) => Date.parse(b.reviewedAt) - Date.parse(a.reviewedAt))
+        return opts?.limit ? list.slice(0, opts.limit) : list
+      },
+      async appendIfNotExists(event) {
+        const existing = reviewEvents.get(event.eventId)
+        if (existing) return { event: existing, created: false }
+        reviewEvents.set(event.eventId, { ...event })
+        return { event, created: true }
+      },
+    },
+  }
+}
+
+const TEST_SECRET = 'phase5-test-secret-at-least-32-characters-long-0123456789'
+
+describe('Phase 5 — FSRS-6 Engine (ts-fsrs)', () => {
+  it('initializes new cards and transitions through New -> Learning -> Review -> Relearning', async () => {
+    const t0 = '2026-03-01T10:00:00.000Z'
+    const initial = await createInitialCardSnapshot('q-synth-001', t0)
+    assert.equal(initial.state, 'New')
+    assert.equal(initial.reps, 0)
+
+    const previews = await previewAllRatings({ cardId: 'q-synth-001', current: initial, nowIso: t0 })
+    assert.ok(Date.parse(previews.again.due) <= Date.parse(previews.good.due))
+    assert.ok(Date.parse(previews.good.due) <= Date.parse(previews.easy.due))
+
+    // Easy graduates directly to Review
+    const step1 = await scheduleCardReview({
+      cardId: 'q-synth-001',
+      previous: initial,
+      rating: 'easy',
+      nowIso: t0,
+    })
+    assert.equal(step1.schedulerVersion, FSRS_SCHEDULER_VERSION)
+    assert.equal(step1.resulting.state, 'Review')
+    assert.equal(step1.resulting.reps, 1)
+    assert.ok(step1.resulting.stability > 0)
+
+    // Lapsing a Review card with Again enters Relearning and increments lapses
+    const t1 = step1.resulting.due
+    const step2 = await scheduleCardReview({
+      cardId: 'q-synth-001',
+      previous: step1.resulting,
+      rating: 'again',
+      nowIso: t1,
+    })
+    assert.equal(step2.resulting.state, 'Relearning')
+    assert.equal(step2.resulting.lapses, 1)
+  })
+})
+
+describe('Phase 5 — Active Recall, Cross-Device Concurrency & Multi-User Isolation', () => {
+  it('serves prompt-only recall queue, saves FSRS review idempotently, updates dashboard, and isolates users', async () => {
+    const repos = createInMemoryRepos()
+    const nowIso = '2026-03-01T10:00:00.000Z'
+
+    const queue = await getRecallQueue(SYNTHETIC_USER.userId, repos, { nowIso })
+    assert.equal(queue.items.length, 2)
+    assert.equal('correctOptionIds' in queue.items[0].prompt, false)
+    assert.equal('explanation' in queue.items[0].prompt, false)
+
+    // Reveal answer explicitly
+    const revealed = await revealRecallAnswer('q-synth-001', repos)
+    assert.ok(revealed)
+    assert.deepEqual(revealed.correctOptionIds, ['B'])
+
+    // Submit review
+    const saved = await submitRecallReview(
+      {
+        userId: SYNTHETIC_USER.userId,
+        questionId: 'q-synth-001',
+        rating: 'good',
+        eventId: 'evt-p5-001',
+        expectedRevision: 0,
+        nowIso,
+      },
+      repos
+    )
+    assert.equal(saved.duplicate, false)
+    assert.equal(saved.cardState.revision, 1)
+
+    // Duplicate submission with same eventId is idempotent
+    const dup = await submitRecallReview(
+      {
+        userId: SYNTHETIC_USER.userId,
+        questionId: 'q-synth-001',
+        rating: 'good',
+        eventId: 'evt-p5-001',
+        expectedRevision: 0,
+        nowIso,
+      },
+      repos
+    )
+    assert.equal(dup.duplicate, true)
+    assert.equal(dup.cardState.revision, 1)
+
+    // Stale cross-device submission with outdated expectedRevision (0 instead of 1) throws ConcurrencyConflictError
+    await assert.rejects(
+      () =>
+        submitRecallReview(
+          {
+            userId: SYNTHETIC_USER.userId,
+            questionId: 'q-synth-001',
+            rating: 'easy',
+            eventId: 'evt-p5-002',
+            expectedRevision: 0,
+            nowIso: '2026-03-01T10:15:00.000Z',
+          },
+          repos
+        ),
+      ConcurrencyConflictError
+    )
+
+    // Dashboard reflects real persisted progress & streak
+    const dash = await getStudyDashboardData(SYNTHETIC_USER.userId, repos, nowIso)
+    assert.equal(dash.totalCardsStudied, 1)
+    assert.equal(dash.newCards, 1)
+    assert.equal(dash.studyStreakDays, 1)
+    assert.equal(dash.recentlyReviewed.length, 1)
+
+    // Independent second user studying the same question has untouched progress
+    const userBDash = await getStudyDashboardData('usr-other-002', repos, nowIso)
+    assert.equal(userBDash.totalCardsStudied, 0)
+    assert.equal(userBDash.newCards, 2)
+  })
+})
+
+describe('Phase 5 — Practice Mode & Timed CSA Mock Exam Simulation', () => {
+  it('grades single-choice & multi-select in Practice Mode without mutating FSRS state', async () => {
+    const repos = createInMemoryRepos()
+    const payload = await getPracticeExamPayload(SYNTHETIC_EXAM.examId, repos)
+    assert.ok(payload)
+    assert.equal(payload.questions.length, 2)
+    assert.equal('correctOptionIds' in payload.questions[0], false)
+
+    // Partial multi-select (only ['A'] when ['A', 'C'] required) -> incorrect
+    const partial = await checkPracticeAnswer('q-synth-002', ['A'], repos)
+    assert.ok(partial)
+    assert.equal(partial.isCorrect, false)
+    assert.deepEqual(partial.correctOptionIds, ['A', 'C'])
+
+    // Exact multi-select (['C', 'A']) -> correct
+    const exact = await checkPracticeAnswer('q-synth-002', ['C', 'A'], repos)
+    assert.ok(exact)
+    assert.equal(exact.isCorrect, true)
+
+    // Practice checks MUST NOT touch FSRS state or review events
+    const states = await repos.cardStates.listByUser(SYNTHETIC_USER.userId)
+    const events = await repos.reviewEvents.listByUser(SYNTHETIC_USER.userId)
+    assert.equal(states.length, 0)
+    assert.equal(events.length, 0)
+  })
+
+  it('runs a timed exam without leaking answers and grades server-side with cross-user protection', async () => {
+    const repos = createInMemoryRepos()
+    const nowSec = 1_772_359_200
+
+    const started = await startExamSession(
+      {
+        userId: SYNTHETIC_USER.userId,
+        examId: SYNTHETIC_EXAM.examId,
+        durationMinutes: 60,
+        sessionSecret: TEST_SECRET,
+        nowSec,
+      },
+      repos
+    )
+    assert.ok(started)
+    assert.equal(started.questions.length, 2)
+    for (const q of started.questions) {
+      assert.equal('correctOptionIds' in q, false)
+      assert.equal('explanation' in q, false)
+    }
+
+    // Cross-user submission rejected
+    await assert.rejects(() =>
+      submitExamSession(
+        {
+          userId: 'usr-other-999',
+          examToken: started.examToken,
+          answers: {},
+          sessionSecret: TEST_SECRET,
+          nowSec: nowSec + 120,
+        },
+        repos
+      )
+    )
+
+    // Valid submission: Q1 correct (['B']), Q2 skipped ([]) -> 50% score
+    const graded = await submitExamSession(
+      {
+        userId: SYNTHETIC_USER.userId,
+        examToken: started.examToken,
+        answers: {
+          'q-synth-001': ['B'],
+        },
+        sessionSecret: TEST_SECRET,
+        nowSec: nowSec + 300,
+      },
+      repos
+    )
+    assert.equal(graded.totalQuestions, 2)
+    assert.equal(graded.correctCount, 1)
+    assert.equal(graded.incorrectCount, 0)
+    assert.equal(graded.skippedCount, 1)
+    assert.equal(graded.scorePercent, 50)
+    assert.equal(graded.passed, false)
+    assert.equal(graded.reviewItems.length, 2)
+    assert.ok(graded.reviewItems[0].explanation.length > 0)
+  })
+})

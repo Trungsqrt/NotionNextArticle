@@ -41,7 +41,8 @@ export default function Layout({
   const pathname = usePathname() || ''
   const isHomePage = pathname === '/'
   const isContactPage = pathname === '/contact'
-  const shouldShowSidebar = showSidebar && !isHomePage && !isContactPage
+  const isStudyPage = pathname === '/study' || pathname.startsWith('/study/')
+  const shouldShowSidebar = showSidebar && !isHomePage && !isContactPage && !isStudyPage
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
