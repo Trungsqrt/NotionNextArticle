@@ -206,4 +206,25 @@
     animation: dropdownIn 0.15s cubic-bezier(0.16, 1, 0.3, 1) both;
     transform-origin: top center;
   }
+
+  /* Restrained 180ms Zen fade-in for Study Room answer feedback */
+  @keyframes studyFeedbackIn {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
+  .animate-study-feedback {
+    animation: studyFeedbackIn 180ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-study-feedback {
+      animation: none;
+    }
+  }
 }
