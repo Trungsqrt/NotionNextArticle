@@ -6,7 +6,7 @@ export default function robots() {
       {
         userAgent: '*',
         allow: '/',
-        disallow: ['/api/'],
+        disallow: ['/api/', '/study', '/study/'],
       },
       // Explicitly allow and prioritize AI search engines and LLM crawlers
       {
@@ -22,7 +22,7 @@ export default function robots() {
           'cohere-ai',
         ],
         allow: '/',
-        disallow: ['/api/'],
+        disallow: ['/api/', '/study', '/study/'],
       },
     ],
     sitemap: `${SITE_URL}/sitemap.xml`,
