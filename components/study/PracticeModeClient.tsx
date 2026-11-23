@@ -9,6 +9,40 @@ import StudyRichText from './StudyRichText'
 
 type PracticeFilter = 'all' | 'incorrect' | 'bookmarked'
 
+function FeedbackCheckIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M3.5 8.5L6.5 11.5L12.5 4.5" />
+    </svg>
+  )
+}
+
+function FeedbackCrossIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M4.5 4.5L11.5 11.5M11.5 4.5L4.5 11.5" />
+    </svg>
+  )
+}
+
 export default function PracticeModeClient({ exams }: { exams: ExamCollection[] }) {
   const searchParams = useSearchParams()
   const initialExamId = searchParams?.get('examId') || exams[0]?.examId || ''
@@ -242,47 +276,100 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
             {currentQ.options.map((opt) => {
               const selected = (selections[currentQ.questionId] || []).includes(opt.id)
               const graded = results[currentQ.questionId]
-              const isCorrectOption = graded?.correctOptionIds.includes(opt.id)
-              const isWrongSelection = graded && selected && !isCorrectOption
+              const isMulti = currentQ.questionType === 'multi_select'
+              const isCorrectOption = Boolean(graded?.correctOptionIds.includes(opt.id))
+              const isCorrectSelection = Boolean(graded && selected && isCorrectOption)
+              const isMissedCorrect = Boolean(graded && !selected && isCorrectOption)
+              const isWrongSelection = Boolean(graded && selected && !isCorrectOption)
+              const isUnselectedNeutral = Boolean(graded && !selected && !isCorrectOption)
               const fb = graded?.optionFeedback.find((f) => f.optionId === opt.id)
+
+              const cardTone = isCorrectSelection
+                ? 'bg-matcha-100/80 dark:bg-matcha-900/55 border-matcha-500 dark:border-matcha-400/85 ring-1 ring-matcha-500/20 dark:ring-matcha-400/20 text-ink-700 dark:text-sage-100'
+                : isMissedCorrect
+                  ? [
+                      'bg-matcha-50/90 dark:bg-matcha-900/35 border-matcha-500/85 dark:border-matcha-400/75 text-ink-700 dark:text-sage-100',
+                      isMulti ? 'border-dashed' : '',
+                    ].join(' ')
+                  : isWrongSelection
+                    ? 'bg-earth-rust/[0.10] dark:bg-earth-rust/[0.20] border-earth-rust/80 dark:border-earth-rust/85 ring-1 ring-earth-rust/20 text-ink-700 dark:text-sage-100'
+                    : isUnselectedNeutral
+                      ? 'bg-rice-paper-100/50 dark:bg-tea-slate-300/40 border-rice-paper-400/50 dark:border-tea-slate-50/30 text-ink-500/80 dark:text-sage-400/80'
+                      : selected
+                        ? 'bg-matcha-50/70 dark:bg-matcha-900/25 border-matcha-400 text-ink-700 dark:text-sage-100'
+                        : 'bg-rice-paper-100/70 dark:bg-tea-slate-300/60 border-rice-paper-400/60 dark:border-tea-slate-50/40 text-ink-600 dark:text-sage-200 hover:border-matcha-400/60'
+
+              const badgeTone = isCorrectSelection
+                ? 'bg-matcha-600 dark:bg-matcha-500 text-white'
+                : isMissedCorrect
+                  ? 'bg-matcha-200/90 dark:bg-matcha-800 text-matcha-800 dark:text-matcha-200'
+                  : isWrongSelection
+                    ? 'bg-earth-rust text-white'
+                    : 'bg-rice-paper-200 dark:bg-tea-slate-100 text-ink-600 dark:text-sage-300'
+
+              const statusLabel = isCorrectSelection
+                ? 'Your answer · Correct'
+                : isMissedCorrect
+                  ? isMulti
+                    ? 'Missed · Correct answer'
+                    : 'Correct answer'
+                  : isWrongSelection
+                    ? 'Your answer · Incorrect'
+                    : null
 
               return (
                 <button
                   key={opt.id}
                   type="button"
                   disabled={Boolean(graded)}
-                  onClick={() =>
-                    toggleOption(
-                      currentQ.questionId,
-                      opt.id,
-                      currentQ.questionType === 'multi_select'
-                    )
-                  }
+                  aria-pressed={!graded ? selected : undefined}
+                  onClick={() => toggleOption(currentQ.questionId, opt.id, isMulti)}
                   className={[
                     'w-full text-left rounded-zen px-4 py-3 border text-[0.9rem]',
                     'transition-colors duration-150 motion-reduce:transition-none',
-                    isCorrectOption
-                      ? 'bg-matcha-50/90 dark:bg-matcha-900/35 border-matcha-500/80 text-ink-700 dark:text-sage-100'
-                      : isWrongSelection
-                        ? 'bg-rose-50/70 dark:bg-rose-950/30 border-earth-rust/60 text-ink-700 dark:text-sage-100'
-                        : selected
-                          ? 'bg-matcha-50/60 dark:bg-matcha-900/20 border-matcha-400 text-ink-700 dark:text-sage-100'
-                          : 'bg-rice-paper-100/70 dark:bg-tea-slate-300/60 border-rice-paper-400/60 dark:border-tea-slate-50/40 text-ink-600 dark:text-sage-200 hover:border-matcha-400/60',
+                    cardTone,
                   ].join(' ')}
                 >
                   <div className="flex items-start gap-2.5">
-                    <span className="font-mono text-xs font-semibold px-1.5 py-0.5 rounded bg-rice-paper-200 dark:bg-tea-slate-100 text-ink-600 dark:text-sage-300 shrink-0 mt-0.5">
+                    <span
+                      className={[
+                        'font-mono text-xs font-semibold px-1.5 py-0.5 rounded shrink-0 mt-0.5',
+                        'transition-colors duration-150 motion-reduce:transition-none',
+                        badgeTone,
+                      ].join(' ')}
+                    >
                       {opt.id}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <StudyRichText
-                        text={opt.text}
-                        imageRefs={currentQ.imageRefs}
-                        placement="option"
-                        optionId={opt.id}
-                      />
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="flex-1 min-w-[12rem]">
+                          <StudyRichText
+                            text={opt.text}
+                            imageRefs={currentQ.imageRefs}
+                            placement="option"
+                            optionId={opt.id}
+                          />
+                        </div>
+                        {statusLabel && (
+                          <span
+                            className={[
+                              'inline-flex items-center gap-1 text-[0.72rem] font-medium tracking-wide shrink-0 mt-0.5 animate-study-feedback',
+                              isWrongSelection
+                                ? 'text-[#7A4932] dark:text-[#E2BBA2]'
+                                : 'text-matcha-700 dark:text-matcha-200',
+                            ].join(' ')}
+                          >
+                            {isWrongSelection ? (
+                              <FeedbackCrossIcon className="w-3.5 h-3.5 shrink-0" />
+                            ) : (
+                              <FeedbackCheckIcon className="w-3.5 h-3.5 shrink-0" />
+                            )}
+                            <span>{statusLabel}</span>
+                          </span>
+                        )}
+                      </div>
                       {fb && (
-                        <div className="mt-2 pt-2 border-t border-rice-paper-400/50 dark:border-tea-slate-50/30 text-xs text-ink-500 dark:text-sage-400">
+                        <div className="mt-2 pt-2 border-t border-rice-paper-400/50 dark:border-tea-slate-50/30 text-xs text-ink-500 dark:text-sage-400 animate-study-feedback">
                           <StudyRichText
                             text={fb.feedback}
                             imageRefs={currentQ.imageRefs}
@@ -299,30 +386,59 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
           </div>
 
           {/* Feedback & Explanation */}
-          {results[currentQ.questionId] && (
-            <div className="pt-4 border-t border-rice-paper-400/70 dark:border-tea-slate-50/50 space-y-3">
-              <p
-                className={`text-sm font-medium m-0 ${
-                  results[currentQ.questionId].isCorrect
-                    ? 'text-matcha-700 dark:text-matcha-300'
-                    : 'text-earth-rust dark:text-rose-300'
-                }`}
+          {results[currentQ.questionId] && (() => {
+            const graded = results[currentQ.questionId]
+            return (
+              <div
+                aria-live="polite"
+                className={[
+                  'rounded-zen border border-l-[3px] p-4 sm:p-5 space-y-3 animate-study-feedback',
+                  graded.isCorrect
+                    ? 'bg-matcha-50/90 dark:bg-matcha-900/30 border-matcha-400/60 dark:border-matcha-600/50 border-l-matcha-500 dark:border-l-matcha-400'
+                    : 'bg-earth-rust/[0.07] dark:bg-earth-rust/[0.15] border-earth-rust/40 dark:border-earth-rust/50 border-l-earth-rust',
+                ].join(' ')}
               >
-                {results[currentQ.questionId].isCorrect
-                  ? 'Correct'
-                  : `Incorrect — Correct answer: ${results[currentQ.questionId].correctOptionIds.join(', ')}`}
-              </p>
-              {results[currentQ.questionId].explanation && (
-                <div className="rounded-zen p-4 bg-rice-paper-200/55 dark:bg-tea-slate-300/55 border border-rice-paper-400/50 dark:border-tea-slate-50/40 text-[0.88rem] leading-relaxed">
-                  <StudyRichText
-                    text={results[currentQ.questionId].explanation}
-                    imageRefs={currentQ.imageRefs}
-                    placement="explanation"
-                  />
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div
+                    className={[
+                      'inline-flex items-center gap-1.5 text-sm font-semibold',
+                      graded.isCorrect
+                        ? 'text-matcha-700 dark:text-matcha-200'
+                        : 'text-[#7A4932] dark:text-[#E2BBA2]',
+                    ].join(' ')}
+                  >
+                    {graded.isCorrect ? (
+                      <FeedbackCheckIcon className="w-4 h-4 shrink-0" />
+                    ) : (
+                      <FeedbackCrossIcon className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>{graded.isCorrect ? 'Correct' : 'Incorrect'}</span>
+                  </div>
+                  {!graded.isCorrect && (
+                    <span className="text-xs font-medium text-ink-600 dark:text-sage-200">
+                      Correct answer:{' '}
+                      <span className="font-mono font-semibold text-matcha-700 dark:text-matcha-200">
+                        {graded.correctOptionIds.join(', ')}
+                      </span>
+                    </span>
+                  )}
                 </div>
-              )}
-            </div>
-          )}
+
+                {graded.explanation && (
+                  <div className="pt-3 border-t border-rice-paper-400/70 dark:border-tea-slate-50/40 text-[0.88rem] leading-relaxed text-ink-700 dark:text-sage-200">
+                    <p className="text-[0.72rem] uppercase tracking-wider font-medium text-ink-400 dark:text-sage-400 mt-0 mb-2">
+                      Explanation
+                    </p>
+                    <StudyRichText
+                      text={graded.explanation}
+                      imageRefs={currentQ.imageRefs}
+                      placement="explanation"
+                    />
+                  </div>
+                )}
+              </div>
+            )
+          })()}
 
           {/* Footer Navigation */}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
