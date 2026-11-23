@@ -278,11 +278,10 @@ export async function getRecallQueue(
     stateByQuestion.set(st.questionId, st)
   }
 
-  const allQuestions: StudyQuestion[] = []
-  for (const exam of exams) {
-    const qs = await repos.questions.listByExamId(exam.examId, { status: 'published' })
-    allQuestions.push(...qs)
-  }
+  const questionLists = await Promise.all(
+    exams.map((exam) => repos.questions.listByExamId(exam.examId, { status: 'published' }))
+  )
+  const allQuestions: StudyQuestion[] = questionLists.flat()
 
   const dueEntries: Array<{ question: (typeof allQuestions)[number]; state: FsrsCardState; dueMs: number }> = []
   const newEntries: Array<{ question: (typeof allQuestions)[number] }> = []
@@ -387,8 +386,13 @@ export async function submitRecallReview(
   return withCardLock(cardKey, async () => {
     const nowIso = input.nowIso || new Date().toISOString()
 
-    // 1. Idempotency + conflict check + partial-failure reconciliation
-    const existingEvent = await repos.reviewEvents.findByEventId(input.eventId)
+    // 1. Fetch existingEvent, question (usually <1ms from published cache), and storedState together
+    const [existingEvent, question, storedState] = await Promise.all([
+      repos.reviewEvents.findByEventId(input.eventId),
+      repos.questions.findByQuestionId(input.questionId),
+      repos.cardStates.findByUserAndQuestion(input.userId, input.questionId),
+    ])
+
     if (existingEvent) {
       if (existingEvent.userId !== input.userId) {
         throw new EventIdConflictError(input.eventId, 'event belongs to another user')
@@ -404,7 +408,9 @@ export async function submitRecallReview(
       }
 
       const [existingState, latestEvent] = await Promise.all([
-        repos.cardStates.findByUserAndQuestion(input.userId, existingEvent.questionId),
+        existingEvent.questionId === input.questionId
+          ? Promise.resolve(storedState)
+          : repos.cardStates.findByUserAndQuestion(input.userId, existingEvent.questionId),
         repos.reviewEvents.findLatestByUserAndQuestion(input.userId, existingEvent.questionId),
       ])
 
@@ -450,16 +456,11 @@ export async function submitRecallReview(
     }
 
     // 2. Verify question exists and is published
-    const question = await repos.questions.findByQuestionId(input.questionId)
     if (!question || question.status !== 'published') {
       throw new Error('Question not found or unavailable')
     }
 
-    // 3. Load current user-scoped card state & recover from latest question-level event if missing/stale
-    const storedState = await repos.cardStates.findByUserAndQuestion(
-      input.userId,
-      input.questionId
-    )
+    // 3. Check optimistic concurrency & recover from latest question-level event if missing
     const currentRevision = storedState?.revision ?? 0
 
     if (
@@ -513,7 +514,10 @@ export async function submitRecallReview(
       parametersVersion: scheduled.parametersVersion,
     }
 
-    const appended = await repos.reviewEvents.appendIfNotExists(reviewEvent)
+    // We already verified `existingEvent === null` inside `withCardLock`, so skip the redundant Notion query
+    const appended = await repos.reviewEvents.appendIfNotExists(reviewEvent, {
+      skipExistenceCheck: true,
+    })
     if (!appended.created) {
       if (
         appended.event.userId !== input.userId ||

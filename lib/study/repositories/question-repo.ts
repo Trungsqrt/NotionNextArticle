@@ -11,14 +11,24 @@ import {
   mapNotionPageToStudyQuestion,
   mapStudyQuestionToNotionProperties,
 } from './mappers'
+import {
+  getCachedPublishedQuestion,
+  setCachedPublishedQuestion,
+  getCachedPublishedQuestionsByExam,
+  setCachedPublishedQuestionsByExam,
+  invalidateCachedQuestion,
+} from '../cache/content-cache'
 
 // Notion compound `or` filters support at most 100 conditions; chunk safely at 50
 const QUESTION_ID_QUERY_CHUNK_SIZE = 50
 
 export function createNotionQuestionBankRepository(
   client: StudyNotionClient,
-  databaseId: string
+  databaseId: string,
+  repoOptions?: { useContentCache?: boolean }
 ): QuestionBankRepository {
+  const useCache = Boolean(repoOptions?.useContentCache)
+
   async function findPageByQuestionId(questionId: string) {
     const pages = await client.queryDatabaseAll(databaseId, {
       filter: {
@@ -33,18 +43,35 @@ export function createNotionQuestionBankRepository(
 
   return {
     async findByQuestionId(questionId: string): Promise<StudyQuestion | null> {
-      const page = await findPageByQuestionId(questionId)
-      return page ? mapNotionPageToStudyQuestion(page) : null
+      const cleanId = questionId.trim()
+      if (useCache) {
+        const cached = getCachedPublishedQuestion(cleanId)
+        if (cached) return cached
+      }
+
+      const page = await findPageByQuestionId(cleanId)
+      if (!page) return null
+      const mapped = mapNotionPageToStudyQuestion(page)
+      if (useCache && mapped.status === 'published') {
+        setCachedPublishedQuestion(mapped)
+      }
+      return mapped
     },
 
     async listByExamId(
       examId: string,
       options?: { status?: QuestionStatus }
     ): Promise<StudyQuestion[]> {
+      const cleanExamId = examId.trim()
+      if (useCache && options?.status === 'published') {
+        const cached = getCachedPublishedQuestionsByExam(cleanExamId)
+        if (cached) return cached
+      }
+
       const filters: Array<Record<string, unknown>> = [
         {
           property: QUESTION_PROPS.examId,
-          rich_text: { equals: examId.trim() },
+          rich_text: { equals: cleanExamId },
         },
       ]
 
@@ -61,7 +88,11 @@ export function createNotionQuestionBankRepository(
         sorts: [{ property: QUESTION_PROPS.questionId, direction: 'ascending' }],
       })
 
-      return pages.map(mapNotionPageToStudyQuestion)
+      const mapped = pages.map(mapNotionPageToStudyQuestion)
+      if (useCache && options?.status === 'published') {
+        setCachedPublishedQuestionsByExam(cleanExamId, mapped)
+      }
+      return mapped
     },
 
     async listByQuestionIds(questionIds: string[]): Promise<StudyQuestion[]> {
@@ -69,8 +100,20 @@ export function createNotionQuestionBankRepository(
       if (uniqueIds.length === 0) return []
 
       const results: StudyQuestion[] = []
-      for (let i = 0; i < uniqueIds.length; i += QUESTION_ID_QUERY_CHUNK_SIZE) {
-        const slice = uniqueIds.slice(i, i + QUESTION_ID_QUERY_CHUNK_SIZE)
+      const missingIds: string[] = []
+
+      if (useCache) {
+        for (const id of uniqueIds) {
+          const cached = getCachedPublishedQuestion(id)
+          if (cached) results.push(cached)
+          else missingIds.push(id)
+        }
+      } else {
+        missingIds.push(...uniqueIds)
+      }
+
+      for (let i = 0; i < missingIds.length; i += QUESTION_ID_QUERY_CHUNK_SIZE) {
+        const slice = missingIds.slice(i, i + QUESTION_ID_QUERY_CHUNK_SIZE)
         const filter =
           slice.length === 1
             ? { property: QUESTION_PROPS.questionId, title: { equals: slice[0] } }
@@ -83,7 +126,11 @@ export function createNotionQuestionBankRepository(
 
         const pages = await client.queryDatabaseAll(databaseId, { filter })
         for (const page of pages) {
-          results.push(mapNotionPageToStudyQuestion(page))
+          const mapped = mapNotionPageToStudyQuestion(page)
+          if (useCache && mapped.status === 'published') {
+            setCachedPublishedQuestion(mapped)
+          }
+          results.push(mapped)
         }
       }
 
@@ -99,7 +146,14 @@ export function createNotionQuestionBankRepository(
         ? await client.updatePage(existing.id, properties)
         : await client.createPage(databaseId, properties)
 
-      return mapNotionPageToStudyQuestion(saved)
+      const mapped = mapNotionPageToStudyQuestion(saved)
+      if (useCache) {
+        invalidateCachedQuestion(mapped.questionId, mapped.examId)
+        if (mapped.status === 'published') {
+          setCachedPublishedQuestion(mapped)
+        }
+      }
+      return mapped
     },
   }
 }
