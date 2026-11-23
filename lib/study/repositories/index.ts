@@ -27,12 +27,14 @@ export interface StudyRepositories {
 
 export function createNotionStudyRepositories(
   client: StudyNotionClient = getDefaultStudyNotionClient(),
-  config: StudyNotionConfig = getStudyNotionConfig()
+  config: StudyNotionConfig = getStudyNotionConfig(),
+  options?: { useContentCache?: boolean }
 ): StudyRepositories {
+  const useContentCache = options?.useContentCache ?? true
   return {
     users: createNotionStudyUserRepository(client, config.usersDbId),
-    exams: createNotionExamCollectionRepository(client, config.examsDbId),
-    questions: createNotionQuestionBankRepository(client, config.questionsDbId),
+    exams: createNotionExamCollectionRepository(client, config.examsDbId, { useContentCache }),
+    questions: createNotionQuestionBankRepository(client, config.questionsDbId, { useContentCache }),
     cardStates: createNotionFsrsCardStateRepository(client, config.cardStatesDbId),
     reviewEvents: createNotionReviewEventRepository(client, config.reviewEventsDbId),
   }

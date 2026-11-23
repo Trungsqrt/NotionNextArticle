@@ -20,10 +20,12 @@ export async function getPracticeExamPayload(
   examId: string,
   repos: StudyRepositories
 ): Promise<PracticeExamPayload | null> {
-  const exam = await repos.exams.findByExamId(examId)
+  const [exam, questions] = await Promise.all([
+    repos.exams.findByExamId(examId),
+    repos.questions.listByExamId(examId, { status: 'published' }),
+  ])
   if (!exam || exam.status !== 'published') return null
 
-  const questions = await repos.questions.listByExamId(exam.examId, { status: 'published' })
   return {
     exam,
     questions: questions.map(toQuestionPrompt),

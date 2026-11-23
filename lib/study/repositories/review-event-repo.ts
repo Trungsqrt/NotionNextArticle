@@ -83,13 +83,18 @@ export function createNotionReviewEventRepository(
       return limit ? mapped.slice(0, limit) : mapped
     },
 
-    async appendIfNotExists(event: ReviewEvent): Promise<AppendReviewEventResult> {
+    async appendIfNotExists(
+      event: ReviewEvent,
+      options?: { skipExistenceCheck?: boolean }
+    ): Promise<AppendReviewEventResult> {
       const valid = reviewEventSchema.parse(event)
-      const existing = await findPageByEventId(valid.eventId)
-      if (existing) {
-        return {
-          event: mapNotionPageToReviewEvent(existing),
-          created: false,
+      if (!options?.skipExistenceCheck) {
+        const existing = await findPageByEventId(valid.eventId)
+        if (existing) {
+          return {
+            event: mapNotionPageToReviewEvent(existing),
+            created: false,
+          }
         }
       }
 

@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test'
+import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import type {
   StudyNotionClient,
@@ -10,6 +10,11 @@ import {
   ConcurrencyConflictError,
   fromChunkedRichText,
 } from '../../lib/study/repositories'
+import {
+  clearStudyContentCache,
+  getCachedPublishedQuestion,
+  setCachedPublishedQuestion,
+} from '../../lib/study/cache/content-cache'
 import type { StudyNotionConfig } from '../../lib/study/config'
 import {
   SYNTHETIC_USER,
@@ -137,6 +142,10 @@ const TEST_CONFIG: StudyNotionConfig = {
 }
 
 describe('Study System Notion repositories', () => {
+  beforeEach(() => {
+    clearStudyContentCache()
+  })
+
   it('upserts and finds StudyUser by normalized username without duplicates', async () => {
     const client = createInMemoryStudyNotionClient()
     const repos = createNotionStudyRepositories(client, TEST_CONFIG)
@@ -224,5 +233,59 @@ describe('Study System Notion repositories', () => {
 
     const history = await repos.reviewEvents.listByUser(SYNTHETIC_USER.userId, { limit: 10 })
     assert.equal(history.length, 1)
+  })
+
+  it('caches published questions/exams with TTL, skips Notion on warm hits, never caches drafts, and invalidates on upsert', async () => {
+    const baseClient = createInMemoryStudyNotionClient()
+    let queryCount = 0
+    const countedClient: StudyNotionClient = {
+      async queryDatabaseAll(dbId, opts) {
+        queryCount += 1
+        return baseClient.queryDatabaseAll(dbId, opts)
+      },
+      createPage: baseClient.createPage,
+      updatePage: baseClient.updatePage,
+      retrievePage: baseClient.retrievePage,
+    }
+    const repos = createNotionStudyRepositories(countedClient, TEST_CONFIG)
+
+    await repos.exams.upsert(SYNTHETIC_EXAM)
+    await repos.questions.upsert(SYNTHETIC_SINGLE_CHOICE_QUESTION)
+    await repos.questions.upsert({
+      ...SYNTHETIC_MULTI_SELECT_QUESTION,
+      questionId: 'q-draft-only',
+      status: 'draft',
+    })
+
+    // Draft question must NEVER be cached
+    assert.equal(getCachedPublishedQuestion('q-draft-only'), null)
+
+    // Cold listByExamId hits Notion once and warms individual questionById cache
+    clearStudyContentCache()
+    queryCount = 0
+    const list1 = await repos.questions.listByExamId('exam-synth-01', { status: 'published' })
+    assert.equal(list1.length, 1)
+    assert.equal(queryCount, 1)
+
+    // Warm listByExamId & findByQuestionId make ZERO Notion queries
+    const list2 = await repos.questions.listByExamId('exam-synth-01', { status: 'published' })
+    const qHit = await repos.questions.findByQuestionId('q-synth-001')
+    assert.equal(list2.length, 1)
+    assert.ok(qHit && qHit.questionId === 'q-synth-001')
+    assert.equal(queryCount, 1)
+
+    // Upsert invalidates cached exam list and updates cached question
+    await repos.questions.upsert({
+      ...SYNTHETIC_SINGLE_CHOICE_QUESTION,
+      explanation: 'Updated explanation after edit',
+    })
+    const afterUpdate = await repos.questions.findByQuestionId('q-synth-001')
+    assert.equal(afterUpdate?.explanation, 'Updated explanation after edit')
+
+    // TTL expiration evicts stale entry
+    const t0 = 1_700_000_000_000
+    setCachedPublishedQuestion(SYNTHETIC_SINGLE_CHOICE_QUESTION, t0)
+    assert.ok(getCachedPublishedQuestion('q-synth-001', t0 + 1000))
+    assert.equal(getCachedPublishedQuestion('q-synth-001', t0 + 10 * 60 * 1000), null)
   })
 })

@@ -11,11 +11,21 @@ import {
   mapNotionPageToExamCollection,
   mapExamCollectionToNotionProperties,
 } from './mappers'
+import {
+  getCachedPublishedExam,
+  setCachedPublishedExam,
+  getCachedPublishedExamsList,
+  setCachedPublishedExamsList,
+  invalidateCachedExam,
+} from '../cache/content-cache'
 
 export function createNotionExamCollectionRepository(
   client: StudyNotionClient,
-  databaseId: string
+  databaseId: string,
+  repoOptions?: { useContentCache?: boolean }
 ): ExamCollectionRepository {
+  const useCache = Boolean(repoOptions?.useContentCache)
+
   async function findPageByExamId(examId: string) {
     const pages = await client.queryDatabaseAll(databaseId, {
       filter: {
@@ -30,11 +40,26 @@ export function createNotionExamCollectionRepository(
 
   return {
     async findByExamId(examId: string): Promise<ExamCollection | null> {
-      const page = await findPageByExamId(examId)
-      return page ? mapNotionPageToExamCollection(page) : null
+      const cleanId = examId.trim()
+      if (useCache) {
+        const cached = getCachedPublishedExam(cleanId)
+        if (cached) return cached
+      }
+      const page = await findPageByExamId(cleanId)
+      if (!page) return null
+      const mapped = mapNotionPageToExamCollection(page)
+      if (useCache && mapped.status === 'published') {
+        setCachedPublishedExam(mapped)
+      }
+      return mapped
     },
 
     async list(options?: { status?: ExamCollectionStatus }): Promise<ExamCollection[]> {
+      if (useCache && options?.status === 'published') {
+        const cached = getCachedPublishedExamsList()
+        if (cached) return cached
+      }
+
       const filter = options?.status
         ? {
             property: EXAM_PROPS.status,
@@ -47,7 +72,11 @@ export function createNotionExamCollectionRepository(
         sorts: [{ property: EXAM_PROPS.examId, direction: 'ascending' }],
       })
 
-      return pages.map(mapNotionPageToExamCollection)
+      const mapped = pages.map(mapNotionPageToExamCollection)
+      if (useCache && options?.status === 'published') {
+        setCachedPublishedExamsList(mapped)
+      }
+      return mapped
     },
 
     async upsert(exam: ExamCollection): Promise<ExamCollection> {
@@ -59,7 +88,14 @@ export function createNotionExamCollectionRepository(
         ? await client.updatePage(existing.id, properties)
         : await client.createPage(databaseId, properties)
 
-      return mapNotionPageToExamCollection(saved)
+      const mapped = mapNotionPageToExamCollection(saved)
+      if (useCache) {
+        invalidateCachedExam(mapped.examId)
+        if (mapped.status === 'published') {
+          setCachedPublishedExam(mapped)
+        }
+      }
+      return mapped
     },
   }
 }

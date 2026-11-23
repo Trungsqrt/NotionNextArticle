@@ -21,7 +21,8 @@ import {
 export const STUDY_COOKIE_NAME_PROD = '__Host-study_session'
 export const STUDY_COOKIE_NAME_DEV = 'study_session'
 
-const USER_STATUS_CACHE_TTL_MS = 30 * 1000 // 30s bounded cache for session re-validation
+const USER_STATUS_CACHE_TTL_MS = 60 * 1000 // 60s bounded cache for session re-validation (immediately evicted on revoke)
+const USER_STATUS_CACHE_MAX_ENTRIES = 100
 
 interface CachedUserEntry {
   user: StudyUser | null
@@ -187,6 +188,10 @@ export async function validateStudySessionToken(
     user = cached.user
   } else {
     user = await deps.userRepo.findByUserId(payload.sub)
+    if (cache.size >= USER_STATUS_CACHE_MAX_ENTRIES && !cache.has(payload.sub)) {
+      const oldestKey = cache.keys().next().value
+      if (oldestKey !== undefined) cache.delete(oldestKey)
+    }
     cache.set(payload.sub, { user, cachedAt: Date.now() })
   }
 

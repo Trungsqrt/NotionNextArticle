@@ -98,5 +98,8 @@ export interface ReviewEventRepository {
    * Append-only idempotent write: if an event with the same eventId already
    * exists, returns { event: existing, created: false } without duplicating.
    */
-  appendIfNotExists(event: ReviewEvent): Promise<AppendReviewEventResult>
+  appendIfNotExists(
+    event: ReviewEvent,
+    options?: { skipExistenceCheck?: boolean }
+  ): Promise<AppendReviewEventResult>
 }
