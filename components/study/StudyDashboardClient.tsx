@@ -1,8 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import Link from 'next/link'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { StudyDashboardData } from '../../lib/study/services/dashboard-service'
+import { StudyLink } from './StudyNavigationContext'
+import { StudyDashboardSkeleton, ZenPendingDot } from './StudySkeletons'
+
+type DashboardStatus = 'loading' | 'refreshing' | 'error' | 'loaded'
 
 function StatCard({
   label,
@@ -53,91 +56,135 @@ function formatShortDate(iso: string): string {
 
 export default function StudyDashboardClient() {
   const [data, setData] = useState<StudyDashboardData | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [status, setStatus] = useState<DashboardStatus>('loading')
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    let active = true
-    async function load() {
-      setLoading(true)
-      setError('')
-      try {
-        const res = await fetch('/api/study/dashboard', { cache: 'no-store' })
-        if (!res.ok) {
-          throw new Error('Unable to load your study progress.')
-        }
-        const json = (await res.json()) as StudyDashboardData
-        if (active) setData(json)
-      } catch (err) {
-        if (active) {
-          setError(err instanceof Error ? err.message : 'Unable to load dashboard.')
-        }
-      } finally {
-        if (active) setLoading(false)
+  const dataRef = useRef<StudyDashboardData | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const seqRef = useRef(0)
+
+  const loadDashboard = useCallback(async () => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    const seq = ++seqRef.current
+
+    setStatus(dataRef.current ? 'refreshing' : 'loading')
+    setError('')
+
+    try {
+      const res = await fetch('/api/study/dashboard', {
+        cache: 'no-store',
+        signal: controller.signal,
+      })
+      if (!res.ok) {
+        throw new Error('Unable to load your study progress.')
       }
-    }
-    load()
-    return () => {
-      active = false
+      const json = (await res.json()) as StudyDashboardData
+      if (seq !== seqRef.current) return
+      dataRef.current = json
+      setData(json)
+      setStatus('loaded')
+    } catch (err) {
+      if (controller.signal.aborted || seq !== seqRef.current) return
+      setError(err instanceof Error ? err.message : 'Unable to load dashboard.')
+      setStatus(dataRef.current ? 'loaded' : 'error')
     }
   }, [])
 
-  if (loading) {
-    return (
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 space-y-6" aria-busy="true">
-        <div className="h-8 w-56 rounded-zen bg-rice-paper-300/70 dark:bg-tea-slate-200/70" />
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((n) => (
-            <div
-              key={n}
-              className="h-28 rounded-card bg-rice-paper-200/70 dark:bg-tea-slate-200/50 border border-rice-paper-400/50 dark:border-tea-slate-50/30"
-            />
-          ))}
-        </div>
-      </div>
-    )
+  useEffect(() => {
+    loadDashboard()
+    return () => {
+      abortRef.current?.abort()
+      seqRef.current += 1
+    }
+  }, [loadDashboard])
+
+  if (status === 'loading' && !data) {
+    return <StudyDashboardSkeleton />
   }
 
-  if (error || !data) {
+  if (status === 'error' || !data) {
     return (
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 animate-study-feedback">
         <div
           role="alert"
-          className="rounded-card p-6 bg-rose-50/70 dark:bg-rose-950/30 border border-earth-rust/40 dark:border-rose-400/40 text-earth-rust dark:text-rose-200 text-sm"
+          className="rounded-card p-6 bg-rose-50/70 dark:bg-rose-950/30 border border-earth-rust/40 dark:border-rose-400/40 text-earth-rust dark:text-rose-200 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4"
         >
-          {error || 'Dashboard data is currently unavailable.'}
+          <span>{error || 'Dashboard data is currently unavailable.'}</span>
+          <button
+            type="button"
+            onClick={loadDashboard}
+            className="self-start sm:self-auto px-4 py-2 rounded-zen text-xs font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 dark:border-rose-400/40 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none shrink-0"
+          >
+            Try Again
+          </button>
         </div>
       </div>
     )
   }
 
+  const isRefreshing = status === 'refreshing'
+
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 space-y-10">
+    <div
+      className="max-w-5xl mx-auto px-4 sm:px-6 py-10 space-y-10 animate-study-feedback"
+      aria-busy={isRefreshing || undefined}
+    >
       {/* ── Top Heading + Primary CTA ── */}
       <section className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <h1 className="font-serif font-medium text-2xl sm:text-3xl text-ink-700 dark:text-sage-100 m-0">
-            Study Overview
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="font-serif font-medium text-2xl sm:text-3xl text-ink-700 dark:text-sage-100 m-0">
+              Study Overview
+            </h1>
+            {isRefreshing && (
+              <span
+                role="status"
+                aria-live="polite"
+                className="inline-flex items-center gap-1.5 text-xs text-matcha-600 dark:text-matcha-400"
+              >
+                <ZenPendingDot />
+                Refreshing…
+              </span>
+            )}
+          </div>
           <p className="text-[0.9rem] text-ink-500 dark:text-sage-400 mt-1.5 mb-0">
             FSRS-6 spaced repetition (90% target retention), calm active recall, and CSA mock exams.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
-          <Link
+          <StudyLink
             href="/study/flashcards"
             className="px-4 py-2 rounded-zen text-[0.84rem] font-medium bg-matcha-500 hover:bg-matcha-600 dark:bg-matcha-600 dark:hover:bg-matcha-500 text-white shadow-zen-sm no-underline transition-colors duration-200 motion-reduce:transition-none"
           >
             Start Active Recall
-          </Link>
-          <Link
+          </StudyLink>
+          <StudyLink
             href="/study/exams"
             className="px-4 py-2 rounded-zen text-[0.84rem] font-medium text-ink-700 dark:text-sage-200 bg-rice-paper-50 dark:bg-tea-slate-200 border border-rice-paper-400/80 dark:border-tea-slate-50/60 hover:border-matcha-400/70 no-underline transition-colors duration-200 motion-reduce:transition-none"
           >
             Take Mock Exam
-          </Link>
+          </StudyLink>
         </div>
       </section>
+
+      {error && (
+        <div
+          role="alert"
+          className="rounded-zen px-4 py-3 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 dark:border-rose-400/40 text-sm text-earth-rust dark:text-rose-200 flex items-center justify-between gap-3"
+        >
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={loadDashboard}
+            disabled={isRefreshing}
+            className="px-3 py-1 rounded-zen text-xs font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 dark:border-rose-400/40 disabled:opacity-50 shrink-0"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* ── Core Metrics ── */}
       <section aria-label="Study metrics" className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -230,24 +277,24 @@ export default function StudyDashboardClient() {
                       <strong className="text-ink-600 dark:text-sage-200">{exam.masteredCount}</strong>
                     </span>
                     <div className="flex items-center gap-3">
-                      <Link
+                      <StudyLink
                         href={`/study/flashcards?examId=${encodeURIComponent(exam.examId)}`}
                         className="text-matcha-600 dark:text-matcha-300 hover:underline no-underline font-medium"
                       >
                         Recall
-                      </Link>
-                      <Link
+                      </StudyLink>
+                      <StudyLink
                         href={`/study/practice?examId=${encodeURIComponent(exam.examId)}`}
                         className="text-ink-600 dark:text-sage-300 hover:underline no-underline"
                       >
                         Practice
-                      </Link>
-                      <Link
+                      </StudyLink>
+                      <StudyLink
                         href={`/study/exams/${encodeURIComponent(exam.examId)}`}
                         className="text-ink-600 dark:text-sage-300 hover:underline no-underline"
                       >
                         Exam
-                      </Link>
+                      </StudyLink>
                     </div>
                   </div>
                 </div>
