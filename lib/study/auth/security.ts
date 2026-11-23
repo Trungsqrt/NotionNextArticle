@@ -135,10 +135,18 @@ function getUpstashConfig(): { url: string; token: string } | null {
   return { url, token }
 }
 
+let hasWarnedMissingDistributedLimiter = false
+
 function shouldFailClosedForAuth(): boolean {
-  return (
-    process.env.NODE_ENV === 'production' &&
-    process.env.STUDY_EXTERNAL_WAF_RATE_LIMIT !== 'true'
+  return process.env.STUDY_RATE_LIMIT_FAIL_CLOSED === 'true'
+}
+
+function warnMissingDistributedLimiterOnce(): void {
+  if (hasWarnedMissingDistributedLimiter || process.env.NODE_ENV !== 'production') return
+  hasWarnedMissingDistributedLimiter = true
+  console.warn(
+    '[study-auth] UPSTASH_REDIS_REST_URL/TOKEN not configured; falling back to per-instance in-memory rate limiting. ' +
+      'Configure Upstash Redis or Vercel Firewall WAF for global login rate limiting.'
   )
 }
 
@@ -155,6 +163,7 @@ async function consumeDistributedBucket(
     if (failClosed) {
       return { allowed: false, retryAfterSec: 60, unavailable: true }
     }
+    warnMissingDistributedLimiterOnce()
     return consumeBucket(key, maxRequests, windowMs, now)
   }
 

@@ -622,21 +622,9 @@ export async function runStudyExamImport(options: {
             })
 
             if (remoteQ.questionId === q.questionId && versionMatches && hashMatches && refsMatch) {
-              let blocksLive = true
-              if (client.retrieveImageBlockUrl && item.images.length > 0) {
-                const checkedBlocks = new Set<string>()
-                for (const img of item.images) {
-                  const blockId = state.uploadedImagesByKey[img.checkpointKey]!.notionBlockId
-                  if (checkedBlocks.has(blockId)) continue
-                  checkedBlocks.add(blockId)
-                  const live = await client.retrieveImageBlockUrl(blockId)
-                  if (!live?.url) {
-                    blocksLive = false
-                    break
-                  }
-                }
-              }
-              remoteValid = blocksLive
+              // Normal runs verify page existence, content version/hash, and imageRefs metadata
+              // in 1 Notion call; per-block image liveness checks run in `--repair` mode.
+              remoteValid = true
             }
           }
         } catch {
@@ -734,7 +722,7 @@ export async function runStudyExamImport(options: {
         let cached: UploadedImageCheckpoint | undefined =
           state.uploadedImagesByKey[img.checkpointKey]
 
-        if (cached?.notionBlockId && client.retrieveImageBlockUrl) {
+        if (cached?.notionBlockId && repairMode && client.retrieveImageBlockUrl) {
           try {
             const liveBlock = await client.retrieveImageBlockUrl(cached.notionBlockId)
             if (!liveBlock?.url) {

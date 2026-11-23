@@ -416,9 +416,17 @@ describe('Study Authz, CSRF, Rate Limiting, Proxy & SEO Isolation', () => {
       assert.equal(failedClosed.allowed, false)
       assert.equal(failedClosed.unavailable, true)
 
-      // Fail-closed behavior when Upstash env vars are missing in production
+      // Without STUDY_RATE_LIMIT_FAIL_CLOSED=true, unconfigured Upstash falls back cleanly so login is not locked out
       delete process.env.UPSTASH_REDIS_REST_URL
       delete process.env.UPSTASH_REDIS_REST_TOKEN
+      const fallbackAllowed = await checkLoginRateLimitAsync(
+        '198.51.100.3',
+        'student.prod',
+        Date.now()
+      )
+      assert.equal(fallbackAllowed.allowed, true)
+
+      // Opt-in fail-closed behavior when Upstash env vars are missing
       const unconfiguredClosed = await checkLoginRateLimitAsync(
         '198.51.100.3',
         'student.prod',

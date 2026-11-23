@@ -110,6 +110,8 @@ async function withCardLock<T>(cardKey: string, task: () => Promise<T>): Promise
     const maxAttempts = 5
     let acquired = false
 
+    let redisReachable = true
+
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         const res = await fetch(`${upstash.url}/pipeline`, {
@@ -128,17 +130,17 @@ async function withCardLock<T>(cardKey: string, task: () => Promise<T>): Promise
             break
           }
         } else {
-          // Redis returned non-2xx; stop retrying lock acquisition and let optimistic revision guard run
+          redisReachable = false
           break
         }
       } catch {
-        // Redis transiently unreachable; fall through to optimistic revision guard
+        redisReachable = false
         break
       }
       await sleep(50 * (attempt + 1))
     }
 
-    if (!acquired && (await isRemoteLockHeld(upstash, lockKey))) {
+    if (!acquired && redisReachable) {
       throw new ConcurrencyConflictError(cardKey, -1, -1)
     }
 
@@ -162,28 +164,6 @@ async function withCardLock<T>(cardKey: string, task: () => Promise<T>): Promise
       }
     }
   })
-}
-
-async function isRemoteLockHeld(
-  upstash: { url: string; token: string },
-  lockKey: string
-): Promise<boolean> {
-  try {
-    const res = await fetch(`${upstash.url}/pipeline`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${upstash.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify([['EXISTS', lockKey]]),
-      signal: AbortSignal.timeout(2000),
-    })
-    if (!res.ok) return false
-    const payload = (await res.json()) as Array<{ result?: unknown }>
-    return Number(payload?.[0]?.result) === 1
-  } catch {
-    return false
-  }
 }
 
 function isStateStaleRelativeToEvent(
