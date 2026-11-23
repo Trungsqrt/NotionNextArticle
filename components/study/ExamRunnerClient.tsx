@@ -1,12 +1,13 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import Link from 'next/link'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type {
   StartedExamSession,
   GradedExamResult,
 } from '../../lib/study/services/exam-service'
 import StudyRichText from './StudyRichText'
+import { StudyLink } from './StudyNavigationContext'
+import { ExamRunnerSkeleton, ZenPendingDot } from './StudySkeletons'
 
 function formatTimer(seconds: number): string {
   const safe = Math.max(0, seconds)
@@ -27,21 +28,38 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
   const [flagged, setFlagged] = useState<Record<string, boolean>>({})
   const [remainingSeconds, setRemainingSeconds] = useState(0)
 
+  const startAbortRef = useRef<AbortController | null>(null)
+  const startSeqRef = useRef(0)
+  const submitAbortRef = useRef<AbortController | null>(null)
+  const submitLockRef = useRef(false)
+
   const startExam = useCallback(async () => {
+    startAbortRef.current?.abort()
+    submitAbortRef.current?.abort()
+    submitLockRef.current = false
+    setSubmitting(false)
+
+    const controller = new AbortController()
+    startAbortRef.current = controller
+    const seq = ++startSeqRef.current
+
     setLoading(true)
     setError('')
     setResult(null)
     setAnswers({})
     setFlagged({})
     setCurrentIdx(0)
+
     try {
       const res = await fetch('/api/study/exams/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ examId }),
+        signal: controller.signal,
       })
       if (!res.ok) throw new Error('Unable to start this exam collection.')
       const started = (await res.json()) as StartedExamSession
+      if (seq !== startSeqRef.current) return
       setSession(started)
       const diffSec = Math.max(
         0,
@@ -49,20 +67,36 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
       )
       setRemainingSeconds(diffSec)
     } catch (err) {
+      if (controller.signal.aborted || seq !== startSeqRef.current) return
       setError(err instanceof Error ? err.message : 'Failed to start exam.')
     } finally {
-      setLoading(false)
+      if (seq === startSeqRef.current) {
+        setLoading(false)
+      }
     }
   }, [examId])
 
   useEffect(() => {
     startExam()
+    return () => {
+      startAbortRef.current?.abort()
+      submitAbortRef.current?.abort()
+      startSeqRef.current += 1
+    }
   }, [startExam])
 
   const handleSubmit = useCallback(async () => {
-    if (!session || submitting || result) return
+    if (!session || submitting || submitLockRef.current || result) return
+
+    submitLockRef.current = true
+    submitAbortRef.current?.abort()
+    const controller = new AbortController()
+    submitAbortRef.current = controller
+    const startSeqAtSubmit = startSeqRef.current
+
     setSubmitting(true)
     setError('')
+
     try {
       const res = await fetch('/api/study/exams/submit', {
         method: 'POST',
@@ -71,14 +105,20 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
           examToken: session.examToken,
           answers,
         }),
+        signal: controller.signal,
       })
       if (!res.ok) throw new Error('Unable to grade exam right now.')
       const graded = (await res.json()) as GradedExamResult
+      if (startSeqAtSubmit !== startSeqRef.current) return
       setResult(graded)
     } catch (err) {
+      if (controller.signal.aborted || startSeqAtSubmit !== startSeqRef.current) return
       setError(err instanceof Error ? err.message : 'Failed to submit exam.')
     } finally {
-      setSubmitting(false)
+      if (startSeqAtSubmit === startSeqRef.current) {
+        submitLockRef.current = false
+        setSubmitting(false)
+      }
     }
   }, [session, submitting, result, answers])
 
@@ -99,12 +139,13 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
 
   // Auto-submit when timer hits zero
   useEffect(() => {
-    if (session && !result && remainingSeconds === 0 && !submitting) {
+    if (session && !result && remainingSeconds === 0 && !submitting && !submitLockRef.current) {
       handleSubmit()
     }
   }, [session, result, remainingSeconds, submitting, handleSubmit])
 
   function toggleOption(questionId: string, optionId: string, isMulti: boolean) {
+    if (submitting) return
     setAnswers((prev) => {
       const curr = prev[questionId] || []
       if (!isMulti) return { ...prev, [questionId]: [optionId] }
@@ -117,22 +158,28 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
   }
 
   if (loading) {
-    return (
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-12" aria-busy="true">
-        <div className="h-72 rounded-card bg-rice-paper-200/70 dark:bg-tea-slate-200/50 border border-rice-paper-400/50" />
-      </div>
-    )
+    return <ExamRunnerSkeleton />
   }
 
   if (error && !session) {
     return (
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-12 space-y-4">
-        <div role="alert" className="rounded-card p-6 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 text-sm text-earth-rust dark:text-rose-200">
-          {error}
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-12 space-y-4 animate-study-feedback">
+        <div
+          role="alert"
+          className="rounded-card p-6 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 dark:border-rose-400/40 text-sm text-earth-rust dark:text-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+        >
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={startExam}
+            className="self-start sm:self-auto px-4 py-2 rounded-zen text-xs font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 dark:border-rose-400/40 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none shrink-0"
+          >
+            Try Again
+          </button>
         </div>
-        <Link href="/study/exams" className="text-sm text-matcha-600 dark:text-matcha-300 no-underline hover:underline">
+        <StudyLink href="/study/exams" className="text-sm text-matcha-600 dark:text-matcha-300 no-underline hover:underline">
           ← Back to Mock Exams
-        </Link>
+        </StudyLink>
       </div>
     )
   }
@@ -140,7 +187,7 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
   // ── Post-Exam Results & Review ──
   if (result) {
     return (
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 sm:py-10 space-y-8">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 sm:py-10 space-y-8 animate-study-feedback">
         <section className="rounded-card p-6 sm:p-8 bg-rice-paper-50/95 dark:bg-tea-slate-200/70 border border-rice-paper-400/75 dark:border-tea-slate-50/50 shadow-zen-sm">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
@@ -158,16 +205,16 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
               <button
                 type="button"
                 onClick={startExam}
-                className="px-4 py-2 rounded-zen text-xs font-medium bg-matcha-500 hover:bg-matcha-600 text-white"
+                className="px-4 py-2 rounded-zen text-xs font-medium bg-matcha-500 hover:bg-matcha-600 text-white transition-colors duration-150 motion-reduce:transition-none"
               >
                 Retake Exam
               </button>
-              <Link
+              <StudyLink
                 href="/study/exams"
                 className="px-4 py-2 rounded-zen text-xs font-medium border border-rice-paper-400 dark:border-tea-slate-50/60 text-ink-600 dark:text-sage-300 no-underline"
               >
                 All Exams
-              </Link>
+              </StudyLink>
             </div>
           </div>
 
@@ -269,7 +316,7 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
   const answeredTotal = Object.values(answers).filter((a: string[]) => a.length > 0).length
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-6 animate-study-feedback">
       {/* ── Exam Top Bar ── */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-rice-paper-400/70 dark:border-tea-slate-50/50">
         <div>
@@ -291,23 +338,43 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
           <button
             type="button"
             disabled={submitting}
+            aria-busy={submitting || undefined}
             onClick={handleSubmit}
-            className="px-4 py-2 rounded-zen text-xs font-medium bg-matcha-500 hover:bg-matcha-600 text-white disabled:opacity-50"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-zen text-xs font-medium bg-matcha-500 hover:bg-matcha-600 text-white disabled:opacity-60 transition-colors duration-150 motion-reduce:transition-none"
           >
-            {submitting ? 'Grading…' : 'Submit Exam'}
+            {submitting && <ZenPendingDot />}
+            <span>{submitting ? 'Grading…' : 'Submit Exam'}</span>
           </button>
         </div>
       </div>
 
       {error && (
-        <div role="alert" className="rounded-zen px-4 py-3 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 text-sm text-earth-rust dark:text-rose-200">
-          {error}
+        <div
+          role="alert"
+          className="rounded-zen px-4 py-3 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 dark:border-rose-400/40 text-sm text-earth-rust dark:text-rose-200 flex items-center justify-between gap-3"
+        >
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="px-3 py-1 rounded-zen text-xs font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 dark:border-rose-400/40 disabled:opacity-50 shrink-0"
+          >
+            Retry Submit
+          </button>
         </div>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_220px] gap-6 items-start">
         {/* Active Question */}
-        <article className="rounded-card p-6 sm:p-8 bg-rice-paper-50/95 dark:bg-tea-slate-200/70 border border-rice-paper-400/75 dark:border-tea-slate-50/50 shadow-zen-sm space-y-6">
+        <article
+          aria-busy={submitting || undefined}
+          className={[
+            'rounded-card p-6 sm:p-8 bg-rice-paper-50/95 dark:bg-tea-slate-200/70 border border-rice-paper-400/75 dark:border-tea-slate-50/50 shadow-zen-sm space-y-6',
+            'transition-opacity duration-150 motion-reduce:transition-none',
+            submitting ? 'opacity-70' : 'opacity-100',
+          ].join(' ')}
+        >
           <div className="flex items-center justify-between text-xs text-ink-400 dark:text-sage-500">
             <span>
               Question {currentIdx + 1} of {session.questions.length} · {currentQ.topic} ·{' '}
@@ -315,10 +382,11 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
             </span>
             <button
               type="button"
+              disabled={submitting}
               onClick={() =>
                 setFlagged((p) => ({ ...p, [currentQ.questionId]: !p[currentQ.questionId] }))
               }
-              className="px-2.5 py-1 rounded-zen border border-rice-paper-400/70 dark:border-tea-slate-50/60 text-xs"
+              className="px-2.5 py-1 rounded-zen border border-rice-paper-400/70 dark:border-tea-slate-50/60 text-xs disabled:opacity-50"
             >
               {flagged[currentQ.questionId] ? '⚑ Flagged' : '⚐ Flag for Review'}
             </button>
@@ -338,6 +406,7 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
                 <button
                   key={opt.id}
                   type="button"
+                  disabled={submitting}
                   onClick={() =>
                     toggleOption(
                       currentQ.questionId,
@@ -374,7 +443,7 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
           <div className="flex items-center justify-between pt-2">
             <button
               type="button"
-              disabled={currentIdx === 0}
+              disabled={currentIdx === 0 || submitting}
               onClick={() => setCurrentIdx((i) => Math.max(0, i - 1))}
               className="px-3.5 py-2 rounded-zen text-xs font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 disabled:opacity-40"
             >
@@ -382,7 +451,7 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
             </button>
             <button
               type="button"
-              disabled={currentIdx >= session.questions.length - 1}
+              disabled={currentIdx >= session.questions.length - 1 || submitting}
               onClick={() =>
                 setCurrentIdx((i) => Math.min(session.questions.length - 1, i + 1))
               }
@@ -407,10 +476,11 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
                 <button
                   key={q.questionId}
                   type="button"
+                  disabled={submitting}
                   onClick={() => setCurrentIdx(idx)}
                   aria-label={`Go to question ${idx + 1}`}
                   className={[
-                    'h-8 rounded-[4px] font-mono text-xs border transition-colors duration-150',
+                    'h-8 rounded-[4px] font-mono text-xs border transition-colors duration-150 motion-reduce:transition-none disabled:opacity-50',
                     isCurrent
                       ? 'border-matcha-600 bg-matcha-500 text-white'
                       : isFlagged

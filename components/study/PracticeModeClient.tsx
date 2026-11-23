@@ -1,13 +1,15 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'next/navigation'
 import type { ExamCollection } from '../../lib/study/types'
 import type { PracticeExamPayload } from '../../lib/study/services/practice-service'
 import type { GradedQuestionResult } from '../../lib/study/services/grading'
 import StudyRichText from './StudyRichText'
+import { PracticeQuestionCardSkeleton, ZenPendingDot } from './StudySkeletons'
 
 type PracticeFilter = 'all' | 'incorrect' | 'bookmarked'
+type PracticeFetchStatus = 'idle' | 'loading' | 'switching' | 'error' | 'loaded'
 
 function FeedbackCheckIcon({ className = 'w-4 h-4' }: { className?: string }) {
   return (
@@ -45,11 +47,14 @@ function FeedbackCrossIcon({ className = 'w-4 h-4' }: { className?: string }) {
 
 export default function PracticeModeClient({ exams }: { exams: ExamCollection[] }) {
   const searchParams = useSearchParams()
-  const initialExamId = searchParams?.get('examId') || exams[0]?.examId || ''
+  const paramExamId = searchParams?.get('examId') || ''
+  const initialExamId = paramExamId || exams[0]?.examId || ''
 
   const [selectedExamId, setSelectedExamId] = useState(initialExamId)
   const [payload, setPayload] = useState<PracticeExamPayload | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [fetchStatus, setFetchStatus] = useState<PracticeFetchStatus>(
+    initialExamId ? 'loading' : 'idle'
+  )
   const [error, setError] = useState('')
 
   const [filter, setFilter] = useState<PracticeFilter>('all')
@@ -58,6 +63,20 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
   const [results, setResults] = useState<Record<string, GradedQuestionResult>>({})
   const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({})
   const [checkingId, setCheckingId] = useState<string | null>(null)
+
+  const payloadRef = useRef<PracticeExamPayload | null>(null)
+  const examAbortRef = useRef<AbortController | null>(null)
+  const examSeqRef = useRef(0)
+  const checkAbortRef = useRef<AbortController | null>(null)
+  const checkSeqRef = useRef(0)
+  const checkLockRef = useRef(false)
+
+  // Keep selectedExamId aligned if URL query param changes
+  useEffect(() => {
+    if (paramExamId && paramExamId !== selectedExamId && exams.some((e) => e.examId === paramExamId)) {
+      setSelectedExamId(paramExamId)
+    }
+  }, [paramExamId, selectedExamId, exams])
 
   // Restore bookmarks per exam from localStorage
   useEffect(() => {
@@ -73,28 +92,54 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
 
   const loadExam = useCallback(async (examId: string) => {
     if (!examId) return
-    setLoading(true)
+
+    // Abort any obsolete exam or answer-check requests before starting a new load
+    examAbortRef.current?.abort()
+    checkAbortRef.current?.abort()
+    checkLockRef.current = false
+    setCheckingId(null)
+
+    const controller = new AbortController()
+    examAbortRef.current = controller
+    const seq = ++examSeqRef.current
+
+    const hasExisting = payloadRef.current !== null
+    setFetchStatus(hasExisting ? 'switching' : 'loading')
     setError('')
+
     try {
       const res = await fetch(`/api/study/practice/${encodeURIComponent(examId)}`, {
         cache: 'no-store',
+        signal: controller.signal,
       })
       if (!res.ok) throw new Error('Unable to load practice questions.')
       const data = (await res.json()) as PracticeExamPayload
+      if (seq !== examSeqRef.current) return
+
+      payloadRef.current = data
       setPayload(data)
       setCurrentIndex(0)
       setFilter('all')
       setSelections({})
       setResults({})
+      setFetchStatus('loaded')
     } catch (err) {
+      if (controller.signal.aborted || seq !== examSeqRef.current) return
       setError(err instanceof Error ? err.message : 'Failed to load practice set.')
-    } finally {
-      setLoading(false)
+      setFetchStatus(payloadRef.current ? 'loaded' : 'error')
     }
   }, [])
 
   useEffect(() => {
-    if (selectedExamId) loadExam(selectedExamId)
+    if (selectedExamId) {
+      loadExam(selectedExamId)
+    }
+    return () => {
+      examAbortRef.current?.abort()
+      checkAbortRef.current?.abort()
+      examSeqRef.current += 1
+      checkSeqRef.current += 1
+    }
   }, [selectedExamId, loadExam])
 
   function toggleBookmark(questionId: string) {
@@ -111,7 +156,7 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
   }
 
   function toggleOption(questionId: string, optionId: string, isMulti: boolean) {
-    if (results[questionId]) return // Locked once checked
+    if (results[questionId] || checkingId === questionId || fetchStatus === 'switching') return
     setSelections((prev) => {
       const curr = prev[questionId] || []
       if (!isMulti) return { ...prev, [questionId]: [optionId] }
@@ -125,22 +170,46 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
 
   async function handleCheck(questionId: string) {
     const selected = selections[questionId] || []
-    if (selected.length === 0 || checkingId) return
+    if (
+      selected.length === 0 ||
+      checkLockRef.current ||
+      checkingId !== null ||
+      fetchStatus === 'switching'
+    ) {
+      return
+    }
+
+    checkLockRef.current = true
+    checkAbortRef.current?.abort()
+    const controller = new AbortController()
+    checkAbortRef.current = controller
+    const seq = ++checkSeqRef.current
+    const examSeqAtStart = examSeqRef.current
+
     setCheckingId(questionId)
     setError('')
+
     try {
       const res = await fetch('/api/study/practice/check', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ questionId, selectedOptionIds: selected }),
+        signal: controller.signal,
       })
       if (!res.ok) throw new Error('Unable to check answer right now.')
       const graded = (await res.json()) as GradedQuestionResult
+      if (seq !== checkSeqRef.current || examSeqAtStart !== examSeqRef.current) return
       setResults((prev) => ({ ...prev, [questionId]: graded }))
     } catch (err) {
+      if (controller.signal.aborted || seq !== checkSeqRef.current || examSeqAtStart !== examSeqRef.current) {
+        return
+      }
       setError(err instanceof Error ? err.message : 'Failed to check answer.')
     } finally {
-      setCheckingId(null)
+      if (seq === checkSeqRef.current) {
+        checkLockRef.current = false
+        setCheckingId(null)
+      }
     }
   }
 
@@ -151,6 +220,10 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
       </div>
     )
   }
+
+  const isInitialLoading = fetchStatus === 'loading'
+  const isSwitching = fetchStatus === 'switching'
+  const isInitialError = fetchStatus === 'error' && !payload
 
   const allQuestions = payload?.questions || []
   const filteredQuestions = allQuestions.filter((q) => {
@@ -178,18 +251,31 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
           </p>
         </div>
 
-        <select
-          aria-label="Select exam collection"
-          value={selectedExamId}
-          onChange={(e) => setSelectedExamId(e.target.value)}
-          className="rounded-zen px-3.5 py-2 text-[0.84rem] bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-rice-paper-400/90 dark:border-tea-slate-50/70"
-        >
-          {exams.map((ex) => (
-            <option key={ex.examId} value={ex.examId}>
-              {ex.title} ({ex.questionCount})
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2.5">
+          {isSwitching && (
+            <span
+              role="status"
+              aria-live="polite"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-matcha-600 dark:text-matcha-400 shrink-0"
+            >
+              <ZenPendingDot />
+              Switching…
+            </span>
+          )}
+          <select
+            aria-label="Select exam collection"
+            aria-busy={isSwitching || undefined}
+            value={selectedExamId}
+            onChange={(e) => setSelectedExamId(e.target.value)}
+            className="rounded-zen px-3.5 py-2 text-[0.84rem] bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-rice-paper-400/90 dark:border-tea-slate-50/70 transition-colors duration-150 motion-reduce:transition-none"
+          >
+            {exams.map((ex) => (
+              <option key={ex.examId} value={ex.examId}>
+                {ex.title} ({ex.questionCount})
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {/* ── Filter Tabs + Progress ── */}
@@ -197,20 +283,21 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
         <div className="inline-flex items-center gap-1 p-1 rounded-zen bg-rice-paper-200/70 dark:bg-tea-slate-200/70 border border-rice-paper-400/60 dark:border-tea-slate-50/40 text-xs">
           {(
             [
-              { key: 'all', label: `All (${allQuestions.length})` },
-              { key: 'incorrect', label: `Incorrect (${incorrectCount})` },
-              { key: 'bookmarked', label: `Bookmarked (${bookmarkedCount})` },
+              { key: 'all', label: isInitialLoading ? 'All' : `All (${allQuestions.length})` },
+              { key: 'incorrect', label: isInitialLoading ? 'Incorrect' : `Incorrect (${incorrectCount})` },
+              { key: 'bookmarked', label: isInitialLoading ? 'Bookmarked' : `Bookmarked (${bookmarkedCount})` },
             ] as const
           ).map((tab) => (
             <button
               key={tab.key}
               type="button"
+              disabled={isInitialLoading || isSwitching}
               onClick={() => {
                 setFilter(tab.key)
                 setCurrentIndex(0)
               }}
               className={[
-                'px-3 py-1 rounded-[4px] font-medium transition-colors duration-150 motion-reduce:transition-none',
+                'px-3 py-1 rounded-[4px] font-medium transition-colors duration-150 motion-reduce:transition-none disabled:opacity-60',
                 filter === tab.key
                   ? 'bg-rice-paper-50 dark:bg-tea-slate-50 text-matcha-700 dark:text-matcha-300 shadow-zen-sm'
                   : 'text-ink-500 dark:text-sage-400 hover:text-ink-700 dark:hover:text-sage-200',
@@ -221,24 +308,55 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
           ))}
         </div>
         <span className="text-xs font-mono text-ink-500 dark:text-sage-400">
-          Checked: {answeredCount}/{allQuestions.length}
+          {isInitialLoading ? 'Loading set…' : `Checked: ${answeredCount}/${allQuestions.length}`}
         </span>
       </div>
 
       {error && (
-        <div role="alert" className="rounded-zen px-4 py-3 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 text-sm text-earth-rust dark:text-rose-200">
-          {error}
+        <div
+          role="alert"
+          className="rounded-zen px-4 py-3 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 dark:border-rose-400/40 text-sm text-earth-rust dark:text-rose-200 flex items-center justify-between gap-3"
+        >
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => loadExam(selectedExamId)}
+            disabled={isInitialLoading || isSwitching}
+            className="px-3 py-1 rounded-zen text-xs font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 dark:border-rose-400/40 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none disabled:opacity-50 shrink-0"
+          >
+            Try Again
+          </button>
         </div>
       )}
 
-      {loading ? (
-        <div className="h-64 rounded-card bg-rice-paper-200/70 dark:bg-tea-slate-200/50 border border-rice-paper-400/50" />
+      {isInitialLoading ? (
+        <PracticeQuestionCardSkeleton />
+      ) : isInitialError ? (
+        <div className="rounded-card p-8 text-center bg-rice-paper-50/80 dark:bg-tea-slate-200/50 border border-rice-paper-400/60 dark:border-tea-slate-50/40 space-y-3 animate-study-feedback">
+          <p className="text-sm text-ink-500 dark:text-sage-400 m-0">
+            Could not load questions for this exam collection.
+          </p>
+          <button
+            type="button"
+            onClick={() => loadExam(selectedExamId)}
+            className="px-4 py-2 rounded-zen text-xs font-medium bg-matcha-500 hover:bg-matcha-600 text-white transition-colors duration-150 motion-reduce:transition-none"
+          >
+            Retry Loading Questions
+          </button>
+        </div>
       ) : !currentQ ? (
-        <div className="rounded-card p-8 text-center bg-rice-paper-50/80 dark:bg-tea-slate-200/50 border border-rice-paper-400/60 text-sm text-ink-400 dark:text-sage-500">
+        <div className="rounded-card p-8 text-center bg-rice-paper-50/80 dark:bg-tea-slate-200/50 border border-rice-paper-400/60 dark:border-tea-slate-50/40 text-sm text-ink-400 dark:text-sage-500 animate-study-feedback">
           No questions match the current filter.
         </div>
       ) : (
-        <article className="rounded-card p-6 sm:p-8 bg-rice-paper-50/95 dark:bg-tea-slate-200/70 border border-rice-paper-400/75 dark:border-tea-slate-50/50 shadow-zen-sm space-y-6">
+        <article
+          aria-busy={isSwitching || undefined}
+          className={[
+            'rounded-card p-6 sm:p-8 bg-rice-paper-50/95 dark:bg-tea-slate-200/70 border border-rice-paper-400/75 dark:border-tea-slate-50/50 shadow-zen-sm space-y-6',
+            'transition-opacity duration-150 ease-zen motion-reduce:transition-none animate-study-feedback',
+            isSwitching ? 'opacity-60' : 'opacity-100',
+          ].join(' ')}
+        >
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-400 dark:text-sage-500">
             <div className="flex items-center gap-2">
               <span className="font-mono">
@@ -251,10 +369,11 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
             </div>
             <button
               type="button"
+              disabled={isSwitching}
               onClick={() => toggleBookmark(currentQ.questionId)}
               aria-pressed={Boolean(bookmarks[currentQ.questionId])}
               className={[
-                'px-2.5 py-1 rounded-zen border text-xs font-medium transition-colors duration-150 motion-reduce:transition-none',
+                'px-2.5 py-1 rounded-zen border text-xs font-medium transition-colors duration-150 motion-reduce:transition-none disabled:opacity-50',
                 bookmarks[currentQ.questionId]
                   ? 'bg-matcha-100/80 dark:bg-matcha-900/40 border-matcha-400/70 text-matcha-700 dark:text-matcha-300'
                   : 'border-rice-paper-400/70 dark:border-tea-slate-50/60 text-ink-500 dark:text-sage-400',
@@ -276,6 +395,7 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
             {currentQ.options.map((opt) => {
               const selected = (selections[currentQ.questionId] || []).includes(opt.id)
               const graded = results[currentQ.questionId]
+              const isCheckingCurrent = checkingId === currentQ.questionId
               const isMulti = currentQ.questionType === 'multi_select'
               const isCorrectOption = Boolean(graded?.correctOptionIds.includes(opt.id))
               const isCorrectSelection = Boolean(graded && selected && isCorrectOption)
@@ -321,7 +441,7 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
                 <button
                   key={opt.id}
                   type="button"
-                  disabled={Boolean(graded)}
+                  disabled={Boolean(graded) || isCheckingCurrent || isSwitching}
                   aria-pressed={!graded ? selected : undefined}
                   onClick={() => toggleOption(currentQ.questionId, opt.id, isMulti)}
                   className={[
@@ -444,9 +564,9 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
             <button
               type="button"
-              disabled={safeIndex === 0}
+              disabled={safeIndex === 0 || isSwitching}
               onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}
-              className="px-3.5 py-2 rounded-zen text-[0.82rem] font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 text-ink-600 dark:text-sage-300 disabled:opacity-40"
+              className="px-3.5 py-2 rounded-zen text-[0.82rem] font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 text-ink-600 dark:text-sage-300 disabled:opacity-40 transition-colors duration-150 motion-reduce:transition-none"
             >
               ← Previous
             </button>
@@ -455,23 +575,28 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
               {!results[currentQ.questionId] && (
                 <button
                   type="button"
+                  aria-busy={checkingId === currentQ.questionId || undefined}
                   disabled={
                     (selections[currentQ.questionId] || []).length === 0 ||
-                    checkingId === currentQ.questionId
+                    checkingId !== null ||
+                    isSwitching
                   }
                   onClick={() => handleCheck(currentQ.questionId)}
-                  className="px-5 py-2 rounded-zen text-[0.84rem] font-medium bg-matcha-500 hover:bg-matcha-600 text-white disabled:opacity-50"
+                  className="inline-flex items-center gap-2 px-5 py-2 rounded-zen text-[0.84rem] font-medium bg-matcha-500 hover:bg-matcha-600 text-white disabled:opacity-55 transition-colors duration-150 motion-reduce:transition-none"
                 >
-                  {checkingId === currentQ.questionId ? 'Checking…' : 'Check Answer'}
+                  {checkingId === currentQ.questionId && <ZenPendingDot />}
+                  <span>
+                    {checkingId === currentQ.questionId ? 'Checking…' : 'Check Answer'}
+                  </span>
                 </button>
               )}
               <button
                 type="button"
-                disabled={safeIndex >= filteredQuestions.length - 1}
+                disabled={safeIndex >= filteredQuestions.length - 1 || isSwitching}
                 onClick={() =>
                   setCurrentIndex((i) => Math.min(filteredQuestions.length - 1, i + 1))
                 }
-                className="px-3.5 py-2 rounded-zen text-[0.82rem] font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 text-ink-600 dark:text-sage-300 disabled:opacity-40"
+                className="px-3.5 py-2 rounded-zen text-[0.82rem] font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 text-ink-600 dark:text-sage-300 disabled:opacity-40 transition-colors duration-150 motion-reduce:transition-none"
               >
                 Next →
               </button>

@@ -207,7 +207,7 @@
     transform-origin: top center;
   }
 
-  /* Restrained 180ms Zen fade-in for Study Room answer feedback */
+  /* Restrained 180ms Zen fade-in for Study Room content & feedback */
   @keyframes studyFeedbackIn {
     from {
       opacity: 0;
@@ -222,8 +222,63 @@
     animation: studyFeedbackIn 180ms cubic-bezier(0.4, 0, 0.2, 1) both;
   }
 
+  /* Calm Expressive Zen skeleton opacity breath (no shimmer sweep or flash) */
+  @keyframes zenSkeletonBreath {
+    0%,
+    100% {
+      opacity: 0.92;
+    }
+
+    50% {
+      opacity: 0.52;
+    }
+  }
+
+  .animate-zen-skeleton {
+    animation: zenSkeletonBreath 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+
+  /* Subtle muted-sage pending dot pulse */
+  @keyframes zenDotBreath {
+    0%,
+    100% {
+      opacity: 1;
+    }
+
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  .animate-zen-breathe {
+    animation: zenDotBreath 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+
+  /* Calm muted-sage navigation progress glide */
+  @keyframes zenNavProgress {
+    0% {
+      transform: scaleX(0.08);
+    }
+
+    45% {
+      transform: scaleX(0.62);
+    }
+
+    100% {
+      transform: scaleX(0.86);
+    }
+  }
+
+  .animate-zen-nav-bar {
+    transform-origin: left center;
+    animation: zenNavProgress 3.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .animate-study-feedback {
+    .animate-study-feedback,
+    .animate-zen-skeleton,
+    .animate-zen-breathe,
+    .animate-zen-nav-bar {
       animation: none;
     }
   }
