@@ -42,6 +42,8 @@ function pruneExpiredBuckets(store: Map<string, RateLimitBucket>, now: number, m
 export interface RateLimitResult {
   allowed: boolean
   retryAfterSec: number
+  /** True when fail-closed distributed rate limiting is required in production and Redis is unavailable/unconfigured */
+  unavailable?: boolean
 }
 
 function consumeBucket(
@@ -133,14 +135,26 @@ function getUpstashConfig(): { url: string; token: string } | null {
   return { url, token }
 }
 
+function shouldFailClosedForAuth(): boolean {
+  return (
+    process.env.NODE_ENV === 'production' &&
+    process.env.STUDY_EXTERNAL_WAF_RATE_LIMIT !== 'true'
+  )
+}
+
 async function consumeDistributedBucket(
   key: string,
   maxRequests: number,
   windowMs: number,
-  now: number = Date.now()
+  now: number = Date.now(),
+  options?: { failClosed?: boolean }
 ): Promise<RateLimitResult> {
+  const failClosed = Boolean(options?.failClosed)
   const upstash = getUpstashConfig()
   if (!upstash) {
+    if (failClosed) {
+      return { allowed: false, retryAfterSec: 60, unavailable: true }
+    }
     return consumeBucket(key, maxRequests, windowMs, now)
   }
 
@@ -161,6 +175,9 @@ async function consumeDistributedBucket(
     })
 
     if (!res.ok) {
+      if (failClosed) {
+        return { allowed: false, retryAfterSec: 60, unavailable: true }
+      }
       return consumeBucket(key, maxRequests, windowMs, now)
     }
 
@@ -169,6 +186,9 @@ async function consumeDistributedBucket(
     const pttl = Number(payload?.[2]?.result)
 
     if (!Number.isFinite(count)) {
+      if (failClosed) {
+        return { allowed: false, retryAfterSec: 60, unavailable: true }
+      }
       return consumeBucket(key, maxRequests, windowMs, now)
     }
 
@@ -182,7 +202,10 @@ async function consumeDistributedBucket(
 
     return { allowed: true, retryAfterSec: 0 }
   } catch {
-    // Graceful degradation to per-instance memory if Redis is transiently unreachable
+    if (failClosed) {
+      return { allowed: false, retryAfterSec: 60, unavailable: true }
+    }
+    // Graceful degradation to per-instance memory in non-production / non-critical buckets
     return consumeBucket(key, maxRequests, windowMs, now)
   }
 }
@@ -190,16 +213,19 @@ async function consumeDistributedBucket(
 export async function checkLoginRateLimitAsync(
   ip: string,
   username: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  options?: { failClosed?: boolean }
 ): Promise<RateLimitResult> {
   const cleanIp = (ip || 'unknown').trim()
   const cleanUser = (username || '').trim().toLowerCase()
+  const failClosed = options?.failClosed ?? shouldFailClosedForAuth()
 
   const ipCheck = await consumeDistributedBucket(
     `login:ip:${cleanIp}`,
     LOGIN_MAX_PER_IP,
     LOGIN_WINDOW_MS,
-    now
+    now,
+    { failClosed }
   )
   if (!ipCheck.allowed) return ipCheck
 
@@ -208,7 +234,8 @@ export async function checkLoginRateLimitAsync(
       `login:user:${cleanUser}`,
       LOGIN_MAX_PER_USERNAME,
       LOGIN_WINDOW_MS,
-      now
+      now,
+      { failClosed }
     )
     if (!userCheck.allowed) return userCheck
   }

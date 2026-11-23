@@ -23,6 +23,7 @@ import {
   getRecallQueue,
   revealRecallAnswer,
   submitRecallReview,
+  reconcileCardStateForQuestion,
   EventIdConflictError,
 } from '../../lib/study/services/recall-service'
 import {
@@ -135,6 +136,12 @@ function createInMemoryRepos(): StudyRepositories {
       async findByEventId(eventId) {
         const v = reviewEvents.get(eventId)
         return v ? { ...v } : null
+      },
+      async findLatestByUserAndQuestion(userId, questionId) {
+        const list = [...reviewEvents.values()]
+          .filter((e) => e.userId === userId && e.questionId === questionId)
+          .sort((a, b) => Date.parse(b.reviewedAt) - Date.parse(a.reviewedAt))
+        return list[0] ? { ...list[0] } : null
       },
       async listByUser(userId, opts) {
         const list = [...reviewEvents.values()]
@@ -386,7 +393,27 @@ describe('Phase 5 — Active Recall, Cross-Device Concurrency & Multi-User Isola
       parametersVersion: step1.parametersVersion,
     })
 
-    // Queue recovers reps=1 from ReviewEvent rather than showing it as New
+    // Queue does NOT scan full review history (listByUser must never be called by getRecallQueue)
+    let listByUserCalled = false
+    const origListByUser = repos.reviewEvents.listByUser.bind(repos.reviewEvents)
+    repos.reviewEvents.listByUser = async (...args) => {
+      listByUserCalled = true
+      return origListByUser(...args)
+    }
+    await getRecallQueue(SYNTHETIC_USER.userId, repos, { nowIso: step1.resulting.due })
+    assert.equal(listByUserCalled, false)
+
+    // Dedicated idempotent question-level reconciliation recovers missing card state via O(1) lookup
+    const rec1 = await reconcileCardStateForQuestion(SYNTHETIC_USER.userId, 'q-synth-001', repos)
+    assert.equal(rec1.reconciled, true)
+    assert.ok(rec1.state && rec1.state.card.reps === 1)
+
+    // Calling reconcile again is a deterministic idempotent no-op
+    const rec2 = await reconcileCardStateForQuestion(SYNTHETIC_USER.userId, 'q-synth-001', repos)
+    assert.equal(rec2.reconciled, false)
+    assert.equal(rec2.state?.revision, rec1.state?.revision)
+
+    // Queue now reflects recovered reps=1 from persisted card state
     const queueAfterDue = await getRecallQueue(SYNTHETIC_USER.userId, repos, {
       nowIso: step1.resulting.due,
     })
@@ -407,6 +434,36 @@ describe('Phase 5 — Active Recall, Cross-Device Concurrency & Multi-User Isola
       repos
     )
     assert.equal(nextReview.cardState.card.reps, 2)
+
+    // Stale event / older timestamp cannot overwrite a newer card state
+    await assert.rejects(
+      () =>
+        submitRecallReview(
+          {
+            userId: SYNTHETIC_USER.userId,
+            questionId: 'q-synth-001',
+            rating: 'again',
+            eventId: 'evt-stale-older-003',
+            nowIso: '2026-03-01T10:05:00.000Z',
+          },
+          repos
+        ),
+      ConcurrencyConflictError
+    )
+
+    // Retrying an older eventId (evt-orphan-001) after a newer review does NOT overwrite newer state
+    const staleRetry = await submitRecallReview(
+      {
+        userId: SYNTHETIC_USER.userId,
+        questionId: 'q-synth-001',
+        rating: 'easy',
+        eventId: 'evt-orphan-001',
+        nowIso: '2026-03-01T10:00:00.000Z',
+      },
+      repos
+    )
+    assert.equal(staleRetry.duplicate, true)
+    assert.equal(staleRetry.cardState.card.reps, 2)
 
     // Two concurrent reviews on q-synth-002 with expectedRevision=0 serialize cleanly: 1 succeeds, 1 gets 409 conflict
     const results = await Promise.allSettled([
@@ -441,6 +498,85 @@ describe('Phase 5 — Active Recall, Cross-Device Concurrency & Multi-User Isola
       rejected[0].status === 'rejected' &&
         rejected[0].reason instanceof ConcurrencyConflictError
     )
+  })
+
+  it('acquires and releases distributed Upstash Redis per-card lock and rejects when lock is held by another instance', async () => {
+    const repos = createInMemoryRepos()
+    const origUrl = process.env.UPSTASH_REDIS_REST_URL
+    const origToken = process.env.UPSTASH_REDIS_REST_TOKEN
+    const origFetch = globalThis.fetch
+
+    try {
+      process.env.UPSTASH_REDIS_REST_URL = 'https://mock-upstash.example'
+      process.env.UPSTASH_REDIS_REST_TOKEN = 'test-lock-token'
+
+      const locks = new Map<string, string>()
+      let evalReleases = 0
+      globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+        const commands = JSON.parse(String(init?.body || '[]')) as string[][]
+        const cmd = commands[0] || []
+        if (cmd[0] === 'SET') {
+          const [, key, val] = cmd
+          if (locks.has(key)) {
+            return new Response(JSON.stringify([{ result: null }]), { status: 200 })
+          }
+          locks.set(key, val)
+          return new Response(JSON.stringify([{ result: 'OK' }]), { status: 200 })
+        }
+        if (cmd[0] === 'EXISTS') {
+          const [, key] = cmd
+          return new Response(JSON.stringify([{ result: locks.has(key) ? 1 : 0 }]), { status: 200 })
+        }
+        if (cmd[0] === 'EVAL') {
+          const key = cmd[3]
+          const val = cmd[4]
+          if (locks.get(key) === val) {
+            locks.delete(key)
+            evalReleases += 1
+          }
+          return new Response(JSON.stringify([{ result: 1 }]), { status: 200 })
+        }
+        return new Response(JSON.stringify([{ result: null }]), { status: 200 })
+      }) as typeof fetch
+
+      // Normal submission acquires lock and releases it via Lua EVAL
+      const ok = await submitRecallReview(
+        {
+          userId: SYNTHETIC_USER.userId,
+          questionId: 'q-synth-001',
+          rating: 'good',
+          eventId: 'evt-redis-lock-001',
+          nowIso: '2026-03-01T12:00:00.000Z',
+        },
+        repos
+      )
+      assert.equal(ok.cardState.revision, 1)
+      assert.equal(evalReleases, 1)
+      assert.equal(locks.size, 0)
+
+      // Pre-held remote lock from another Vercel instance causes ConcurrencyConflictError
+      locks.set(`study:lock:card:${buildCardStateKey(SYNTHETIC_USER.userId, 'q-synth-001')}`, 'other-instance')
+      await assert.rejects(
+        () =>
+          submitRecallReview(
+            {
+              userId: SYNTHETIC_USER.userId,
+              questionId: 'q-synth-001',
+              rating: 'easy',
+              eventId: 'evt-redis-lock-002',
+              nowIso: '2026-03-01T12:05:00.000Z',
+            },
+            repos
+          ),
+        ConcurrencyConflictError
+      )
+    } finally {
+      globalThis.fetch = origFetch
+      if (origUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL
+      else process.env.UPSTASH_REDIS_REST_URL = origUrl
+      if (origToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN
+      else process.env.UPSTASH_REDIS_REST_TOKEN = origToken
+    }
   })
 })
 

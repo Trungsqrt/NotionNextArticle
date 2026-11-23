@@ -579,6 +579,52 @@ describe('Study Importer — Real CSA HTML Format, Unique IDs, Per-Question Imag
       })
       assert.equal(repaired.questionsRepaired, 1)
       assert.equal(repaired.imagesUploaded, 1)
+
+      // 5. Tamper with remote Question content in Notion -> normal re-run detects hash mismatch
+      //    and updates the existing page without creating duplicates or re-uploading live images!
+      const liveRowsBeforeTamper = mock.getRows('db-questions').filter((r) => !r.archived)
+      assert.equal(liveRowsBeforeTamper.length, 2)
+      const q2LivePage = liveRowsBeforeTamper.find(
+        (r) => fromChunkedRichText(r.properties['Question ID']) === 'csa-exam-01-q-1002'
+      )!
+      q2LivePage.properties['Explanation'] = {
+        rich_text: [{ type: 'text', text: { content: 'Corrupted remote explanation' } }],
+      }
+
+      const uploadsBeforeDriftFix = mock.getUploadCallCount()
+      const driftFix = await runStudyExamImport({
+        sourceDir: tmpDir,
+        dryRun: false,
+        stateDir,
+        client: mock.client,
+        config: TEST_CONFIG,
+      })
+      assert.equal(driftFix.questionsSkippedUnchanged, 1)
+      assert.equal(driftFix.questionsUpdated, 1)
+      assert.equal(driftFix.questionsCreated, 0)
+      assert.equal(driftFix.imagesUploaded, 0)
+      assert.equal(mock.getUploadCallCount(), uploadsBeforeDriftFix)
+      const updatedQ2LivePage = mock
+        .getRows('db-questions')
+        .find((r) => !r.archived && fromChunkedRichText(r.properties['Question ID']) === 'csa-exam-01-q-1002')!
+      assert.equal(fromChunkedRichText(updatedQ2LivePage.properties['Explanation']), 'E2')
+
+      // 6. Delete local checkpoint state file entirely and run --repair:
+      //    hydrates live remote image refs so zero duplicate uploads and zero duplicate pages occur!
+      fs.rmSync(stateDir, { recursive: true, force: true })
+      const uploadsBeforeRepairNoState = mock.getUploadCallCount()
+      const repairNoState = await runStudyExamImport({
+        sourceDir: tmpDir,
+        dryRun: false,
+        repair: true,
+        stateDir,
+        client: mock.client,
+        config: TEST_CONFIG,
+      })
+      assert.equal(repairNoState.questionsCreated, 0)
+      assert.equal(repairNoState.questionsUpdated, 2)
+      assert.equal(repairNoState.imagesUploaded, 0)
+      assert.equal(mock.getUploadCallCount(), uploadsBeforeRepairNoState)
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }

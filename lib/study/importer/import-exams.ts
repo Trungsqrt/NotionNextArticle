@@ -25,6 +25,7 @@ import {
 import type { StudyNotionConfig } from '../config'
 import {
   QUESTION_PROPS,
+  mapNotionPageToStudyQuestion,
   mapStudyQuestionToNotionProperties,
 } from '../repositories/mappers'
 import { createNotionExamCollectionRepository } from '../repositories/exam-repo'
@@ -211,7 +212,13 @@ export function discoverHtmlExamFiles(sourceDir: string): string[] {
 
 function computeQuestionContentHash(
   q: StudyQuestion,
-  images: PreparedImage[]
+  images: Array<{
+    placement: QuestionImagePlacement
+    optionId?: string
+    order: number
+    sha256: string
+    alt?: string
+  }>
 ): string {
   return sha256Hex(
     JSON.stringify({
@@ -228,9 +235,22 @@ function computeQuestionContentHash(
         optionId: img.optionId || '',
         order: img.order,
         sha256: img.sha256,
-        alt: img.alt,
+        alt: img.alt || '',
       })),
     })
+  )
+}
+
+function computeRemoteQuestionContentHash(remoteQ: StudyQuestion): string {
+  return computeQuestionContentHash(
+    remoteQ,
+    remoteQ.imageRefs.map((ref) => ({
+      placement: ref.placement || 'explanation',
+      optionId: ref.optionId,
+      order: ref.order ?? 0,
+      sha256: ref.sha256 || '',
+      alt: ref.alt || '',
+    }))
   )
 }
 
@@ -575,30 +595,65 @@ export async function runStudyExamImport(options: {
         Boolean(state.uploadedImagesByKey[img.checkpointKey]?.notionBlockId)
       )
 
-      // Verify remote Question page still exists in Notion before skipping from local checkpoint
+      // Verify remote Question page exists, matches expected content version & hash,
+      // and has live referenced image blocks before skipping from local checkpoint.
       if (
         !repairMode &&
         prevCheckpoint &&
         prevCheckpoint.contentHash === item.contentHash &&
         allImagesCheckpointed
       ) {
-        let remotePageAlive = false
+        let remoteValid = false
+        let remotePageDeleted = false
         try {
           const remotePage = await client.retrievePage(prevCheckpoint.notionPageId)
-          remotePageAlive = Boolean(remotePage && !remotePage.archived && !remotePage.in_trash)
+          if (!remotePage || remotePage.archived || remotePage.in_trash) {
+            remotePageDeleted = true
+          } else {
+            const remoteQ = mapNotionPageToStudyQuestion(remotePage)
+            const versionMatches = remoteQ.contentVersion === prevCheckpoint.contentVersion
+            const hashMatches = computeRemoteQuestionContentHash(remoteQ) === item.contentHash
+            const remoteBlockIds = new Set(
+              remoteQ.imageRefs.map((ref) => ref.notionBlockId || ref.id).filter(Boolean)
+            )
+            const refsMatch = item.images.every((img) => {
+              const expectedBlockId = state.uploadedImagesByKey[img.checkpointKey]?.notionBlockId
+              return Boolean(expectedBlockId && remoteBlockIds.has(expectedBlockId))
+            })
+
+            if (remoteQ.questionId === q.questionId && versionMatches && hashMatches && refsMatch) {
+              let blocksLive = true
+              if (client.retrieveImageBlockUrl && item.images.length > 0) {
+                const checkedBlocks = new Set<string>()
+                for (const img of item.images) {
+                  const blockId = state.uploadedImagesByKey[img.checkpointKey]!.notionBlockId
+                  if (checkedBlocks.has(blockId)) continue
+                  checkedBlocks.add(blockId)
+                  const live = await client.retrieveImageBlockUrl(blockId)
+                  if (!live?.url) {
+                    blocksLive = false
+                    break
+                  }
+                }
+              }
+              remoteValid = blocksLive
+            }
+          }
         } catch {
-          remotePageAlive = false
+          remotePageDeleted = true
         }
 
-        if (remotePageAlive) {
+        if (remoteValid) {
           questionsSkippedUnchanged += 1
           continue
         }
 
-        // Remote page was deleted/archived — invalidate local checkpoint for this question and its images
-        delete state.completedQuestions[q.questionId]
-        for (const img of item.images) {
-          delete state.uploadedImagesByKey[img.checkpointKey]
+        if (remotePageDeleted) {
+          // Remote page was deleted/archived — invalidate local checkpoint for this question and its images
+          delete state.completedQuestions[q.questionId]
+          for (const img of item.images) {
+            delete state.uploadedImagesByKey[img.checkpointKey]
+          }
         }
       }
 
@@ -608,11 +663,40 @@ export async function runStudyExamImport(options: {
           property: QUESTION_PROPS.questionId,
           title: { equals: q.questionId },
         },
-        pageSize: 2,
+        pageSize: 5,
         maxPages: 1,
       })
-      let notionPageId = existingPages[0]?.id || ''
+      const existingPage = existingPages[0] || null
+      let notionPageId = existingPage?.id || ''
       const isNewPage = !notionPageId
+
+      // Hydrate per-question image checkpoints from existing remote page imageRefs
+      // so --repair or lost local checkpoints never duplicate already-live image blocks.
+      let remoteContentInconsistent = false
+      if (existingPage) {
+        try {
+          const existingRemoteQ = mapNotionPageToStudyQuestion(existingPage)
+          if (computeRemoteQuestionContentHash(existingRemoteQ) !== item.contentHash) {
+            remoteContentInconsistent = true
+          }
+          for (const ref of existingRemoteQ.imageRefs) {
+            const blockId = ref.notionBlockId || ref.id
+            if (!blockId || !ref.sha256 || !ref.placement) continue
+            const remoteKey = `${q.questionId}::${ref.placement}::${ref.optionId || ''}::${ref.order ?? 0}::${ref.sha256}`
+            if (!state.uploadedImagesByKey[remoteKey]) {
+              state.uploadedImagesByKey[remoteKey] = {
+                notionBlockId: blockId,
+                originalFilename: ref.originalFilename || '',
+                sourceRef: ref.sourceRef || '',
+                sha256: ref.sha256,
+                uploadedAt: existingPage.last_edited_time || new Date().toISOString(),
+              }
+            }
+          }
+        } catch {
+          remoteContentInconsistent = true
+        }
+      }
 
       // If the page had to be recreated, any previous per-question image block checkpoints
       // belonged to the old deleted page and must be re-uploaded to the new page.
@@ -650,7 +734,7 @@ export async function runStudyExamImport(options: {
         let cached: UploadedImageCheckpoint | undefined =
           state.uploadedImagesByKey[img.checkpointKey]
 
-        if (cached?.notionBlockId && repairMode && client.retrieveImageBlockUrl) {
+        if (cached?.notionBlockId && client.retrieveImageBlockUrl) {
           try {
             const liveBlock = await client.retrieveImageBlockUrl(cached.notionBlockId)
             if (!liveBlock?.url) {
@@ -786,7 +870,10 @@ export async function runStudyExamImport(options: {
         if (repairMode) questionsRepaired += 1
       } else {
         questionsUpdated += 1
-        if (repairMode && (repairedMissingBlock || pendingUniqueUploads.length > 0)) {
+        if (
+          repairMode &&
+          (repairedMissingBlock || remoteContentInconsistent || pendingUniqueUploads.length > 0)
+        ) {
           questionsRepaired += 1
         }
       }

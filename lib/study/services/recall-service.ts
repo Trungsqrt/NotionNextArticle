@@ -5,16 +5,29 @@
  * review submission (`eventId`), optimistic concurrency checks (`expectedRevision`),
  * partial-failure reconciliation, and `ts-fsrs` scheduling.
  *
- * Persistence note: Notion does NOT provide native atomic CAS or multi-database
- * transactions. This service mitigates non-transactional writes with:
- *   1. Append-first `ReviewEvent` (immutable source of truth for idempotency)
- *   2. Per-card in-process serialization queue for concurrent requests on one instance
- *   3. `expectedRevision` optimistic concurrency check (409 Conflict on mismatch)
- *   4. Automatic partial-failure reconciliation when retrying an `eventId` whose
- *      `ReviewEvent` succeeded but `FsrsCardState` write failed or is stale
- *   5. Missing/stale card state recovery from the latest `ReviewEvent`
+ * Persistence & Concurrency Architecture Note:
+ * Notion does NOT provide native atomic compare-and-swap (CAS) or multi-database
+ * ACID transactions. This service layers four safeguards:
+ *   1. Distributed per-card lease lock via Upstash Redis (`SET NX PX` + Lua release)
+ *      when `UPSTASH_REDIS_REST_URL` & `UPSTASH_REDIS_REST_TOKEN` are configured,
+ *      paired with an in-process per-card mutex for local dev/single-instance runs.
+ *   2. Append-first `ReviewEvent` (immutable source of truth for idempotency).
+ *   3. `expectedRevision` + monotonic `updatedAt` checks (409 Conflict on mismatch;
+ *      stale events are never allowed to overwrite newer card states).
+ *   4. Indexed O(1) question-level recovery (`findLatestByUserAndQuestion`) and
+ *      idempotent `reconcileCardStateForQuestion` — works for users with thousands
+ *      of reviews without scanning review history on queue loads.
+ *
+ * Important Limitation:
+ * Redis lease locks + optimistic revision checks do NOT provide full ACID
+ * atomicity across `ReviewEvent` and `FsrsCardState` if a lease expires mid-write
+ * or a process crashes between the two Notion writes. For strict transactional
+ * concurrency guarantees in multi-instance production, keep Notion as the Question
+ * Bank backend and replace ONLY `FsrsCardStateRepository` + `ReviewEventRepository`
+ * with a transactional SQL store (e.g., Postgres / Neon / Turso).
  */
 
+import { randomUUID } from 'node:crypto'
 import type { StudyRepositories } from '../repositories'
 import { ConcurrencyConflictError } from '../repositories'
 import type {
@@ -43,10 +56,10 @@ export class EventIdConflictError extends Error {
   }
 }
 
-// Per-card in-process async mutex to serialize concurrent submissions on the same warm instance
+// Per-card in-process async mutex to serialize concurrent submissions on one warm instance
 const cardLocks = new Map<string, Promise<unknown>>()
 
-async function withCardLock<T>(cardKey: string, task: () => Promise<T>): Promise<T> {
+async function withInProcessCardLock<T>(cardKey: string, task: () => Promise<T>): Promise<T> {
   const prev = cardLocks.get(cardKey) || Promise.resolve()
   const next = prev.then(task, task)
   const cleanup = next.then(
@@ -65,21 +78,112 @@ async function withCardLock<T>(cardKey: string, task: () => Promise<T>): Promise
   return next
 }
 
-function findLatestEventForQuestion(
-  events: ReviewEvent[],
-  questionId: string
-): ReviewEvent | null {
-  let latest: ReviewEvent | null = null
-  let latestMs = -Infinity
-  for (const ev of events) {
-    if (ev.questionId !== questionId) continue
-    const ms = Date.parse(ev.reviewedAt)
-    if (!Number.isNaN(ms) && ms >= latestMs) {
-      latestMs = ms
-      latest = ev
+function getUpstashLockConfig(): { url: string; token: string } | null {
+  const url = (process.env.UPSTASH_REDIS_REST_URL || '').trim().replace(/\/+$/, '')
+  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim()
+  if (!url || !token) return null
+  return { url, token }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+const RELEASE_LOCK_LUA =
+  'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end'
+
+/**
+ * Acquires a best-effort distributed per-card lease lock in Upstash Redis when
+ * configured, layered on top of the in-process per-card mutex. Throws
+ * ConcurrencyConflictError if another instance holds the lock past the retry budget.
+ */
+async function withCardLock<T>(cardKey: string, task: () => Promise<T>): Promise<T> {
+  return withInProcessCardLock(cardKey, async () => {
+    const upstash = getUpstashLockConfig()
+    if (!upstash) {
+      return task()
     }
+
+    const lockKey = `study:lock:card:${cardKey}`
+    const lockToken = randomUUID()
+    const ttlMs = 10000
+    const maxAttempts = 5
+    let acquired = false
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const res = await fetch(`${upstash.url}/pipeline`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${upstash.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify([['SET', lockKey, lockToken, 'NX', 'PX', String(ttlMs)]]),
+          signal: AbortSignal.timeout(3000),
+        })
+        if (res.ok) {
+          const payload = (await res.json()) as Array<{ result?: unknown }>
+          if (payload?.[0]?.result === 'OK') {
+            acquired = true
+            break
+          }
+        } else {
+          // Redis returned non-2xx; stop retrying lock acquisition and let optimistic revision guard run
+          break
+        }
+      } catch {
+        // Redis transiently unreachable; fall through to optimistic revision guard
+        break
+      }
+      await sleep(50 * (attempt + 1))
+    }
+
+    if (!acquired && (await isRemoteLockHeld(upstash, lockKey))) {
+      throw new ConcurrencyConflictError(cardKey, -1, -1)
+    }
+
+    try {
+      return await task()
+    } finally {
+      if (acquired) {
+        try {
+          await fetch(`${upstash.url}/pipeline`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${upstash.token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify([['EVAL', RELEASE_LOCK_LUA, '1', lockKey, lockToken]]),
+            signal: AbortSignal.timeout(3000),
+          })
+        } catch {
+          // Lease will expire automatically after ttlMs
+        }
+      }
+    }
+  })
+}
+
+async function isRemoteLockHeld(
+  upstash: { url: string; token: string },
+  lockKey: string
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${upstash.url}/pipeline`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${upstash.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([['EXISTS', lockKey]]),
+      signal: AbortSignal.timeout(2000),
+    })
+    if (!res.ok) return false
+    const payload = (await res.json()) as Array<{ result?: unknown }>
+    return Number(payload?.[0]?.result) === 1
+  } catch {
+    return false
   }
-  return latest
 }
 
 function isStateStaleRelativeToEvent(
@@ -91,6 +195,52 @@ function isStateStaleRelativeToEvent(
   const eventMs = Date.parse(event.reviewedAt)
   if (Number.isNaN(stateMs) || Number.isNaN(eventMs)) return false
   return stateMs < eventMs
+}
+
+/**
+ * Deterministic, idempotent reconciliation for a single (userId, questionId) card.
+ * Uses O(1) indexed lookup (`findLatestByUserAndQuestion`) so it works for users
+ * with thousands of reviews without scanning full history. Never overwrites a
+ * newer card state with an older review event.
+ */
+export async function reconcileCardStateForQuestion(
+  userId: string,
+  questionId: string,
+  repos: StudyRepositories
+): Promise<{ state: FsrsCardState | null; reconciled: boolean }> {
+  const cardKey = buildCardStateKey(userId, questionId)
+  return withCardLock(cardKey, async () => {
+    const [existingState, latestEvent] = await Promise.all([
+      repos.cardStates.findByUserAndQuestion(userId, questionId),
+      repos.reviewEvents.findLatestByUserAndQuestion(userId, questionId),
+    ])
+
+    if (!latestEvent) {
+      return { state: existingState, reconciled: false }
+    }
+
+    if (!isStateStaleRelativeToEvent(existingState, latestEvent)) {
+      return { state: existingState, reconciled: false }
+    }
+
+    const baseRevision = existingState?.revision ?? 0
+    const reconciledState = await repos.cardStates.save(
+      {
+        stateKey: cardKey,
+        userId,
+        questionId,
+        card: latestEvent.resultingState,
+        due: latestEvent.resultingState.due,
+        lastReview: latestEvent.resultingState.lastReview,
+        revision: baseRevision + 1,
+        schedulerVersion: latestEvent.schedulerVersion,
+        parametersVersion: latestEvent.parametersVersion,
+        updatedAt: latestEvent.reviewedAt,
+      },
+      { expectedRevision: baseRevision }
+    )
+    return { state: reconciledState, reconciled: true }
+  })
 }
 
 export interface RecallQueueItem {
@@ -135,43 +285,17 @@ export async function getRecallQueue(
   const nowMs = Date.parse(nowIso)
   const limit = Math.min(Math.max(options?.limit ?? 20, 1), 100)
 
-  const [exams, userStates, userEvents] = await Promise.all([
+  // Only read published exams and current card states — never scan full review history on queue loads
+  const [exams, userStates] = await Promise.all([
     options?.examId
       ? repos.exams.findByExamId(options.examId).then((e) => (e && e.status === 'published' ? [e] : []))
       : repos.exams.list({ status: 'published' }),
     repos.cardStates.listByUser(userId),
-    repos.reviewEvents.listByUser(userId, { limit: 500 }),
   ])
 
   const stateByQuestion = new Map<string, FsrsCardState>()
   for (const st of userStates) {
     stateByQuestion.set(st.questionId, st)
-  }
-
-  // Recover any missing or stale card states from latest ReviewEvent (partial-failure safeguard)
-  const latestEventByQuestion = new Map<string, ReviewEvent>()
-  for (const ev of userEvents) {
-    const prev = latestEventByQuestion.get(ev.questionId)
-    if (!prev || Date.parse(ev.reviewedAt) >= Date.parse(prev.reviewedAt)) {
-      latestEventByQuestion.set(ev.questionId, ev)
-    }
-  }
-  for (const [questionId, latestEv] of latestEventByQuestion.entries()) {
-    const existing = stateByQuestion.get(questionId) || null
-    if (isStateStaleRelativeToEvent(existing, latestEv)) {
-      stateByQuestion.set(questionId, {
-        stateKey: buildCardStateKey(userId, questionId),
-        userId,
-        questionId,
-        card: latestEv.resultingState,
-        due: latestEv.resultingState.due,
-        lastReview: latestEv.resultingState.lastReview,
-        revision: existing?.revision ?? 0,
-        schedulerVersion: latestEv.schedulerVersion,
-        parametersVersion: latestEv.parametersVersion,
-        updatedAt: latestEv.reviewedAt,
-      })
-    }
   }
 
   const allQuestions: StudyQuestion[] = []
@@ -299,27 +423,31 @@ export async function submitRecallReview(
         )
       }
 
-      const existingState = await repos.cardStates.findByUserAndQuestion(
-        input.userId,
-        existingEvent.questionId
-      )
+      const [existingState, latestEvent] = await Promise.all([
+        repos.cardStates.findByUserAndQuestion(input.userId, existingEvent.questionId),
+        repos.reviewEvents.findLatestByUserAndQuestion(input.userId, existingEvent.questionId),
+      ])
 
-      // If card state is missing or older than the already-committed ReviewEvent,
-      // reconcile card state from existingEvent.resultingState instead of returning stale state.
-      if (isStateStaleRelativeToEvent(existingState, existingEvent)) {
+      // Pick the newest authoritative event so a stale retry can NEVER overwrite a newer card state
+      const authoritativeEvent =
+        latestEvent && Date.parse(latestEvent.reviewedAt) >= Date.parse(existingEvent.reviewedAt)
+          ? latestEvent
+          : existingEvent
+
+      if (isStateStaleRelativeToEvent(existingState, authoritativeEvent)) {
         const baseRevision = existingState?.revision ?? 0
         const reconciledState = await repos.cardStates.save(
           {
-            stateKey: buildCardStateKey(input.userId, existingEvent.questionId),
+            stateKey: buildCardStateKey(input.userId, authoritativeEvent.questionId),
             userId: input.userId,
-            questionId: existingEvent.questionId,
-            card: existingEvent.resultingState,
-            due: existingEvent.resultingState.due,
-            lastReview: existingEvent.resultingState.lastReview,
+            questionId: authoritativeEvent.questionId,
+            card: authoritativeEvent.resultingState,
+            due: authoritativeEvent.resultingState.due,
+            lastReview: authoritativeEvent.resultingState.lastReview,
             revision: baseRevision + 1,
-            schedulerVersion: existingEvent.schedulerVersion,
-            parametersVersion: existingEvent.parametersVersion,
-            updatedAt: existingEvent.reviewedAt,
+            schedulerVersion: authoritativeEvent.schedulerVersion,
+            parametersVersion: authoritativeEvent.parametersVersion,
+            updatedAt: authoritativeEvent.reviewedAt,
           },
           { expectedRevision: baseRevision }
         )
@@ -347,7 +475,7 @@ export async function submitRecallReview(
       throw new Error('Question not found or unavailable')
     }
 
-    // 3. Load current user-scoped card state & recover from ReviewEvents if missing/stale
+    // 3. Load current user-scoped card state & recover from latest question-level event if missing/stale
     const storedState = await repos.cardStates.findByUserAndQuestion(
       input.userId,
       input.questionId
@@ -365,11 +493,21 @@ export async function submitRecallReview(
       )
     }
 
+    // Prevent an older timestamp from overwriting a newer persisted card state
+    if (storedState && Date.parse(nowIso) < Date.parse(storedState.updatedAt)) {
+      throw new ConcurrencyConflictError(cardKey, currentRevision, currentRevision)
+    }
+
     let previousCard = storedState?.card ?? null
     if (!storedState) {
-      const userEvents = await repos.reviewEvents.listByUser(input.userId, { limit: 500 })
-      const latestEvent = findLatestEventForQuestion(userEvents, input.questionId)
+      const latestEvent = await repos.reviewEvents.findLatestByUserAndQuestion(
+        input.userId,
+        input.questionId
+      )
       if (latestEvent) {
+        if (Date.parse(nowIso) < Date.parse(latestEvent.reviewedAt)) {
+          throw new ConcurrencyConflictError(cardKey, currentRevision, currentRevision)
+        }
         previousCard = latestEvent.resultingState
       }
     }

@@ -88,6 +88,11 @@ export interface AppendReviewEventResult {
 
 export interface ReviewEventRepository {
   findByEventId(eventId: string): Promise<ReviewEvent | null>
+  /**
+   * Indexed O(1) lookup for the most recent ReviewEvent for a specific
+   * (userId, questionId) pair. Avoids scanning a user's full review history.
+   */
+  findLatestByUserAndQuestion(userId: string, questionId: string): Promise<ReviewEvent | null>
   listByUser(userId: string, options?: { limit?: number }): Promise<ReviewEvent[]>
   /**
    * Append-only idempotent write: if an event with the same eventId already

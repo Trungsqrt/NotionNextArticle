@@ -41,6 +41,30 @@ export function createNotionReviewEventRepository(
       return page ? mapNotionPageToReviewEvent(page) : null
     },
 
+    async findLatestByUserAndQuestion(
+      userId: string,
+      questionId: string
+    ): Promise<ReviewEvent | null> {
+      const pages = await client.queryDatabaseAll(databaseId, {
+        filter: {
+          and: [
+            {
+              property: REVIEW_EVENT_PROPS.userId,
+              rich_text: { equals: userId.trim() },
+            },
+            {
+              property: REVIEW_EVENT_PROPS.questionId,
+              rich_text: { equals: questionId.trim() },
+            },
+          ],
+        },
+        sorts: [{ property: REVIEW_EVENT_PROPS.reviewedAt, direction: 'descending' }],
+        pageSize: 1,
+        maxPages: 1,
+      })
+      return pages[0] ? mapNotionPageToReviewEvent(pages[0]) : null
+    },
+
     async listByUser(
       userId: string,
       options?: { limit?: number }

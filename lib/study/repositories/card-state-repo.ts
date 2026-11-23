@@ -104,6 +104,15 @@ export function createNotionFsrsCardStateRepository(
             valid.revision
           )
         }
+        const incomingMs = Date.parse(valid.updatedAt)
+        const currentMs = Date.parse(current.updatedAt)
+        if (!Number.isNaN(incomingMs) && !Number.isNaN(currentMs) && incomingMs < currentMs) {
+          throw new ConcurrencyConflictError(
+            valid.stateKey,
+            current.revision,
+            valid.revision
+          )
+        }
 
         const properties = mapFsrsCardStateToNotionProperties(valid)
         const updated = await client.updatePage(existingPage.id, properties)

@@ -403,8 +403,30 @@ describe('Study Authz, CSRF, Rate Limiting, Proxy & SEO Isolation', () => {
       assert.equal(blocked.retryAfterSec, 60)
 
       // Login async rate limit uses Upstash pipeline as well
-      const loginOk = await checkLoginRateLimitAsync('198.51.100.2', 'student.dist')
+      const loginOk = await checkLoginRateLimitAsync('198.51.100.2', 'student.dist', Date.now(), {
+        failClosed: true,
+      })
       assert.equal(loginOk.allowed, true)
+
+      // Fail-closed behavior when Upstash returns 500 -> blocks with unavailable=true instead of silently falling back
+      globalThis.fetch = (async () => new Response('Internal Error', { status: 500 })) as typeof fetch
+      const failedClosed = await checkLoginRateLimitAsync('198.51.100.2', 'student.dist', Date.now(), {
+        failClosed: true,
+      })
+      assert.equal(failedClosed.allowed, false)
+      assert.equal(failedClosed.unavailable, true)
+
+      // Fail-closed behavior when Upstash env vars are missing in production
+      delete process.env.UPSTASH_REDIS_REST_URL
+      delete process.env.UPSTASH_REDIS_REST_TOKEN
+      const unconfiguredClosed = await checkLoginRateLimitAsync(
+        '198.51.100.3',
+        'student.prod',
+        Date.now(),
+        { failClosed: true }
+      )
+      assert.equal(unconfiguredClosed.allowed, false)
+      assert.equal(unconfiguredClosed.unavailable, true)
     } finally {
       globalThis.fetch = origFetch
       if (origUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL

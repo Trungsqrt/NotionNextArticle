@@ -60,6 +60,18 @@ export async function POST(request: Request) {
   const ip = getClientIp(request)
   const rate = await checkLoginRateLimitAsync(ip, username)
   if (!rate.allowed) {
+    if (rate.unavailable) {
+      return NextResponse.json(
+        { error: 'Authentication service is temporarily unavailable. Please try again shortly.' },
+        {
+          status: 503,
+          headers: {
+            ...NO_STORE_PRIVATE_HEADERS,
+            'Retry-After': String(rate.retryAfterSec),
+          },
+        }
+      )
+    }
     return NextResponse.json(
       { error: 'Too many login attempts. Please wait before trying again.' },
       {
