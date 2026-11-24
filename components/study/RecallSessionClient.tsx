@@ -11,6 +11,7 @@ import type {
 import StudyRichText from './StudyRichText'
 import { StudyLink } from './StudyNavigationContext'
 import { RecallSessionSkeleton, ZenPendingDot } from './StudySkeletons'
+import { shouldIgnoreStudyShortcut } from '../../lib/study/keyboard'
 
 type QueueStatus = 'loading' | 'refreshing' | 'error' | 'loaded'
 
@@ -242,24 +243,25 @@ export default function RecallSessionClient() {
     [currentItem, revealed, submittingRating, queueStatus, loadQueue]
   )
 
-  // Keyboard shortcuts: O = show choices, Space/Enter = reveal answer, 1-4 = Again/Hard/Good/Easy
+  // Keyboard shortcuts: O = show choices, Enter/Space = reveal answer, 1-4 = Again/Hard/Good/Easy
   useEffect(() => {
+    if (!currentItem || queueStatus !== 'loaded') return
+
     function onKeyDown(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null
-      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
-      if (!currentItem || queueStatus === 'refreshing') return
+      if (shouldIgnoreStudyShortcut(e)) return
 
       if (!revealed) {
         if (e.key.toLowerCase() === 'o') {
           e.preventDefault()
           setShowChoices((v) => !v)
-        } else if (e.key === ' ' || e.key === 'Enter') {
+        } else if ((e.key === 'Enter' || e.key === ' ') && !loadingReveal) {
           e.preventDefault()
           handleReveal()
         }
         return
       }
 
+      if (submittingRating) return
       if (e.key === '1') { e.preventDefault(); handleRate('again') }
       else if (e.key === '2') { e.preventDefault(); handleRate('hard') }
       else if (e.key === '3') { e.preventDefault(); handleRate('good') }
@@ -268,7 +270,7 @@ export default function RecallSessionClient() {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [currentItem, revealed, queueStatus, handleReveal, handleRate])
+  }, [currentItem, revealed, queueStatus, loadingReveal, submittingRating, handleReveal, handleRate])
 
   if (queueStatus === 'loading') {
     return <RecallSessionSkeleton />
@@ -504,10 +506,22 @@ export default function RecallSessionClient() {
               onClick={handleReveal}
               disabled={loadingReveal || isRefreshing}
               aria-busy={loadingReveal || undefined}
+              aria-keyshortcuts="Enter Space"
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-zen text-[0.88rem] font-medium bg-matcha-500 hover:bg-matcha-600 dark:bg-matcha-600 dark:hover:bg-matcha-500 text-white shadow-zen-sm transition-colors duration-200 motion-reduce:transition-none disabled:opacity-60"
             >
               {loadingReveal && <ZenPendingDot />}
-              <span>{loadingReveal ? 'Revealing Answer…' : 'Reveal Answer (Space)'}</span>
+              <span>
+                {loadingReveal ? (
+                  'Revealing Answer…'
+                ) : (
+                  <>
+                    Reveal Answer
+                    <span className="hidden sm:inline font-mono text-[0.72rem] opacity-75 ml-1.5">
+                      (Enter / Space)
+                    </span>
+                  </>
+                )}
+              </span>
             </button>
           </div>
         ) : (

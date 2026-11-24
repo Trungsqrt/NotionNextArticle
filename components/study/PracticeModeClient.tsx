@@ -7,6 +7,7 @@ import type { PracticeExamPayload } from '../../lib/study/services/practice-serv
 import type { GradedQuestionResult } from '../../lib/study/services/grading'
 import StudyRichText from './StudyRichText'
 import { PracticeQuestionCardSkeleton, ZenPendingDot } from './StudySkeletons'
+import { shouldIgnoreStudyShortcut } from '../../lib/study/keyboard'
 
 type PracticeFilter = 'all' | 'incorrect' | 'bookmarked'
 type PracticeFetchStatus = 'idle' | 'loading' | 'switching' | 'error' | 'loaded'
@@ -168,58 +169,57 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
     })
   }
 
-  async function handleCheck(questionId: string) {
-    const selected = selections[questionId] || []
-    if (
-      selected.length === 0 ||
-      checkLockRef.current ||
-      checkingId !== null ||
-      fetchStatus === 'switching'
-    ) {
-      return
-    }
-
-    checkLockRef.current = true
-    checkAbortRef.current?.abort()
-    const controller = new AbortController()
-    checkAbortRef.current = controller
-    const seq = ++checkSeqRef.current
-    const examSeqAtStart = examSeqRef.current
-
-    setCheckingId(questionId)
-    setError('')
-
-    try {
-      const res = await fetch('/api/study/practice/check', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ questionId, selectedOptionIds: selected }),
-        signal: controller.signal,
-      })
-      if (!res.ok) throw new Error('Unable to check answer right now.')
-      const graded = (await res.json()) as GradedQuestionResult
-      if (seq !== checkSeqRef.current || examSeqAtStart !== examSeqRef.current) return
-      setResults((prev) => ({ ...prev, [questionId]: graded }))
-    } catch (err) {
-      if (controller.signal.aborted || seq !== checkSeqRef.current || examSeqAtStart !== examSeqRef.current) {
+  const handleCheck = useCallback(
+    async (questionId: string) => {
+      const selected = selections[questionId] || []
+      if (
+        selected.length === 0 ||
+        checkLockRef.current ||
+        checkingId !== null ||
+        fetchStatus === 'switching'
+      ) {
         return
       }
-      setError(err instanceof Error ? err.message : 'Failed to check answer.')
-    } finally {
-      if (seq === checkSeqRef.current) {
-        checkLockRef.current = false
-        setCheckingId(null)
-      }
-    }
-  }
 
-  if (exams.length === 0) {
-    return (
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-12 text-center text-sm text-ink-500 dark:text-sage-400">
-        No published exam collections are available for practice yet.
-      </div>
-    )
-  }
+      checkLockRef.current = true
+      checkAbortRef.current?.abort()
+      const controller = new AbortController()
+      checkAbortRef.current = controller
+      const seq = ++checkSeqRef.current
+      const examSeqAtStart = examSeqRef.current
+
+      setCheckingId(questionId)
+      setError('')
+
+      try {
+        const res = await fetch('/api/study/practice/check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ questionId, selectedOptionIds: selected }),
+          signal: controller.signal,
+        })
+        if (!res.ok) throw new Error('Unable to check answer right now.')
+        const graded = (await res.json()) as GradedQuestionResult
+        if (seq !== checkSeqRef.current || examSeqAtStart !== examSeqRef.current) return
+        setResults((prev) => ({ ...prev, [questionId]: graded }))
+      } catch (err) {
+        if (
+          controller.signal.aborted ||
+          seq !== checkSeqRef.current ||
+          examSeqAtStart !== examSeqRef.current
+        ) {
+          return
+        }
+        setError(err instanceof Error ? err.message : 'Failed to check answer.')
+      } finally {
+        if (seq === checkSeqRef.current) {
+          checkLockRef.current = false
+          setCheckingId(null)
+        }
+      }
+    },
+    [selections, checkingId, fetchStatus]
+  )
 
   const isInitialLoading = fetchStatus === 'loading'
   const isSwitching = fetchStatus === 'switching'
@@ -234,6 +234,94 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
 
   const safeIndex = Math.min(currentIndex, Math.max(0, filteredQuestions.length - 1))
   const currentQ = filteredQuestions[safeIndex] || null
+  const currentGraded = currentQ ? Boolean(results[currentQ.questionId]) : false
+  const hasCurrentSelection = currentQ
+    ? (selections[currentQ.questionId] || []).length > 0
+    : false
+  const canGoPrevious = safeIndex > 0 && !isSwitching
+  const canGoNext = safeIndex < filteredQuestions.length - 1 && !isSwitching
+
+  const goPrevious = useCallback(() => {
+    if (!canGoPrevious) return
+    setCurrentIndex((i) => Math.max(0, i - 1))
+  }, [canGoPrevious])
+
+  const goNext = useCallback(() => {
+    if (!canGoNext) return
+    setCurrentIndex((i) => Math.min(filteredQuestions.length - 1, i + 1))
+  }, [canGoNext, filteredQuestions.length])
+
+  // Keyboard shortcuts: ArrowLeft = Previous, ArrowRight = Next,
+  // Enter = Check Answer (if ungraded with selection) or Next (if graded), Space = Check Answer
+  useEffect(() => {
+    if (exams.length === 0 || isInitialLoading || isInitialError || isSwitching || !currentQ) {
+      return
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (shouldIgnoreStudyShortcut(e)) return
+
+      if (e.key === 'ArrowLeft') {
+        if (!canGoPrevious) return
+        e.preventDefault()
+        goPrevious()
+        return
+      }
+
+      if (e.key === 'ArrowRight') {
+        if (!canGoNext) return
+        e.preventDefault()
+        goNext()
+        return
+      }
+
+      if (e.key === 'Enter') {
+        if (!currentGraded) {
+          if (hasCurrentSelection && checkingId === null) {
+            e.preventDefault()
+            handleCheck(currentQ.questionId)
+          }
+        } else if (canGoNext) {
+          e.preventDefault()
+          goNext()
+        }
+        return
+      }
+
+      if (e.key === ' ') {
+        if (!currentGraded && hasCurrentSelection && checkingId === null) {
+          e.preventDefault()
+          handleCheck(currentQ.questionId)
+        }
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [
+    exams.length,
+    isInitialLoading,
+    isInitialError,
+    isSwitching,
+    currentQ,
+    currentGraded,
+    hasCurrentSelection,
+    checkingId,
+    canGoPrevious,
+    canGoNext,
+    goPrevious,
+    goNext,
+    handleCheck,
+  ])
+
+  if (exams.length === 0) {
+    return (
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-12 text-center text-sm text-ink-500 dark:text-sage-400">
+        No published exam collections are available for practice yet.
+      </div>
+    )
+  }
+
   const answeredCount = Object.keys(results).length
   const incorrectCount = Object.values(results).filter((r: GradedQuestionResult) => !r.isCorrect).length
   const bookmarkedCount = Object.keys(bookmarks).length
@@ -564,41 +652,52 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
             <button
               type="button"
-              disabled={safeIndex === 0 || isSwitching}
-              onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}
+              disabled={!canGoPrevious}
+              aria-keyshortcuts="ArrowLeft"
+              onClick={goPrevious}
               className="px-3.5 py-2 rounded-zen text-[0.82rem] font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 text-ink-600 dark:text-sage-300 disabled:opacity-40 transition-colors duration-150 motion-reduce:transition-none"
             >
               ← Previous
             </button>
 
             <div className="flex items-center gap-2.5">
-              {!results[currentQ.questionId] && (
+              {!currentGraded && (
                 <button
                   type="button"
                   aria-busy={checkingId === currentQ.questionId || undefined}
-                  disabled={
-                    (selections[currentQ.questionId] || []).length === 0 ||
-                    checkingId !== null ||
-                    isSwitching
-                  }
+                  aria-keyshortcuts="Enter Space"
+                  disabled={!hasCurrentSelection || checkingId !== null || isSwitching}
                   onClick={() => handleCheck(currentQ.questionId)}
                   className="inline-flex items-center gap-2 px-5 py-2 rounded-zen text-[0.84rem] font-medium bg-matcha-500 hover:bg-matcha-600 text-white disabled:opacity-55 transition-colors duration-150 motion-reduce:transition-none"
                 >
                   {checkingId === currentQ.questionId && <ZenPendingDot />}
                   <span>
-                    {checkingId === currentQ.questionId ? 'Checking…' : 'Check Answer'}
+                    {checkingId === currentQ.questionId ? (
+                      'Checking…'
+                    ) : (
+                      <>
+                        Check Answer
+                        <span className="hidden sm:inline font-mono text-[0.72rem] opacity-75 ml-1.5">
+                          (Enter / Space)
+                        </span>
+                      </>
+                    )}
                   </span>
                 </button>
               )}
               <button
                 type="button"
-                disabled={safeIndex >= filteredQuestions.length - 1 || isSwitching}
-                onClick={() =>
-                  setCurrentIndex((i) => Math.min(filteredQuestions.length - 1, i + 1))
-                }
+                disabled={!canGoNext}
+                aria-keyshortcuts={currentGraded ? 'ArrowRight Enter' : 'ArrowRight'}
+                onClick={goNext}
                 className="px-3.5 py-2 rounded-zen text-[0.82rem] font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 text-ink-600 dark:text-sage-300 disabled:opacity-40 transition-colors duration-150 motion-reduce:transition-none"
               >
                 Next →
+                {currentGraded && canGoNext && (
+                  <span className="hidden sm:inline font-mono text-[0.7rem] opacity-65 ml-1.5">
+                    (Enter)
+                  </span>
+                )}
               </button>
             </div>
           </div>
