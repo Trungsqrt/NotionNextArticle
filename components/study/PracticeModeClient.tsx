@@ -7,7 +7,13 @@ import type { PracticeExamPayload } from '../../lib/study/services/practice-serv
 import type { GradedQuestionResult } from '../../lib/study/services/grading'
 import StudyRichText from './StudyRichText'
 import { PracticeQuestionCardSkeleton, ZenPendingDot } from './StudySkeletons'
+import PracticeCompletion from './PracticeCompletion'
 import { shouldIgnoreStudyShortcut } from '../../lib/study/keyboard'
+import {
+  computePracticeCompletionSummary,
+  shouldShowFinishPractice,
+  shouldShowUnansweredPrompt,
+} from '../../lib/study/practice-completion'
 
 type PracticeFilter = 'all' | 'incorrect' | 'bookmarked'
 type PracticeFetchStatus = 'idle' | 'loading' | 'switching' | 'error' | 'loaded'
@@ -64,6 +70,7 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
   const [results, setResults] = useState<Record<string, GradedQuestionResult>>({})
   const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({})
   const [checkingId, setCheckingId] = useState<string | null>(null)
+  const [isCompleted, setIsCompleted] = useState(false)
 
   const payloadRef = useRef<PracticeExamPayload | null>(null)
   const examAbortRef = useRef<AbortController | null>(null)
@@ -123,6 +130,7 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
       setFilter('all')
       setSelections({})
       setResults({})
+      setIsCompleted(false)
       setFetchStatus('loaded')
     } catch (err) {
       if (controller.signal.aborted || seq !== examSeqRef.current) return
@@ -226,6 +234,8 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
   const isInitialError = fetchStatus === 'error' && !payload
 
   const allQuestions = payload?.questions || []
+  const summary = computePracticeCompletionSummary(allQuestions, results, bookmarks)
+
   const filteredQuestions = allQuestions.filter((q) => {
     if (filter === 'incorrect') return results[q.questionId]?.isCorrect === false
     if (filter === 'bookmarked') return Boolean(bookmarks[q.questionId])
@@ -241,6 +251,22 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
   const canGoPrevious = safeIndex > 0 && !isSwitching
   const canGoNext = safeIndex < filteredQuestions.length - 1 && !isSwitching
 
+  const showFinishPractice = shouldShowFinishPractice({
+    filter,
+    safeIndex,
+    filteredLength: filteredQuestions.length,
+    allGraded: summary.allGraded,
+  })
+  const canFinishPractice = showFinishPractice && !isSwitching
+
+  const showUnansweredPrompt = shouldShowUnansweredPrompt({
+    filter,
+    safeIndex,
+    filteredLength: filteredQuestions.length,
+    remainingUnansweredCount: summary.remainingUnansweredCount,
+    firstUnansweredIndex: summary.firstUnansweredIndex,
+  })
+
   const goPrevious = useCallback(() => {
     if (!canGoPrevious) return
     setCurrentIndex((i) => Math.max(0, i - 1))
@@ -251,10 +277,56 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
     setCurrentIndex((i) => Math.min(filteredQuestions.length - 1, i + 1))
   }, [canGoNext, filteredQuestions.length])
 
+  const handleFinishPractice = useCallback(() => {
+    if (!canFinishPractice) return
+    setIsCompleted(true)
+  }, [canFinishPractice])
+
+  const handleGoToFirstUnanswered = useCallback(() => {
+    if (summary.firstUnansweredIndex < 0 || isSwitching) return
+    setFilter('all')
+    setCurrentIndex(summary.firstUnansweredIndex)
+  }, [summary.firstUnansweredIndex, isSwitching])
+
+  const handleReviewIncorrect = useCallback(() => {
+    if (summary.incorrectCount === 0 || isSwitching) return
+    setIsCompleted(false)
+    setFilter('incorrect')
+    setCurrentIndex(0)
+  }, [summary.incorrectCount, isSwitching])
+
+  const handleReviewBookmarked = useCallback(() => {
+    if (summary.bookmarkedCount === 0 || isSwitching) return
+    setIsCompleted(false)
+    setFilter('bookmarked')
+    setCurrentIndex(0)
+  }, [summary.bookmarkedCount, isSwitching])
+
+  const handleRestartPractice = useCallback(() => {
+    if (isSwitching) return
+    checkAbortRef.current?.abort()
+    checkLockRef.current = false
+    setCheckingId(null)
+    setError('')
+    setSelections({})
+    setResults({})
+    setFilter('all')
+    setCurrentIndex(0)
+    setIsCompleted(false)
+  }, [isSwitching])
+
   // Keyboard shortcuts: ArrowLeft = Previous, ArrowRight = Next,
-  // Enter = Check Answer (if ungraded with selection) or Next (if graded), Space = Check Answer
+  // Enter = Check Answer (if ungraded with selection), Next (if graded), or Finish Practice (on final graded All question),
+  // Space = Check Answer
   useEffect(() => {
-    if (exams.length === 0 || isInitialLoading || isInitialError || isSwitching || !currentQ) {
+    if (
+      exams.length === 0 ||
+      isInitialLoading ||
+      isInitialError ||
+      isSwitching ||
+      isCompleted ||
+      !currentQ
+    ) {
       return
     }
 
@@ -284,6 +356,9 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
         } else if (canGoNext) {
           e.preventDefault()
           goNext()
+        } else if (canFinishPractice) {
+          e.preventDefault()
+          handleFinishPractice()
         }
         return
       }
@@ -303,15 +378,18 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
     isInitialLoading,
     isInitialError,
     isSwitching,
+    isCompleted,
     currentQ,
     currentGraded,
     hasCurrentSelection,
     checkingId,
     canGoPrevious,
     canGoNext,
+    canFinishPractice,
     goPrevious,
     goNext,
     handleCheck,
+    handleFinishPractice,
   ])
 
   if (exams.length === 0) {
@@ -322,9 +400,10 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
     )
   }
 
-  const answeredCount = Object.keys(results).length
-  const incorrectCount = Object.values(results).filter((r: GradedQuestionResult) => !r.isCorrect).length
-  const bookmarkedCount = Object.keys(bookmarks).length
+  const currentExamTitle =
+    payload?.exam.title ||
+    exams.find((ex) => ex.examId === selectedExamId)?.title ||
+    'Practice Set'
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 sm:py-10 space-y-6">
@@ -367,38 +446,49 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
       </div>
 
       {/* ── Filter Tabs + Progress ── */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="inline-flex items-center gap-1 p-1 rounded-zen bg-rice-paper-200/70 dark:bg-tea-slate-200/70 border border-rice-paper-400/60 dark:border-tea-slate-50/40 text-xs">
-          {(
-            [
-              { key: 'all', label: isInitialLoading ? 'All' : `All (${allQuestions.length})` },
-              { key: 'incorrect', label: isInitialLoading ? 'Incorrect' : `Incorrect (${incorrectCount})` },
-              { key: 'bookmarked', label: isInitialLoading ? 'Bookmarked' : `Bookmarked (${bookmarkedCount})` },
-            ] as const
-          ).map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              disabled={isInitialLoading || isSwitching}
-              onClick={() => {
-                setFilter(tab.key)
-                setCurrentIndex(0)
-              }}
-              className={[
-                'px-3 py-1 rounded-[4px] font-medium transition-colors duration-150 motion-reduce:transition-none disabled:opacity-60',
-                filter === tab.key
-                  ? 'bg-rice-paper-50 dark:bg-tea-slate-50 text-matcha-700 dark:text-matcha-300 shadow-zen-sm'
-                  : 'text-ink-500 dark:text-sage-400 hover:text-ink-700 dark:hover:text-sage-200',
-              ].join(' ')}
-            >
-              {tab.label}
-            </button>
-          ))}
+      {!isCompleted && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="inline-flex items-center gap-1 p-1 rounded-zen bg-rice-paper-200/70 dark:bg-tea-slate-200/70 border border-rice-paper-400/60 dark:border-tea-slate-50/40 text-xs">
+            {(
+              [
+                { key: 'all', label: isInitialLoading ? 'All' : `All (${allQuestions.length})` },
+                {
+                  key: 'incorrect',
+                  label: isInitialLoading ? 'Incorrect' : `Incorrect (${summary.incorrectCount})`,
+                },
+                {
+                  key: 'bookmarked',
+                  label: isInitialLoading ? 'Bookmarked' : `Bookmarked (${summary.bookmarkedCount})`,
+                },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                disabled={isInitialLoading || isSwitching}
+                onClick={() => {
+                  setIsCompleted(false)
+                  setFilter(tab.key)
+                  setCurrentIndex(0)
+                }}
+                className={[
+                  'px-3 py-1 rounded-[4px] font-medium transition-colors duration-150 motion-reduce:transition-none disabled:opacity-60',
+                  filter === tab.key
+                    ? 'bg-rice-paper-50 dark:bg-tea-slate-50 text-matcha-700 dark:text-matcha-300 shadow-zen-sm'
+                    : 'text-ink-500 dark:text-sage-400 hover:text-ink-700 dark:hover:text-sage-200',
+                ].join(' ')}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs font-mono text-ink-500 dark:text-sage-400">
+            {isInitialLoading
+              ? 'Loading set…'
+              : `Checked: ${summary.completedCount}/${summary.totalQuestions}`}
+          </span>
         </div>
-        <span className="text-xs font-mono text-ink-500 dark:text-sage-400">
-          {isInitialLoading ? 'Loading set…' : `Checked: ${answeredCount}/${allQuestions.length}`}
-        </span>
-      </div>
+      )}
 
       {error && (
         <div
@@ -432,6 +522,20 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
             Retry Loading Questions
           </button>
         </div>
+      ) : isCompleted && payload ? (
+        <PracticeCompletion
+          examTitle={currentExamTitle}
+          accuracyPercent={summary.accuracyPercent}
+          completedCount={summary.completedCount}
+          totalQuestions={summary.totalQuestions}
+          correctCount={summary.correctCount}
+          incorrectCount={summary.incorrectCount}
+          bookmarkedCount={summary.bookmarkedCount}
+          onReviewIncorrect={handleReviewIncorrect}
+          onReviewBookmarked={handleReviewBookmarked}
+          onRestart={handleRestartPractice}
+          disabled={isSwitching}
+        />
       ) : !currentQ ? (
         <div className="rounded-card p-8 text-center bg-rice-paper-50/80 dark:bg-tea-slate-200/50 border border-rice-paper-400/60 dark:border-tea-slate-50/40 text-sm text-ink-400 dark:text-sage-500 animate-study-feedback">
           No questions match the current filter.
@@ -648,6 +752,27 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
             )
           })()}
 
+          {/* Remaining Unanswered Notice on Final Question */}
+          {showUnansweredPrompt && (
+            <div className="rounded-zen px-4 py-3 bg-rice-paper-200/70 dark:bg-tea-slate-300/60 border border-rice-paper-400/70 dark:border-tea-slate-50/50 flex flex-wrap items-center justify-between gap-3 text-xs animate-study-feedback">
+              <span className="text-ink-600 dark:text-sage-300">
+                {summary.remainingUnansweredCount}{' '}
+                {summary.remainingUnansweredCount === 1
+                  ? 'unanswered question'
+                  : 'unanswered questions'}{' '}
+                remaining before finishing.
+              </span>
+              <button
+                type="button"
+                disabled={isSwitching}
+                onClick={handleGoToFirstUnanswered}
+                className="px-3 py-1.5 rounded-zen font-medium text-matcha-700 dark:text-matcha-300 bg-matcha-50/90 dark:bg-matcha-900/35 border border-matcha-400/60 dark:border-matcha-600/50 hover:bg-matcha-100/80 dark:hover:bg-matcha-900/55 transition-colors duration-150 motion-reduce:transition-none disabled:opacity-50"
+              >
+                Go to Q{summary.firstUnansweredIndex + 1} (First Unanswered)
+              </button>
+            </div>
+          )}
+
           {/* Footer Navigation */}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
             <button
@@ -685,20 +810,35 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
                   </span>
                 </button>
               )}
-              <button
-                type="button"
-                disabled={!canGoNext}
-                aria-keyshortcuts={currentGraded ? 'ArrowRight Enter' : 'ArrowRight'}
-                onClick={goNext}
-                className="px-3.5 py-2 rounded-zen text-[0.82rem] font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 text-ink-600 dark:text-sage-300 disabled:opacity-40 transition-colors duration-150 motion-reduce:transition-none"
-              >
-                Next →
-                {currentGraded && canGoNext && (
-                  <span className="hidden sm:inline font-mono text-[0.7rem] opacity-65 ml-1.5">
+              {showFinishPractice ? (
+                <button
+                  type="button"
+                  disabled={!canFinishPractice}
+                  aria-keyshortcuts="Enter"
+                  onClick={handleFinishPractice}
+                  className="px-5 py-2 rounded-zen text-[0.84rem] font-medium bg-matcha-500 hover:bg-matcha-600 dark:bg-matcha-600 dark:hover:bg-matcha-500 text-white shadow-zen-sm disabled:opacity-55 transition-colors duration-150 motion-reduce:transition-none"
+                >
+                  Finish Practice
+                  <span className="hidden sm:inline font-mono text-[0.72rem] opacity-75 ml-1.5">
                     (Enter)
                   </span>
-                )}
-              </button>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={!canGoNext}
+                  aria-keyshortcuts={currentGraded ? 'ArrowRight Enter' : 'ArrowRight'}
+                  onClick={goNext}
+                  className="px-3.5 py-2 rounded-zen text-[0.82rem] font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 text-ink-600 dark:text-sage-300 disabled:opacity-40 transition-colors duration-150 motion-reduce:transition-none"
+                >
+                  Next →
+                  {currentGraded && canGoNext && (
+                    <span className="hidden sm:inline font-mono text-[0.7rem] opacity-65 ml-1.5">
+                      (Enter)
+                    </span>
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </article>
