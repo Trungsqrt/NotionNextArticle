@@ -1,10 +1,9 @@
 import CourseFilter from '../components/CourseFilter'
 import { getAllPosts } from '../lib/notion'
+import { SITE_URL } from '../lib/site-url'
 
 // Revalidate homepage in background every 1 hour (3600 seconds)
 export const revalidate = 3600
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
 
 export const metadata = {
   title: 'ServiceNow Space · Knowledge Hub',

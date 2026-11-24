@@ -1,6 +1,6 @@
 import { getAllPosts } from '../../lib/notion'
+import { SITE_URL } from '../../lib/site-url'
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
 const AUTHOR = 'Jun Mai - Trungsqrt'
 
 export const revalidate = 3600
