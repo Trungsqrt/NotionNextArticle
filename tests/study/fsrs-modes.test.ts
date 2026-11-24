@@ -202,7 +202,10 @@ describe('Phase 5 — Active Recall, Cross-Device Concurrency & Multi-User Isola
     const repos = createInMemoryRepos()
     const nowIso = '2026-03-01T10:00:00.000Z'
 
-    const queue = await getRecallQueue(SYNTHETIC_USER.userId, repos, { nowIso })
+    const queue = await getRecallQueue(SYNTHETIC_USER.userId, repos, {
+      nowIso,
+      bookmarkedQuestionIds: ['q-synth-001', 'q-synth-002'],
+    })
     assert.equal(queue.items.length, 2)
     assert.equal('correctOptionIds' in queue.items[0].prompt, false)
     assert.equal('explanation' in queue.items[0].prompt, false)
@@ -400,7 +403,10 @@ describe('Phase 5 — Active Recall, Cross-Device Concurrency & Multi-User Isola
       listByUserCalled = true
       return origListByUser(...args)
     }
-    await getRecallQueue(SYNTHETIC_USER.userId, repos, { nowIso: step1.resulting.due })
+    await getRecallQueue(SYNTHETIC_USER.userId, repos, {
+      nowIso: step1.resulting.due,
+      bookmarkedQuestionIds: ['q-synth-001', 'q-synth-002'],
+    })
     assert.equal(listByUserCalled, false)
 
     // Dedicated idempotent question-level reconciliation recovers missing card state via O(1) lookup
@@ -416,6 +422,7 @@ describe('Phase 5 — Active Recall, Cross-Device Concurrency & Multi-User Isola
     // Queue now reflects recovered reps=1 from persisted card state
     const queueAfterDue = await getRecallQueue(SYNTHETIC_USER.userId, repos, {
       nowIso: step1.resulting.due,
+      bookmarkedQuestionIds: ['q-synth-001', 'q-synth-002'],
     })
     const recoveredItem = queueAfterDue.items.find((i) => i.prompt.questionId === 'q-synth-001')
     assert.ok(recoveredItem)

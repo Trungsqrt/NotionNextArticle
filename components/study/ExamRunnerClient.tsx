@@ -9,6 +9,7 @@ import StudyRichText from './StudyRichText'
 import { StudyLink } from './StudyNavigationContext'
 import { ExamRunnerSkeleton, ZenPendingDot } from './StudySkeletons'
 import { shouldIgnoreStudyShortcut } from '../../lib/study/keyboard'
+import { recordMockExamResult } from '../../lib/study/local-progress'
 
 function formatTimer(seconds: number): string {
   const safe = Math.max(0, seconds)
@@ -17,7 +18,13 @@ function formatTimer(seconds: number): string {
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
 }
 
-export default function ExamRunnerClient({ examId }: { examId: string }) {
+export default function ExamRunnerClient({
+  examId,
+  userId,
+}: {
+  examId: string
+  userId: string
+}) {
   const [session, setSession] = useState<StartedExamSession | null>(null)
   const [result, setResult] = useState<GradedExamResult | null>(null)
   const [loading, setLoading] = useState(true)
@@ -111,6 +118,7 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
       if (!res.ok) throw new Error('Unable to grade exam right now.')
       const graded = (await res.json()) as GradedExamResult
       if (startSeqAtSubmit !== startSeqRef.current) return
+      recordMockExamResult(userId, examId, graded)
       setResult(graded)
     } catch (err) {
       if (controller.signal.aborted || startSeqAtSubmit !== startSeqRef.current) return
@@ -121,7 +129,7 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
         setSubmitting(false)
       }
     }
-  }, [session, submitting, result, answers])
+  }, [session, submitting, result, answers, userId, examId])
 
   // Countdown timer
   useEffect(() => {

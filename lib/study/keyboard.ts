@@ -33,6 +33,8 @@ const EDITABLE_ROLES = new Set(['textbox', 'combobox', 'spinbutton', 'searchbox'
 const INTERACTIVE_SELECTOR =
   'button, a[href], summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [role="switch"]'
 
+const STUDY_OPTION_SELECTOR = '[data-study-option="true"]'
+
 const ARROW_CONTROL_SELECTOR =
   '[role="radiogroup"], [role="tablist"], [role="slider"], [role="menu"], [role="listbox"]'
 
@@ -109,6 +111,13 @@ export function shouldYieldToFocusedControl(target: unknown, key: string): boole
     // Always let links handle Enter natively
     if (key === 'Enter' && interactive.tagName.toUpperCase() === 'A') {
       return true
+    }
+
+    // Allow Smart Enter on focused answer option buttons so Enter triggers
+    // Check Answer / Next / Finish Practice instead of toggling the option,
+    // while keeping Space available for native keyboard option selection.
+    if (key === 'Enter' && matchesSafe(interactive, STUDY_OPTION_SELECTOR)) {
+      return false
     }
 
     // Yield when the control is keyboard-focused (:focus-visible) so Tab + Enter/Space

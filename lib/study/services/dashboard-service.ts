@@ -100,6 +100,38 @@ export function computeUtcStudyStreak(
   return streak
 }
 
+export interface StudyDashboardCatalogExam {
+  examId: string
+  title: string
+  certificationCategory: string
+  questionCount: number
+}
+
+export interface StudyDashboardCatalog {
+  generatedAt: string
+  exams: StudyDashboardCatalogExam[]
+}
+
+/**
+ * Lightweight Dashboard catalog query: fetches only published exam collections
+ * without touching FSRS card states or review event history.
+ */
+export async function getStudyDashboardCatalog(
+  repos: StudyRepositories,
+  nowIso: string = new Date().toISOString()
+): Promise<StudyDashboardCatalog> {
+  const exams = await repos.exams.list({ status: 'published' })
+  return {
+    generatedAt: nowIso,
+    exams: exams.map((exam) => ({
+      examId: exam.examId,
+      title: exam.title,
+      certificationCategory: exam.certificationCategory,
+      questionCount: exam.questionCount,
+    })),
+  }
+}
+
 export async function getStudyDashboardData(
   userId: string,
   repos: StudyRepositories,

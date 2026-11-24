@@ -31,8 +31,9 @@ export function ZenPendingDot({ className = '' }: { className?: string }) {
 }
 
 /**
- * Matches StudyDashboardClient layout:
- * Heading + 2 CTAs, 4 metric cards, Upcoming Reviews, Progress by Exam, Recent History.
+ * Matches redesigned StudyDashboardClient layout:
+ * Heading + 2 CTAs, 4 summary metric cards, and 2-column Exam Collection cards
+ * with Practice Progress & Mock Exam Progress blocks.
  */
 export function StudyDashboardSkeleton() {
   return (
@@ -63,69 +64,49 @@ export function StudyDashboardSkeleton() {
             key={idx}
             className="rounded-card p-5 bg-rice-paper-50/90 dark:bg-tea-slate-200/65 border border-rice-paper-400/70 dark:border-tea-slate-50/50 shadow-zen-sm space-y-3"
           >
-            <Bone className="h-3 w-20" />
+            <Bone className="h-3 w-24" />
             <Bone className="h-8 w-16" />
             <Bone className="h-3 w-28" />
           </div>
         ))}
       </section>
 
-      {/* Upcoming Reviews */}
-      <section className="rounded-card p-6 bg-rice-paper-50/90 dark:bg-tea-slate-200/60 border border-rice-paper-400/70 dark:border-tea-slate-50/50 space-y-4">
+      {/* Exam Collections */}
+      <section className="space-y-4">
         <Bone className="h-5 w-40" />
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[0, 1, 2, 3].map((idx) => (
             <div
               key={idx}
-              className="rounded-zen py-3 px-4 bg-rice-paper-200/60 dark:bg-tea-slate-300/60 border border-rice-paper-400/50 dark:border-tea-slate-50/40 flex flex-col items-center gap-2"
+              className="rounded-card p-5 sm:p-6 bg-rice-paper-50/90 dark:bg-tea-slate-200/65 border border-rice-paper-400/70 dark:border-tea-slate-50/50 shadow-zen-sm space-y-5"
             >
-              <Bone className="h-6 w-10" />
-              <Bone className="h-3 w-20" />
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Progress by Exam Collection */}
-      <section className="space-y-4">
-        <Bone className="h-5 w-52" />
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {[0, 1].map((idx) => (
-            <div
-              key={idx}
-              className="rounded-card p-5 bg-rice-paper-50/90 dark:bg-tea-slate-200/65 border border-rice-paper-400/70 dark:border-tea-slate-50/50 shadow-zen-sm space-y-3.5"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="space-y-2 flex-1">
-                  <Bone className="h-3 w-24" />
-                  <Bone className="h-5 w-48 max-w-full" />
-                </div>
-                <Bone className="h-4 w-12 shrink-0" />
-              </div>
-              <Bone className="h-1.5 w-full rounded-pill" />
-              <div className="flex items-center justify-between gap-2">
-                <Bone className="h-3 w-36" />
+              <div className="space-y-2">
                 <Bone className="h-3 w-28" />
+                <Bone className="h-5 w-52 max-w-full" />
               </div>
-            </div>
-          ))}
-        </div>
-      </section>
 
-      {/* Recent Review History */}
-      <section className="rounded-card p-6 bg-rice-paper-50/90 dark:bg-tea-slate-200/60 border border-rice-paper-400/70 dark:border-tea-slate-50/50 space-y-4">
-        <Bone className="h-5 w-44" />
-        <div className="space-y-3">
-          {[0, 1, 2].map((idx) => (
-            <div
-              key={idx}
-              className="grid grid-cols-5 gap-3 py-2 border-b border-rice-paper-400/40 dark:border-tea-slate-50/30 last:border-b-0"
-            >
-              <Bone className="h-3.5 w-20" />
-              <Bone className="h-3.5 w-28" />
-              <Bone className="h-3.5 w-14" />
-              <Bone className="h-3.5 w-16" />
-              <Bone className="h-3.5 w-24" />
+              <div className="space-y-2.5 pt-3 border-t border-rice-paper-400/50 dark:border-tea-slate-50/40">
+                <div className="flex items-center justify-between">
+                  <Bone className="h-3 w-28" />
+                  <Bone className="h-5 w-20 rounded-pill" />
+                </div>
+                <Bone className="h-1.5 w-full rounded-pill" />
+                <div className="flex items-center justify-between">
+                  <Bone className="h-3 w-36" />
+                  <Bone className="h-3 w-24" />
+                </div>
+              </div>
+
+              <div className="space-y-2.5 pt-3 border-t border-rice-paper-400/50 dark:border-tea-slate-50/40">
+                <div className="flex items-center justify-between">
+                  <Bone className="h-3 w-32" />
+                  <Bone className="h-5 w-24 rounded-pill" />
+                </div>
+                <div className="flex items-center justify-between">
+                  <Bone className="h-3 w-36" />
+                  <Bone className="h-3 w-20" />
+                </div>
+              </div>
             </div>
           ))}
         </div>

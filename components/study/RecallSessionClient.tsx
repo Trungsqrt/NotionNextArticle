@@ -6,14 +6,24 @@ import type { StudyRating } from '../../lib/study/types'
 import type {
   RecallQueueItem,
   RecallQueueResponse,
+  RecallUpcomingReviews,
   RevealedRecallAnswer,
 } from '../../lib/study/services/recall-service'
 import StudyRichText from './StudyRichText'
 import { StudyLink } from './StudyNavigationContext'
 import { RecallSessionSkeleton, ZenPendingDot } from './StudySkeletons'
 import { shouldIgnoreStudyShortcut } from '../../lib/study/keyboard'
+import { listAllBookmarkedQuestionIds } from '../../lib/study/local-progress'
 
 type QueueStatus = 'loading' | 'refreshing' | 'error' | 'loaded'
+
+const EMPTY_UPCOMING: RecallUpcomingReviews = {
+  laterToday: 0,
+  tomorrow: 0,
+  next3Days: 0,
+  next7Days: 0,
+  later: 0,
+}
 
 function generateEventId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -58,12 +68,74 @@ const RATING_BUTTONS: Array<{
   },
 ]
 
-export default function RecallSessionClient() {
+function UpcomingReviewsSummary({
+  upcoming,
+}: {
+  upcoming: RecallUpcomingReviews
+}) {
+  const totalUpcoming =
+    upcoming.laterToday +
+    upcoming.tomorrow +
+    upcoming.next3Days +
+    upcoming.next7Days +
+    upcoming.later
+
+  if (totalUpcoming === 0) return null
+
+  const buckets = [
+    ...(upcoming.laterToday > 0
+      ? [{ label: 'Later Today', count: upcoming.laterToday }]
+      : []),
+    { label: 'Tomorrow', count: upcoming.tomorrow },
+    { label: 'Next 3 Days', count: upcoming.next3Days },
+    { label: 'Next 7 Days', count: upcoming.next7Days },
+    { label: 'Later', count: upcoming.later },
+  ]
+
+  return (
+    <section
+      aria-label="Upcoming bookmarked reviews"
+      className="rounded-card p-5 bg-rice-paper-50/90 dark:bg-tea-slate-200/60 border border-rice-paper-400/70 dark:border-tea-slate-50/50 text-left space-y-3"
+    >
+      <h2 className="font-serif text-base font-medium text-ink-700 dark:text-sage-100 m-0">
+        Upcoming Reviews
+      </h2>
+      <div
+        className={`grid grid-cols-2 ${
+          buckets.length >= 5 ? 'sm:grid-cols-5' : 'sm:grid-cols-4'
+        } gap-2.5 text-center`}
+      >
+        {buckets.map((b) => (
+          <div
+            key={b.label}
+            className="rounded-zen py-2.5 px-3 bg-rice-paper-200/60 dark:bg-tea-slate-300/60 border border-rice-paper-400/50 dark:border-tea-slate-50/40"
+          >
+            <div className="font-serif text-lg font-medium tabular-nums text-ink-700 dark:text-sage-100">
+              {b.count}
+            </div>
+            <div className="text-[0.72rem] text-ink-400 dark:text-sage-500 mt-0.5">
+              {b.label}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+export default function RecallSessionClient({
+  userId,
+  publishedExamIds,
+}: {
+  userId: string
+  publishedExamIds: string[]
+}) {
   const searchParams = useSearchParams()
   const examIdFilter = searchParams?.get('examId') || ''
 
   const [queue, setQueue] = useState<RecallQueueItem[]>([])
-  const [counts, setCounts] = useState({ due: 0, newCards: 0 })
+  const [counts, setCounts] = useState({ due: 0, newCards: 0, bookmarked: 0 })
+  const [upcomingReviews, setUpcomingReviews] = useState<RecallUpcomingReviews>(EMPTY_UPCOMING)
   const [currentIdx, setCurrentIdx] = useState(0)
   const [completedCount, setCompletedCount] = useState(0)
 
@@ -96,13 +168,35 @@ export default function RecallSessionClient() {
     queueAbortRef.current = controller
     const seq = ++queueSeqRef.current
 
+    const scopedExamIds = examIdFilter ? [examIdFilter] : publishedExamIds
+    const bookmarkedIds = listAllBookmarkedQuestionIds(userId, scopedExamIds)
+
+    // When no local bookmarks exist for this user/scope, skip the API call cleanly
+    if (bookmarkedIds.length === 0) {
+      hasLoadedOnceRef.current = true
+      setQueue([])
+      setCounts({ due: 0, newCards: 0, bookmarked: 0 })
+      setUpcomingReviews(EMPTY_UPCOMING)
+      setCurrentIdx(0)
+      setShowChoices(false)
+      setRevealed(null)
+      setError('')
+      setQueueStatus('loaded')
+      return
+    }
+
     setQueueStatus(hasLoadedOnceRef.current ? 'refreshing' : 'loading')
     setError('')
 
     try {
-      const qs = new URLSearchParams({ limit: '25' })
-      if (examIdFilter) qs.set('examId', examIdFilter)
-      const res = await fetch(`/api/study/recall/queue?${qs.toString()}`, {
+      const res = await fetch('/api/study/recall/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          examId: examIdFilter || undefined,
+          limit: 25,
+          questionIds: bookmarkedIds,
+        }),
         cache: 'no-store',
         signal: controller.signal,
       })
@@ -112,7 +206,12 @@ export default function RecallSessionClient() {
 
       hasLoadedOnceRef.current = true
       setQueue(data.items)
-      setCounts({ due: data.dueCount, newCards: data.newCount })
+      setCounts({
+        due: data.dueCount,
+        newCards: data.newCount,
+        bookmarked: data.bookmarkedCount,
+      })
+      setUpcomingReviews(data.upcomingReviews || EMPTY_UPCOMING)
       setCurrentIdx(0)
       setShowChoices(false)
       setRevealed(null)
@@ -123,7 +222,7 @@ export default function RecallSessionClient() {
       setError(err instanceof Error ? err.message : 'Failed to load recall queue.')
       setQueueStatus(hasLoadedOnceRef.current ? 'loaded' : 'error')
     }
-  }, [examIdFilter])
+  }, [examIdFilter, publishedExamIds, userId])
 
   useEffect(() => {
     hasLoadedOnceRef.current = false
@@ -223,11 +322,26 @@ export default function RecallSessionClient() {
           throw new Error('Could not save your review. Please try again.')
         }
 
+        const nextIdx = currentIdx + 1
         setCompletedCount((c) => c + 1)
+        setCounts((prev) => ({
+          ...prev,
+          due: currentItem.bucket === 'due' ? Math.max(0, prev.due - 1) : prev.due,
+          newCards:
+            currentItem.bucket === 'new' ? Math.max(0, prev.newCards - 1) : prev.newCards,
+        }))
         setShowChoices(false)
         setRevealed(null)
         currentEventIdRef.current = generateEventId()
-        setCurrentIdx((idx) => idx + 1)
+        setCurrentIdx(nextIdx)
+
+        // Refresh upcoming review counts cleanly when reaching the end of the current batch
+        if (nextIdx >= queue.length) {
+          rateLockRef.current = false
+          setSubmittingRating(null)
+          await loadQueue()
+          return
+        }
       } catch (err) {
         if (controller.signal.aborted || seq !== actionSeqRef.current || queueSeqAtStart !== queueSeqRef.current) {
           return
@@ -240,7 +354,7 @@ export default function RecallSessionClient() {
         }
       }
     },
-    [currentItem, revealed, submittingRating, queueStatus, loadQueue]
+    [currentItem, currentIdx, queue.length, revealed, submittingRating, queueStatus, loadQueue]
   )
 
   // Keyboard shortcuts: O = show choices, Enter/Space = reveal answer, 1-4 = Again/Hard/Good/Easy
@@ -307,28 +421,100 @@ export default function RecallSessionClient() {
   }
 
   const isRefreshing = queueStatus === 'refreshing'
+  const practiceHref = examIdFilter
+    ? `/study/practice?examId=${encodeURIComponent(examIdFilter)}`
+    : '/study/practice'
 
-  if (!currentItem) {
+  // Empty state 1: No bookmarked questions exist
+  if (!currentItem && counts.bookmarked === 0) {
     return (
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-14 text-center animate-study-feedback">
-        <div className="rounded-card p-8 bg-rice-paper-50/90 dark:bg-tea-slate-200/65 border border-rice-paper-400/70 dark:border-tea-slate-50/50 shadow-zen-sm">
-          <h1 className="font-serif text-2xl font-medium text-ink-700 dark:text-sage-100 mb-2">
-            {completedCount > 0 ? 'Session Complete' : 'All Caught Up'}
-          </h1>
-          <p className="text-[0.9rem] text-ink-500 dark:text-sage-400 mb-6">
-            {completedCount > 0
-              ? `You reviewed ${completedCount} card${completedCount === 1 ? '' : 's'} with FSRS-6 scheduling. Your next due dates have been saved.`
-              : 'There are no due or new cards waiting right now.'}
+        <div className="rounded-card p-8 sm:p-10 bg-rice-paper-50/90 dark:bg-tea-slate-200/65 border border-rice-paper-400/70 dark:border-tea-slate-50/50 shadow-zen-sm space-y-5">
+          <div className="space-y-2">
+            <p className="text-[0.7rem] uppercase tracking-[0.2em] font-medium text-matcha-600 dark:text-matcha-400 m-0">
+              Bookmark-Based Active Recall
+            </p>
+            <h1 className="font-serif text-2xl font-medium text-ink-700 dark:text-sage-100 m-0">
+              No Bookmarked Questions Yet
+            </h1>
+            <p className="text-[0.9rem] text-ink-500 dark:text-sage-400 max-w-md mx-auto m-0 leading-relaxed">
+              Active Recall is your calm spaced-repetition deck for questions you choose to revisit. Bookmark questions in Practice Mode to add them here.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+            <StudyLink
+              href={practiceHref}
+              className="px-5 py-2.5 rounded-zen text-[0.84rem] font-medium bg-matcha-500 hover:bg-matcha-600 dark:bg-matcha-600 dark:hover:bg-matcha-500 text-white shadow-zen-sm no-underline transition-colors duration-200 motion-reduce:transition-none"
+            >
+              Go to Practice
+            </StudyLink>
+            <StudyLink
+              href="/study"
+              className="px-4 py-2.5 rounded-zen text-[0.84rem] font-medium text-ink-600 dark:text-sage-300 border border-rice-paper-400 dark:border-tea-slate-50/60 no-underline"
+            >
+              Return to Dashboard
+            </StudyLink>
+          </div>
+
+          <p className="text-[0.74rem] text-ink-400 dark:text-sage-500 m-0 pt-2">
+            Bookmarks are stored locally in this browser for your account and are not synchronized across devices.
           </p>
+        </div>
+      </div>
+    )
+  }
+
+  // Empty state 2: Bookmarks exist, but none are currently due or new
+  if (!currentItem) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-12 text-center space-y-6 animate-study-feedback">
+        <div className="rounded-card p-8 bg-rice-paper-50/90 dark:bg-tea-slate-200/65 border border-rice-paper-400/70 dark:border-tea-slate-50/50 shadow-zen-sm space-y-5">
+          <div className="space-y-2">
+            <p className="text-[0.7rem] uppercase tracking-[0.2em] font-medium text-matcha-600 dark:text-matcha-400 m-0">
+              {counts.bookmarked} Bookmarked {counts.bookmarked === 1 ? 'Card' : 'Cards'}
+            </p>
+            <h1 className="font-serif text-2xl font-medium text-ink-700 dark:text-sage-100 m-0">
+              {completedCount > 0 ? 'Session Complete' : 'All Caught Up'}
+            </h1>
+            <p className="text-[0.9rem] text-ink-500 dark:text-sage-400 m-0">
+              {completedCount > 0
+                ? `You reviewed ${completedCount} bookmarked card${completedCount === 1 ? '' : 's'} with FSRS-6 scheduling. Your next due dates have been saved.`
+                : 'None of your bookmarked cards are due right now. Check back when your next scheduled reviews arrive.'}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2.5 max-w-sm mx-auto text-center">
+            <div className="rounded-zen py-2.5 px-3 bg-rice-paper-200/60 dark:bg-tea-slate-300/60 border border-rice-paper-400/50 dark:border-tea-slate-50/40">
+              <div className="font-serif text-lg font-medium tabular-nums text-matcha-600 dark:text-matcha-300">
+                {counts.due}
+              </div>
+              <div className="text-[0.7rem] text-ink-400 dark:text-sage-500">Due Cards</div>
+            </div>
+            <div className="rounded-zen py-2.5 px-3 bg-rice-paper-200/60 dark:bg-tea-slate-300/60 border border-rice-paper-400/50 dark:border-tea-slate-50/40">
+              <div className="font-serif text-lg font-medium tabular-nums text-ink-700 dark:text-sage-100">
+                {counts.newCards}
+              </div>
+              <div className="text-[0.7rem] text-ink-400 dark:text-sage-500">New Cards</div>
+            </div>
+            <div className="rounded-zen py-2.5 px-3 bg-rice-paper-200/60 dark:bg-tea-slate-300/60 border border-rice-paper-400/50 dark:border-tea-slate-50/40">
+              <div className="font-serif text-lg font-medium tabular-nums text-ink-700 dark:text-sage-100">
+                {counts.bookmarked}
+              </div>
+              <div className="text-[0.7rem] text-ink-400 dark:text-sage-500">Bookmarked</div>
+            </div>
+          </div>
+
           {error && (
             <div
               role="alert"
-              className="mb-5 rounded-zen px-4 py-2.5 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 dark:border-rose-400/40 text-xs text-earth-rust dark:text-rose-200"
+              className="rounded-zen px-4 py-2.5 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 dark:border-rose-400/40 text-xs text-earth-rust dark:text-rose-200"
             >
               {error}
             </div>
           )}
-          <div className="flex flex-wrap items-center justify-center gap-3">
+
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
             <button
               type="button"
               disabled={isRefreshing}
@@ -337,22 +523,36 @@ export default function RecallSessionClient() {
               className="inline-flex items-center gap-2 px-4 py-2 rounded-zen text-[0.84rem] font-medium bg-matcha-500 hover:bg-matcha-600 text-white transition-colors duration-200 motion-reduce:transition-none disabled:opacity-60"
             >
               {isRefreshing && <ZenPendingDot />}
-              <span>{isRefreshing ? 'Checking…' : 'Check for More Cards'}</span>
+              <span>{isRefreshing ? 'Checking…' : 'Check for Due Cards'}</span>
             </button>
             <StudyLink
-              href="/study"
+              href={practiceHref}
               className="px-4 py-2 rounded-zen text-[0.84rem] font-medium text-ink-600 dark:text-sage-300 border border-rice-paper-400 dark:border-tea-slate-50/60 no-underline"
+            >
+              Go to Practice
+            </StudyLink>
+            <StudyLink
+              href="/study"
+              className="px-4 py-2 rounded-zen text-[0.84rem] font-medium text-ink-500 dark:text-sage-400 hover:text-matcha-600 dark:hover:text-matcha-300 no-underline"
             >
               Return to Dashboard
             </StudyLink>
           </div>
         </div>
+
+        <UpcomingReviewsSummary upcoming={upcomingReviews} />
       </div>
     )
   }
 
   const { prompt } = currentItem
   const correctSet = new Set(revealed?.correctOptionIds || [])
+  const upcomingTotal =
+    upcomingReviews.laterToday +
+    upcomingReviews.tomorrow +
+    upcomingReviews.next3Days +
+    upcomingReviews.next7Days +
+    upcomingReviews.later
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 sm:py-10 space-y-6 animate-study-feedback">
@@ -374,8 +574,9 @@ export default function RecallSessionClient() {
             </span>
           )}
         </div>
-        <span className="font-mono text-xs">
-          Card {currentIdx + 1} / {queue.length} · Due: {counts.due} · New: {counts.newCards}
+        <span className="font-mono text-xs tabular-nums">
+          Card {currentIdx + 1}/{queue.length} · Due: {counts.due} · New: {counts.newCards}
+          {upcomingTotal > 0 ? ` · Upcoming: ${upcomingTotal}` : ''}
         </span>
       </div>
 

@@ -90,7 +90,7 @@ test('isInsideDialog ignores events originating inside dialog or aria-modal cont
 })
 
 test('shouldYieldToFocusedControl respects keyboard-focused buttons, links, and arrow widgets', () => {
-  // Keyboard-focused button (:focus-visible) yields on Enter and Space
+  // Keyboard-focused unrelated button (:focus-visible) yields on Enter and Space
   const kbButton = makeEl({
     tagName: 'BUTTON',
     matchedSelectors: [':focus-visible'],
@@ -99,6 +99,28 @@ test('shouldYieldToFocusedControl respects keyboard-focused buttons, links, and 
   assert.equal(shouldYieldToFocusedControl(kbButton as unknown as EventTarget, 'Enter'), true)
   assert.equal(shouldYieldToFocusedControl(kbButton as unknown as EventTarget, ' '), true)
   assert.equal(shouldYieldToFocusedControl(kbButton as unknown as EventTarget, 'ArrowRight'), false)
+
+  // Keyboard-focused answer option ([data-study-option="true"] + :focus-visible):
+  // Enter runs Smart Enter (does not yield), while Space still yields for native option toggle
+  const kbOptionButton = makeEl({
+    tagName: 'BUTTON',
+    matchedSelectors: [':focus-visible', '[data-study-option="true"]'],
+  })
+  kbOptionButton.closest = (sel: string) => (sel.includes('button') ? kbOptionButton : null)
+  assert.equal(shouldYieldToFocusedControl(kbOptionButton as unknown as EventTarget, 'Enter'), false)
+  assert.equal(shouldIgnoreStudyShortcut({ key: 'Enter', target: kbOptionButton }), false)
+  assert.equal(shouldYieldToFocusedControl(kbOptionButton as unknown as EventTarget, ' '), true)
+  assert.equal(shouldIgnoreStudyShortcut({ key: ' ', target: kbOptionButton }), true)
+
+  // Mouse-clicked answer option ([data-study-option="true"], not :focus-visible):
+  // Enter and Space both allow Study Room shortcuts
+  const mouseOptionButton = makeEl({
+    tagName: 'BUTTON',
+    matchedSelectors: ['[data-study-option="true"]'],
+  })
+  mouseOptionButton.closest = (sel: string) => (sel.includes('button') ? mouseOptionButton : null)
+  assert.equal(shouldYieldToFocusedControl(mouseOptionButton as unknown as EventTarget, 'Enter'), false)
+  assert.equal(shouldYieldToFocusedControl(mouseOptionButton as unknown as EventTarget, ' '), false)
 
   // Mouse-clicked button (not :focus-visible) allows Study Room Enter/Space shortcuts
   const mouseButton = makeEl({ tagName: 'BUTTON' })

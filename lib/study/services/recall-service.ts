@@ -234,11 +234,38 @@ export interface RecallQueueItem {
   ratingPreviews: RatingPreviewMap
 }
 
+export interface RecallUpcomingReviews {
+  laterToday: number
+  tomorrow: number
+  next3Days: number
+  next7Days: number
+  later: number
+}
+
 export interface RecallQueueResponse {
   items: RecallQueueItem[]
   dueCount: number
   newCount: number
   totalAvailable: number
+  bookmarkedCount: number
+  upcomingReviews: RecallUpcomingReviews
+}
+
+const MAX_BOOKMARK_IDS_PER_REQUEST = 500
+const MAX_QUESTION_ID_LENGTH = 128
+
+function normalizeBookmarkedIds(ids?: readonly string[]): Set<string> {
+  const set = new Set<string>()
+  if (!Array.isArray(ids)) return set
+  for (const raw of ids) {
+    if (set.size >= MAX_BOOKMARK_IDS_PER_REQUEST) break
+    if (typeof raw !== 'string') continue
+    const trimmed = raw.trim()
+    if (trimmed.length > 0 && trimmed.length <= MAX_QUESTION_ID_LENGTH) {
+      set.add(trimmed)
+    }
+  }
+  return set
 }
 
 export interface RevealedRecallAnswer {
@@ -259,11 +286,36 @@ export interface SubmitRecallReviewResult {
 export async function getRecallQueue(
   userId: string,
   repos: StudyRepositories,
-  options?: { examId?: string; limit?: number; nowIso?: string }
+  options?: {
+    examId?: string
+    limit?: number
+    nowIso?: string
+    bookmarkedQuestionIds?: readonly string[]
+  }
 ): Promise<RecallQueueResponse> {
   const nowIso = options?.nowIso || new Date().toISOString()
   const nowMs = Date.parse(nowIso)
   const limit = Math.min(Math.max(options?.limit ?? 20, 1), 100)
+  const upcomingReviews: RecallUpcomingReviews = {
+    laterToday: 0,
+    tomorrow: 0,
+    next3Days: 0,
+    next7Days: 0,
+    later: 0,
+  }
+
+  // Bookmark-only Active Recall: never auto-include unbookmarked published questions.
+  const bookmarkedSet = normalizeBookmarkedIds(options?.bookmarkedQuestionIds)
+  if (bookmarkedSet.size === 0) {
+    return {
+      items: [],
+      dueCount: 0,
+      newCount: 0,
+      totalAvailable: 0,
+      bookmarkedCount: 0,
+      upcomingReviews,
+    }
+  }
 
   // Only read published exams and current card states — never scan full review history on queue loads
   const [exams, userStates] = await Promise.all([
@@ -283,22 +335,43 @@ export async function getRecallQueue(
   )
   const allQuestions: StudyQuestion[] = questionLists.flat()
 
-  const dueEntries: Array<{ question: (typeof allQuestions)[number]; state: FsrsCardState; dueMs: number }> = []
-  const newEntries: Array<{ question: (typeof allQuestions)[number] }> = []
+  // Validate incoming bookmark IDs server-side against published questions in the selected exam scope,
+  // strictly before applying queue limits and computing rating previews.
+  const bookmarkedQuestions = allQuestions.filter((q) => bookmarkedSet.has(q.questionId))
 
-  for (const q of allQuestions) {
+  const endOfTodayDate = new Date(nowMs)
+  endOfTodayDate.setUTCHours(23, 59, 59, 999)
+  const endOfTodayMs = endOfTodayDate.getTime()
+  const dayMs = 24 * 60 * 60 * 1000
+
+  const dueEntries: Array<{ question: StudyQuestion; state: FsrsCardState; dueMs: number }> = []
+  const newEntries: Array<{ question: StudyQuestion }> = []
+
+  for (const q of bookmarkedQuestions) {
     const st = stateByQuestion.get(q.questionId)
     if (!st || st.card.reps === 0 || st.card.state === 'New') {
       newEntries.push({ question: q })
     } else {
       const dueMs = Date.parse(st.due)
-      if (!Number.isNaN(dueMs) && dueMs <= nowMs) {
-        dueEntries.push({ question: q, state: st, dueMs })
+      if (!Number.isNaN(dueMs)) {
+        if (dueMs <= nowMs) {
+          dueEntries.push({ question: q, state: st, dueMs })
+        } else if (dueMs <= endOfTodayMs) {
+          upcomingReviews.laterToday += 1
+        } else if (dueMs <= endOfTodayMs + dayMs) {
+          upcomingReviews.tomorrow += 1
+        } else if (dueMs <= endOfTodayMs + 3 * dayMs) {
+          upcomingReviews.next3Days += 1
+        } else if (dueMs <= endOfTodayMs + 7 * dayMs) {
+          upcomingReviews.next7Days += 1
+        } else {
+          upcomingReviews.later += 1
+        }
       }
     }
   }
 
-  // Due cards ordered earliest due first
+  // Due cards ordered earliest due first, followed by bookmarked new cards
   dueEntries.sort((a, b) => a.dueMs - b.dueMs)
 
   const selectedDue = dueEntries.slice(0, limit)
@@ -349,6 +422,8 @@ export async function getRecallQueue(
     dueCount: dueEntries.length,
     newCount: newEntries.length,
     totalAvailable: dueEntries.length + newEntries.length,
+    bookmarkedCount: bookmarkedQuestions.length,
+    upcomingReviews,
   }
 }
 

@@ -10,9 +10,9 @@ export default async function StudyExamDetailPage({
 }) {
   const { id } = await params
   const safeId = decodeURIComponent(id || '').slice(0, 128)
-  await requireStudyPageSession({
+  const user = await requireStudyPageSession({
     returnTo: `/study/exams/${encodeURIComponent(safeId)}`,
   })
 
-  return <ExamRunnerClient examId={safeId} />
+  return <ExamRunnerClient examId={safeId} userId={user.userId} />
 }
