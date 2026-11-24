@@ -6,7 +6,7 @@ import {
   checkApiRateLimit,
 } from '../../../../lib/study/auth/security'
 import { createNotionStudyRepositories } from '../../../../lib/study/repositories'
-import { getStudyDashboardData } from '../../../../lib/study/services/dashboard-service'
+import { getStudyDashboardCatalog } from '../../../../lib/study/services/dashboard-service'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,8 +24,8 @@ export async function GET(request: Request) {
 
   try {
     const repos = createNotionStudyRepositories()
-    const dashboard = await getStudyDashboardData(guard.user.userId, repos)
-    return NextResponse.json(dashboard, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
+    const catalog = await getStudyDashboardCatalog(repos)
+    return NextResponse.json(catalog, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
   } catch {
     return NextResponse.json(
       { error: 'Unable to load study dashboard right now.' },

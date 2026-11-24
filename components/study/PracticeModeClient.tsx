@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useSearchParams } from 'next/navigation'
 import type { ExamCollection } from '../../lib/study/types'
 import type { PracticeExamPayload } from '../../lib/study/services/practice-service'
@@ -14,9 +14,29 @@ import {
   shouldShowFinishPractice,
   shouldShowUnansweredPrompt,
 } from '../../lib/study/practice-completion'
+import {
+  buildPracticeExamUrl,
+  resolveExternalParamExamSwitch,
+  resolvePracticeRetryAction,
+  resolveValidExamId,
+  shouldShowViewSummaryButton,
+  type PracticeError,
+} from '../../lib/study/practice-state'
+import {
+  clearPracticeAttempt,
+  readPracticeAttempt,
+  readUserBookmarks,
+  writePracticeAttempt,
+  writePracticeSummary,
+  writeUserBookmarks,
+} from '../../lib/study/local-progress'
 
 type PracticeFilter = 'all' | 'incorrect' | 'bookmarked'
 type PracticeFetchStatus = 'idle' | 'loading' | 'switching' | 'error' | 'loaded'
+type PracticeResultEntry = GradedQuestionResult & {
+  /** True when restored from localStorage (verdict + user selection only; no stored answer key/explanation) */
+  restored?: boolean
+}
 
 function FeedbackCheckIcon({ className = 'w-4 h-4' }: { className?: string }) {
   return (
@@ -52,120 +72,293 @@ function FeedbackCrossIcon({ className = 'w-4 h-4' }: { className?: string }) {
   )
 }
 
-export default function PracticeModeClient({ exams }: { exams: ExamCollection[] }) {
+export default function PracticeModeClient({
+  exams,
+  userId,
+}: {
+  exams: ExamCollection[]
+  userId: string
+}) {
   const searchParams = useSearchParams()
   const paramExamId = searchParams?.get('examId') || ''
-  const initialExamId = paramExamId || exams[0]?.examId || ''
+  const initialExamId = resolveValidExamId(paramExamId, exams)
 
-  const [selectedExamId, setSelectedExamId] = useState(initialExamId)
+  // activeExamId always matches the committed loaded payload & bookmarks.
+  // pendingExamId is only set while an exam switch request is in flight.
+  const [activeExamId, setActiveExamId] = useState(initialExamId)
+  const [pendingExamId, setPendingExamId] = useState<string | null>(null)
   const [payload, setPayload] = useState<PracticeExamPayload | null>(null)
   const [fetchStatus, setFetchStatus] = useState<PracticeFetchStatus>(
     initialExamId ? 'loading' : 'idle'
   )
-  const [error, setError] = useState('')
+  const [practiceError, setPracticeError] = useState<PracticeError | null>(null)
 
   const [filter, setFilter] = useState<PracticeFilter>('all')
   const [currentIndex, setCurrentIndex] = useState(0)
   const [selections, setSelections] = useState<Record<string, string[]>>({})
-  const [results, setResults] = useState<Record<string, GradedQuestionResult>>({})
+  const [results, setResults] = useState<Record<string, PracticeResultEntry>>({})
   const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({})
   const [checkingId, setCheckingId] = useState<string | null>(null)
   const [isCompleted, setIsCompleted] = useState(false)
+  const [examMenuOpen, setExamMenuOpen] = useState(false)
 
+  const examDropdownRef = useRef<HTMLDivElement | null>(null)
+  const examTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const examOptionRefs = useRef<Array<HTMLLIElement | null>>([])
+
+  const activeExamIdRef = useRef(initialExamId)
+  const pendingExamIdRef = useRef<string | null>(null)
+  const lastHandledParamExamIdRef = useRef(paramExamId.trim())
   const payloadRef = useRef<PracticeExamPayload | null>(null)
+  const hydratedExamIdRef = useRef<string>('')
   const examAbortRef = useRef<AbortController | null>(null)
-  const examSeqRef = useRef(0)
+  const examLoadSeqRef = useRef(0)
+  const sessionVersionRef = useRef(0)
   const checkAbortRef = useRef<AbortController | null>(null)
   const checkSeqRef = useRef(0)
   const checkLockRef = useRef(false)
 
-  // Keep selectedExamId aligned if URL query param changes
+  const loadExam = useCallback(
+    async (examId: string, options?: { syncUrlOnSuccess?: boolean }) => {
+      if (!examId || !exams.some((ex) => ex.examId === examId)) return
+
+      // Abort any previous in-flight exam request
+      examAbortRef.current?.abort()
+
+      const controller = new AbortController()
+      examAbortRef.current = controller
+      const seq = ++examLoadSeqRef.current
+      const hasExisting = payloadRef.current !== null
+
+      if (hasExisting) {
+        pendingExamIdRef.current = examId
+        setPendingExamId(examId)
+        setFetchStatus('switching')
+      } else {
+        activeExamIdRef.current = examId
+        pendingExamIdRef.current = null
+        setActiveExamId(examId)
+        setPendingExamId(null)
+        setFetchStatus('loading')
+      }
+      setPracticeError(null)
+
+      try {
+        const res = await fetch(`/api/study/practice/${encodeURIComponent(examId)}`, {
+          cache: 'no-store',
+          signal: controller.signal,
+        })
+        if (!res.ok) throw new Error('Unable to load practice questions.')
+        const data = (await res.json()) as PracticeExamPayload
+        if (seq !== examLoadSeqRef.current) return
+
+        // Commit the new exam atomically and hydrate user-scoped bookmarks + ongoing attempt
+        checkAbortRef.current?.abort()
+        checkLockRef.current = false
+        setCheckingId(null)
+        sessionVersionRef.current += 1
+
+        const savedBookmarks = readUserBookmarks(userId, examId)
+        const savedAttempt = readPracticeAttempt(userId, examId)
+        const questionById = new Map(data.questions.map((q) => [q.questionId, q]))
+
+        const restoredSelections: Record<string, string[]> = {}
+        const restoredResults: Record<string, PracticeResultEntry> = {}
+
+        if (savedAttempt) {
+          for (const [qId, opts] of Object.entries(savedAttempt.selections)) {
+            if (questionById.has(qId) && opts.length > 0) {
+              restoredSelections[qId] = opts
+            }
+          }
+          for (const [qId, isCorrect] of Object.entries(savedAttempt.checkedResults)) {
+            const q = questionById.get(qId)
+            if (!q) continue
+            restoredResults[qId] = {
+              questionId: qId,
+              questionType: q.questionType,
+              isCorrect,
+              isSkipped: false,
+              selectedOptionIds: restoredSelections[qId] || [],
+              correctOptionIds: [],
+              explanation: '',
+              optionFeedback: [],
+              restored: true,
+            }
+          }
+        }
+
+        const restoredFilter: PracticeFilter = savedAttempt?.filter || 'all'
+        const restoredFilteredLen = data.questions.filter((q) => {
+          if (restoredFilter === 'incorrect') return restoredResults[q.questionId]?.isCorrect === false
+          if (restoredFilter === 'bookmarked') return Boolean(savedBookmarks[q.questionId])
+          return true
+        }).length
+        const restoredIndex = savedAttempt
+          ? Math.min(savedAttempt.currentIndex, Math.max(0, restoredFilteredLen - 1))
+          : 0
+        const restoredSummary = computePracticeCompletionSummary(
+          data.questions,
+          restoredResults,
+          savedBookmarks
+        )
+        const restoredCompleted = Boolean(savedAttempt?.completed && restoredSummary.allGraded)
+
+        activeExamIdRef.current = examId
+        pendingExamIdRef.current = null
+        payloadRef.current = data
+        hydratedExamIdRef.current = examId
+
+        setActiveExamId(examId)
+        setPendingExamId(null)
+        setPayload(data)
+        setBookmarks(savedBookmarks)
+        setSelections(restoredSelections)
+        setResults(restoredResults)
+        setFilter(restoredFilter)
+        setCurrentIndex(restoredIndex)
+        setIsCompleted(restoredCompleted)
+        setPracticeError(null)
+        setFetchStatus('loaded')
+
+        if (options?.syncUrlOnSuccess && typeof window !== 'undefined') {
+          lastHandledParamExamIdRef.current = examId
+          const nextUrl = buildPracticeExamUrl(window.location.href, examId)
+          window.history.replaceState(window.history.state, '', nextUrl)
+        }
+      } catch (err) {
+        if (controller.signal.aborted || seq !== examLoadSeqRef.current) return
+
+        pendingExamIdRef.current = null
+        setPendingExamId(null)
+
+        if (hasExisting) {
+          const targetTitle = exams.find((ex) => ex.examId === examId)?.title
+          const message = targetTitle
+            ? `Unable to switch to "${targetTitle}". Your current practice progress was preserved.`
+            : 'Unable to switch exams right now. Your current practice progress was preserved.'
+          setPracticeError({
+            kind: 'load_exam',
+            examId,
+            isSwitch: true,
+            message,
+          })
+          setFetchStatus('loaded')
+        } else {
+          setPracticeError({
+            kind: 'load_exam',
+            examId,
+            isSwitch: false,
+            message: err instanceof Error ? err.message : 'Failed to load practice set.',
+          })
+          setFetchStatus('error')
+        }
+      }
+    },
+    [exams, userId]
+  )
+
+  // Initial exam load on mount
   useEffect(() => {
-    if (paramExamId && paramExamId !== selectedExamId && exams.some((e) => e.examId === paramExamId)) {
-      setSelectedExamId(paramExamId)
-    }
-  }, [paramExamId, selectedExamId, exams])
-
-  // Restore bookmarks per exam from localStorage
-  useEffect(() => {
-    if (!selectedExamId) return
-    try {
-      const saved = localStorage.getItem(`study-bookmarks:${selectedExamId}`)
-      if (saved) setBookmarks(JSON.parse(saved) as Record<string, boolean>)
-      else setBookmarks({})
-    } catch {
-      setBookmarks({})
-    }
-  }, [selectedExamId])
-
-  const loadExam = useCallback(async (examId: string) => {
-    if (!examId) return
-
-    // Abort any obsolete exam or answer-check requests before starting a new load
-    examAbortRef.current?.abort()
-    checkAbortRef.current?.abort()
-    checkLockRef.current = false
-    setCheckingId(null)
-
-    const controller = new AbortController()
-    examAbortRef.current = controller
-    const seq = ++examSeqRef.current
-
-    const hasExisting = payloadRef.current !== null
-    setFetchStatus(hasExisting ? 'switching' : 'loading')
-    setError('')
-
-    try {
-      const res = await fetch(`/api/study/practice/${encodeURIComponent(examId)}`, {
-        cache: 'no-store',
-        signal: controller.signal,
-      })
-      if (!res.ok) throw new Error('Unable to load practice questions.')
-      const data = (await res.json()) as PracticeExamPayload
-      if (seq !== examSeqRef.current) return
-
-      payloadRef.current = data
-      setPayload(data)
-      setCurrentIndex(0)
-      setFilter('all')
-      setSelections({})
-      setResults({})
-      setIsCompleted(false)
-      setFetchStatus('loaded')
-    } catch (err) {
-      if (controller.signal.aborted || seq !== examSeqRef.current) return
-      setError(err instanceof Error ? err.message : 'Failed to load practice set.')
-      setFetchStatus(payloadRef.current ? 'loaded' : 'error')
-    }
-  }, [])
-
-  useEffect(() => {
-    if (selectedExamId) {
-      loadExam(selectedExamId)
+    if (initialExamId) {
+      setBookmarks(readUserBookmarks(userId, initialExamId))
+      loadExam(initialExamId, { syncUrlOnSuccess: false })
     }
     return () => {
       examAbortRef.current?.abort()
       checkAbortRef.current?.abort()
-      examSeqRef.current += 1
+      examLoadSeqRef.current += 1
       checkSeqRef.current += 1
     }
-  }, [selectedExamId, loadExam])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Persist ongoing Practice attempt locally (without answer keys or explanations)
+  useEffect(() => {
+    if (
+      !payload ||
+      fetchStatus !== 'loaded' ||
+      hydratedExamIdRef.current !== activeExamId ||
+      payload.exam.examId !== activeExamId
+    ) {
+      return
+    }
+    const checkedResults: Record<string, boolean> = {}
+    for (const [qId, res] of Object.entries(results) as Array<[string, PracticeResultEntry]>) {
+      checkedResults[qId] = res.isCorrect
+    }
+    const hasAnyProgress =
+      Object.keys(checkedResults).length > 0 ||
+      Object.keys(selections).length > 0 ||
+      currentIndex > 0 ||
+      filter !== 'all' ||
+      isCompleted
+
+    if (!hasAnyProgress) return
+
+    writePracticeAttempt(userId, activeExamId, {
+      currentIndex,
+      filter,
+      checkedResults,
+      selections,
+      completed: isCompleted,
+    })
+  }, [userId, activeExamId, payload, fetchStatus, results, selections, currentIndex, filter, isCompleted])
+
+  // React only to external URL examId changes (direct links / navigation / history),
+  // never overriding an intentional dropdown selection.
+  useEffect(() => {
+    const externalTarget = resolveExternalParamExamSwitch({
+      paramExamId,
+      lastHandledParamExamId: lastHandledParamExamIdRef.current,
+      activeExamId: activeExamIdRef.current,
+      pendingExamId: pendingExamIdRef.current,
+      exams,
+    })
+    lastHandledParamExamIdRef.current = paramExamId.trim()
+    if (externalTarget) {
+      loadExam(externalTarget, { syncUrlOnSuccess: false })
+    }
+  }, [paramExamId, exams, loadExam])
+
+  const handleSelectExam = useCallback(
+    (nextExamId: string) => {
+      if (!nextExamId || !exams.some((ex) => ex.examId === nextExamId)) return
+
+      // Selecting the currently active exam cancels any in-flight switch or stale switch error
+      if (nextExamId === activeExamIdRef.current && payloadRef.current !== null) {
+        if (pendingExamIdRef.current !== null) {
+          examAbortRef.current?.abort()
+          examLoadSeqRef.current += 1
+          pendingExamIdRef.current = null
+          setPendingExamId(null)
+          setFetchStatus('loaded')
+        }
+        setPracticeError((prev) => (prev?.kind === 'load_exam' ? null : prev))
+        return
+      }
+
+      loadExam(nextExamId, { syncUrlOnSuccess: true })
+    },
+    [exams, loadExam]
+  )
 
   function toggleBookmark(questionId: string) {
+    const ownerExamId = activeExamIdRef.current
+    if (!ownerExamId) return
     setBookmarks((prev) => {
       const next = { ...prev, [questionId]: !prev[questionId] }
       if (!next[questionId]) delete next[questionId]
-      try {
-        localStorage.setItem(`study-bookmarks:${selectedExamId}`, JSON.stringify(next))
-      } catch {
-        // Ignore storage quota issues
-      }
+      writeUserBookmarks(userId, ownerExamId, next)
       return next
     })
   }
 
   function toggleOption(questionId: string, optionId: string, isMulti: boolean) {
     if (results[questionId] || checkingId === questionId || fetchStatus === 'switching') return
+    setPracticeError((prev) =>
+      prev?.kind === 'check_answer' && prev.questionId === questionId ? null : prev
+    )
     setSelections((prev) => {
       const curr = prev[questionId] || []
       if (!isMulti) return { ...prev, [questionId]: [optionId] }
@@ -178,10 +371,17 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
   }
 
   const handleCheck = useCallback(
-    async (questionId: string) => {
-      const selected = selections[questionId] || []
+    async (
+      questionId: string,
+      overrideSelected?: string[],
+      options?: { hydrateRestored?: boolean }
+    ) => {
+      const selected = overrideSelected ?? selections[questionId] ?? []
+      const existing = results[questionId]
+      const alreadyGraded = Boolean(existing && !(options?.hydrateRestored && existing.restored))
       if (
         selected.length === 0 ||
+        alreadyGraded ||
         checkLockRef.current ||
         checkingId !== null ||
         fetchStatus === 'switching'
@@ -194,10 +394,10 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
       const controller = new AbortController()
       checkAbortRef.current = controller
       const seq = ++checkSeqRef.current
-      const examSeqAtStart = examSeqRef.current
+      const sessionAtStart = sessionVersionRef.current
 
       setCheckingId(questionId)
-      setError('')
+      setPracticeError(null)
 
       try {
         const res = await fetch('/api/study/practice/check', {
@@ -208,17 +408,46 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
         })
         if (!res.ok) throw new Error('Unable to check answer right now.')
         const graded = (await res.json()) as GradedQuestionResult
-        if (seq !== checkSeqRef.current || examSeqAtStart !== examSeqRef.current) return
-        setResults((prev) => ({ ...prev, [questionId]: graded }))
+        if (seq !== checkSeqRef.current || sessionAtStart !== sessionVersionRef.current) return
+
+        const nextResults: Record<string, PracticeResultEntry> = {
+          ...results,
+          [questionId]: { ...graded, restored: false },
+        }
+        setResults(nextResults)
+
+        // When this check completes all questions in the exam, persist latest completed Practice summary
+        const currentPayload = payloadRef.current
+        if (currentPayload && currentPayload.exam.examId === activeExamIdRef.current && !options?.hydrateRestored) {
+          const nextSummary = computePracticeCompletionSummary(
+            currentPayload.questions,
+            nextResults,
+            bookmarks
+          )
+          if (nextSummary.allGraded) {
+            writePracticeSummary(userId, activeExamIdRef.current, {
+              totalQuestions: nextSummary.totalQuestions,
+              completedCount: nextSummary.completedCount,
+              correctCount: nextSummary.correctCount,
+              incorrectCount: nextSummary.incorrectCount,
+              accuracyPercent: nextSummary.accuracyPercent,
+            })
+          }
+        }
       } catch (err) {
         if (
           controller.signal.aborted ||
           seq !== checkSeqRef.current ||
-          examSeqAtStart !== examSeqRef.current
+          sessionAtStart !== sessionVersionRef.current
         ) {
           return
         }
-        setError(err instanceof Error ? err.message : 'Failed to check answer.')
+        setPracticeError({
+          kind: 'check_answer',
+          questionId,
+          selectedOptionIds: [...selected],
+          message: err instanceof Error ? err.message : 'Failed to check answer.',
+        })
       } finally {
         if (seq === checkSeqRef.current) {
           checkLockRef.current = false
@@ -226,8 +455,18 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
         }
       }
     },
-    [selections, checkingId, fetchStatus]
+    [selections, results, bookmarks, checkingId, fetchStatus, userId]
   )
+
+  const handleRetryError = useCallback(() => {
+    const action = resolvePracticeRetryAction(practiceError, selections)
+    if (!action) return
+    if (action.type === 'check_answer') {
+      handleCheck(action.questionId, action.selectedOptionIds)
+    } else {
+      loadExam(action.examId, { syncUrlOnSuccess: action.isSwitch })
+    }
+  }, [practiceError, selections, handleCheck, loadExam])
 
   const isInitialLoading = fetchStatus === 'loading'
   const isSwitching = fetchStatus === 'switching'
@@ -279,8 +518,17 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
 
   const handleFinishPractice = useCallback(() => {
     if (!canFinishPractice) return
+    if (activeExamIdRef.current && summary.allGraded) {
+      writePracticeSummary(userId, activeExamIdRef.current, {
+        totalQuestions: summary.totalQuestions,
+        completedCount: summary.completedCount,
+        correctCount: summary.correctCount,
+        incorrectCount: summary.incorrectCount,
+        accuracyPercent: summary.accuracyPercent,
+      })
+    }
     setIsCompleted(true)
-  }, [canFinishPractice])
+  }, [canFinishPractice, userId, summary])
 
   const handleGoToFirstUnanswered = useCallback(() => {
     if (summary.firstUnansweredIndex < 0 || isSwitching) return
@@ -306,14 +554,45 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
     if (isSwitching) return
     checkAbortRef.current?.abort()
     checkLockRef.current = false
+    sessionVersionRef.current += 1
+    if (activeExamIdRef.current) {
+      // Resets ongoing attempt only; preserves bookmarks and previous completed summary
+      clearPracticeAttempt(userId, activeExamIdRef.current)
+    }
     setCheckingId(null)
-    setError('')
+    setPracticeError(null)
     setSelections({})
     setResults({})
     setFilter('all')
     setCurrentIndex(0)
     setIsCompleted(false)
-  }, [isSwitching])
+  }, [isSwitching, userId])
+
+  // Close custom exam dropdown on outside click or Escape
+  useEffect(() => {
+    if (!examMenuOpen) return
+
+    function handleClickOutside(e: MouseEvent) {
+      if (examDropdownRef.current && !examDropdownRef.current.contains(e.target as Node)) {
+        setExamMenuOpen(false)
+      }
+    }
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setExamMenuOpen(false)
+        examTriggerRef.current?.focus()
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [examMenuOpen])
 
   // Keyboard shortcuts: ArrowLeft = Previous, ArrowRight = Next,
   // Enter = Check Answer (if ungraded with selection), Next (if graded), or Finish Practice (on final graded All question),
@@ -325,6 +604,7 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
       isInitialError ||
       isSwitching ||
       isCompleted ||
+      examMenuOpen ||
       !currentQ
     ) {
       return
@@ -379,6 +659,7 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
     isInitialError,
     isSwitching,
     isCompleted,
+    examMenuOpen,
     currentQ,
     currentGraded,
     hasCurrentSelection,
@@ -400,16 +681,76 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
     )
   }
 
+  const displayedExamId = pendingExamId || activeExamId
+  const displayedExam =
+    exams.find((ex) => ex.examId === displayedExamId) || exams[0]
+  const displayedExamLabel = displayedExam
+    ? `${displayedExam.title} (${displayedExam.questionCount})`
+    : 'Select exam'
   const currentExamTitle =
     payload?.exam.title ||
-    exams.find((ex) => ex.examId === selectedExamId)?.title ||
+    exams.find((ex) => ex.examId === activeExamId)?.title ||
     'Practice Set'
+  const showViewSummary = shouldShowViewSummaryButton({
+    allGraded: summary.allGraded,
+    isCompleted,
+    isInitialLoading,
+  })
+
+  function focusExamOption(index: number) {
+    if (exams.length === 0) return
+    const clamped = Math.max(0, Math.min(exams.length - 1, index))
+    examOptionRefs.current[clamped]?.focus()
+  }
+
+  function handleSelectExamOption(examId: string) {
+    setExamMenuOpen(false)
+    handleSelectExam(examId)
+    examTriggerRef.current?.focus()
+  }
+
+  function handleExamTriggerKeyDown(e: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const currentIdx = Math.max(
+        0,
+        exams.findIndex((ex) => ex.examId === displayedExamId)
+      )
+      setExamMenuOpen(true)
+      requestAnimationFrame(() => focusExamOption(currentIdx))
+    }
+  }
+
+  function handleExamOptionKeyDown(
+    e: ReactKeyboardEvent<HTMLLIElement>,
+    index: number,
+    examId: string
+  ) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      focusExamOption((index + 1) % exams.length)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      focusExamOption((index - 1 + exams.length) % exams.length)
+    } else if (e.key === 'Home') {
+      e.preventDefault()
+      focusExamOption(0)
+    } else if (e.key === 'End') {
+      e.preventDefault()
+      focusExamOption(exams.length - 1)
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      handleSelectExamOption(examId)
+    } else if (e.key === 'Tab') {
+      setExamMenuOpen(false)
+    }
+  }
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 sm:py-10 space-y-6">
       {/* ── Top Bar: Exam Selector & Filter ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <h1 className="font-serif text-2xl font-medium text-ink-700 dark:text-sage-100 m-0">
             Practice Mode
           </h1>
@@ -418,7 +759,7 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 w-full sm:w-auto shrink-0">
           {isSwitching && (
             <span
               role="status"
@@ -429,19 +770,89 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
               Switching…
             </span>
           )}
-          <select
-            aria-label="Select exam collection"
-            aria-busy={isSwitching || undefined}
-            value={selectedExamId}
-            onChange={(e) => setSelectedExamId(e.target.value)}
-            className="rounded-zen px-3.5 py-2 text-[0.84rem] bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-rice-paper-400/90 dark:border-tea-slate-50/70 transition-colors duration-150 motion-reduce:transition-none"
-          >
-            {exams.map((ex) => (
-              <option key={ex.examId} value={ex.examId}>
-                {ex.title} ({ex.questionCount})
-              </option>
-            ))}
-          </select>
+          <div className="relative w-full sm:w-auto" ref={examDropdownRef}>
+            <button
+              ref={examTriggerRef}
+              type="button"
+              id="practice-exam-selector"
+              aria-label="Select exam collection"
+              aria-haspopup="listbox"
+              aria-expanded={examMenuOpen}
+              aria-controls="practice-exam-listbox"
+              aria-busy={isSwitching || undefined}
+              title={displayedExamLabel}
+              onClick={() => setExamMenuOpen((open) => !open)}
+              onKeyDown={handleExamTriggerKeyDown}
+              className={[
+                'flex items-center justify-between w-full sm:w-64 md:w-72 pl-3.5 pr-2.5 py-2 rounded-[6px]',
+                'text-[0.83rem] font-medium transition-all duration-200 ease-out motion-reduce:transition-none outline-none select-none cursor-pointer',
+                'focus-visible:ring-2 focus-visible:ring-matcha-500/50 dark:focus-visible:ring-matcha-400/60',
+                examMenuOpen
+                  ? 'bg-matcha-100/90 text-matcha-700 border border-matcha-400/70 shadow-sm dark:bg-matcha-700/25 dark:text-matcha-300 dark:border-matcha-600/50 dark:shadow-none'
+                  : 'bg-rice-paper-200/70 text-ink-600 border border-rice-paper-400/80 hover:bg-rice-paper-300/80 hover:text-ink-700 dark:bg-tea-slate-200 dark:text-sage-200 dark:border-tea-slate-50/50 dark:hover:bg-tea-slate-100/70 dark:hover:border-tea-slate-50/70 dark:hover:text-sage-100',
+              ].join(' ')}
+            >
+              <span className="truncate">{displayedExamLabel}</span>
+              <svg
+                className={[
+                  'w-3.5 h-3.5 ml-2 shrink-0 transition-transform duration-250 ease-out motion-reduce:transition-none text-ink-400 dark:text-sage-400',
+                  examMenuOpen ? 'rotate-180 text-matcha-500 dark:text-matcha-400' : '',
+                ].join(' ')}
+                fill="none"
+                strokeWidth="2"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {examMenuOpen && (
+              <ul
+                id="practice-exam-listbox"
+                role="listbox"
+                aria-label="Exam collection"
+                className="animate-dropdown absolute top-full left-0 sm:left-auto sm:right-0 mt-1.5 w-full sm:w-80 md:w-96 max-h-72 overflow-y-auto bg-rice-paper-100 dark:bg-tea-slate-50 border border-rice-paper-400/80 dark:border-tea-slate-50/60 rounded-[6px] shadow-zen dark:shadow-[0_4px_16px_rgba(18,19,16,0.5)] z-50 py-1 list-none m-0"
+              >
+                {exams.map((ex, index) => {
+                  const isSelected = ex.examId === displayedExamId
+                  return (
+                    <li
+                      key={ex.examId}
+                      ref={(el) => {
+                        examOptionRefs.current[index] = el
+                      }}
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected={isSelected}
+                      onClick={() => handleSelectExamOption(ex.examId)}
+                      onKeyDown={(e) => handleExamOptionKeyDown(e, index, ex.examId)}
+                      className={[
+                        'px-3.5 py-2 text-[0.82rem] leading-snug cursor-pointer transition-colors duration-150 ease-out motion-reduce:transition-none flex items-start justify-between gap-2.5 outline-none',
+                        isSelected
+                          ? 'bg-matcha-100/70 dark:bg-matcha-700/25 font-medium text-matcha-700 dark:text-matcha-300'
+                          : 'text-ink-600 dark:text-sage-300 hover:bg-rice-paper-300/60 dark:hover:bg-tea-slate-200/70 hover:text-ink-700 dark:hover:text-sage-100 focus-visible:bg-rice-paper-300/60 dark:focus-visible:bg-tea-slate-200/70 focus-visible:text-ink-700 dark:focus-visible:text-sage-100',
+                      ].join(' ')}
+                    >
+                      <span className="break-words">{ex.title}</span>
+                      <span className="inline-flex items-center gap-2 shrink-0 pt-0.5">
+                        <span className="text-[0.74rem] font-mono tabular-nums opacity-70">
+                          ({ex.questionCount})
+                        </span>
+                        {isSelected && (
+                          <span
+                            className="w-1.5 h-1.5 rounded-full bg-matcha-500 dark:bg-matcha-400"
+                            aria-hidden="true"
+                          />
+                        )}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
         </div>
       </div>
 
@@ -482,28 +893,55 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
               </button>
             ))}
           </div>
-          <span className="text-xs font-mono text-ink-500 dark:text-sage-400">
-            {isInitialLoading
-              ? 'Loading set…'
-              : `Checked: ${summary.completedCount}/${summary.totalQuestions}`}
-          </span>
+          <div className="flex items-center gap-3">
+            {showViewSummary && (
+              <button
+                type="button"
+                disabled={isSwitching}
+                onClick={() => setIsCompleted(true)}
+                className="px-3 py-1 rounded-zen text-xs font-medium text-matcha-700 dark:text-matcha-300 bg-matcha-50/90 dark:bg-matcha-900/35 border border-matcha-400/60 dark:border-matcha-600/50 hover:bg-matcha-100/80 dark:hover:bg-matcha-900/55 transition-colors duration-150 motion-reduce:transition-none disabled:opacity-50"
+              >
+                View Summary
+              </button>
+            )}
+            <span className="text-xs font-mono text-ink-500 dark:text-sage-400">
+              {isInitialLoading
+                ? 'Loading set…'
+                : `Checked: ${summary.completedCount}/${summary.totalQuestions}`}
+            </span>
+          </div>
         </div>
       )}
 
-      {error && (
+      {practiceError && (
         <div
           role="alert"
-          className="rounded-zen px-4 py-3 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 dark:border-rose-400/40 text-sm text-earth-rust dark:text-rose-200 flex items-center justify-between gap-3"
+          className="rounded-zen px-4 py-3 bg-rose-50/80 dark:bg-rose-950/30 border border-earth-rust/40 dark:border-rose-400/40 text-sm text-earth-rust dark:text-rose-200 flex flex-wrap items-center justify-between gap-3"
         >
-          <span>{error}</span>
-          <button
-            type="button"
-            onClick={() => loadExam(selectedExamId)}
-            disabled={isInitialLoading || isSwitching}
-            className="px-3 py-1 rounded-zen text-xs font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 dark:border-rose-400/40 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none disabled:opacity-50 shrink-0"
-          >
-            Try Again
-          </button>
+          <span>{practiceError.message}</span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleRetryError}
+              disabled={isInitialLoading || isSwitching || checkingId !== null}
+              className="px-3 py-1 rounded-zen text-xs font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 dark:border-rose-400/40 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none disabled:opacity-50"
+            >
+              {practiceError.kind === 'check_answer'
+                ? 'Retry Check'
+                : practiceError.isSwitch
+                  ? 'Retry Switch'
+                  : 'Try Again'}
+            </button>
+            {(practiceError.kind === 'check_answer' || practiceError.isSwitch) && (
+              <button
+                type="button"
+                onClick={() => setPracticeError(null)}
+                className="px-2 py-1 text-xs font-medium text-earth-rust/80 dark:text-rose-200/80 hover:underline"
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -516,7 +954,7 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
           </p>
           <button
             type="button"
-            onClick={() => loadExam(selectedExamId)}
+            onClick={() => loadExam(activeExamId, { syncUrlOnSuccess: false })}
             className="px-4 py-2 rounded-zen text-xs font-medium bg-matcha-500 hover:bg-matcha-600 text-white transition-colors duration-150 motion-reduce:transition-none"
           >
             Retry Loading Questions
@@ -589,11 +1027,18 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
               const graded = results[currentQ.questionId]
               const isCheckingCurrent = checkingId === currentQ.questionId
               const isMulti = currentQ.questionType === 'multi_select'
-              const isCorrectOption = Boolean(graded?.correctOptionIds.includes(opt.id))
-              const isCorrectSelection = Boolean(graded && selected && isCorrectOption)
-              const isMissedCorrect = Boolean(graded && !selected && isCorrectOption)
-              const isWrongSelection = Boolean(graded && selected && !isCorrectOption)
-              const isUnselectedNeutral = Boolean(graded && !selected && !isCorrectOption)
+              const isRestored = Boolean(graded?.restored)
+              const isCorrectOption = Boolean(!isRestored && graded?.correctOptionIds.includes(opt.id))
+              const isCorrectSelection = Boolean(
+                graded && selected && (isRestored ? graded.isCorrect : isCorrectOption)
+              )
+              const isMissedCorrect = Boolean(graded && !isRestored && !selected && isCorrectOption)
+              const isWrongSelection = Boolean(
+                graded && selected && (isRestored ? !graded.isCorrect : !isCorrectOption)
+              )
+              const isUnselectedNeutral = Boolean(
+                graded && !selected && (isRestored || !isCorrectOption)
+              )
               const fb = graded?.optionFeedback.find((f) => f.optionId === opt.id)
 
               const cardTone = isCorrectSelection
@@ -633,6 +1078,7 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
                 <button
                   key={opt.id}
                   type="button"
+                  data-study-option="true"
                   disabled={Boolean(graded) || isCheckingCurrent || isSwitching}
                   aria-pressed={!graded ? selected : undefined}
                   onClick={() => toggleOption(currentQ.questionId, opt.id, isMulti)}
@@ -726,13 +1172,32 @@ export default function PracticeModeClient({ exams }: { exams: ExamCollection[] 
                     )}
                     <span>{graded.isCorrect ? 'Correct' : 'Incorrect'}</span>
                   </div>
-                  {!graded.isCorrect && (
+                  {!graded.isCorrect && graded.correctOptionIds.length > 0 && (
                     <span className="text-xs font-medium text-ink-600 dark:text-sage-200">
                       Correct answer:{' '}
                       <span className="font-mono font-semibold text-matcha-700 dark:text-matcha-200">
                         {graded.correctOptionIds.join(', ')}
                       </span>
                     </span>
+                  )}
+                  {graded.restored && (
+                    <button
+                      type="button"
+                      disabled={checkingId !== null || isSwitching}
+                      onClick={() =>
+                        handleCheck(currentQ.questionId, selections[currentQ.questionId], {
+                          hydrateRestored: true,
+                        })
+                      }
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-zen text-xs font-medium text-matcha-700 dark:text-matcha-300 bg-rice-paper-50/90 dark:bg-tea-slate-200/80 border border-matcha-400/50 dark:border-matcha-600/50 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none disabled:opacity-50"
+                    >
+                      {checkingId === currentQ.questionId && <ZenPendingDot />}
+                      <span>
+                        {checkingId === currentQ.questionId
+                          ? 'Loading…'
+                          : 'Load Answer & Explanation'}
+                      </span>
+                    </button>
                   )}
                 </div>
 

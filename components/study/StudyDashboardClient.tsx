@@ -1,7 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { StudyDashboardData } from '../../lib/study/services/dashboard-service'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { StudyDashboardCatalog } from '../../lib/study/services/dashboard-service'
+import {
+  computeDashboardOverview,
+  type MockExamCollectionStatus,
+  type PracticeCollectionStatus,
+} from '../../lib/study/local-progress'
 import { StudyLink } from './StudyNavigationContext'
 import { StudyDashboardSkeleton, ZenPendingDot } from './StudySkeletons'
 
@@ -24,7 +29,7 @@ function StatCard({
         {label}
       </p>
       <p
-        className={`font-serif text-3xl font-medium mt-2 mb-0 ${
+        className={`font-serif text-3xl font-medium tabular-nums mt-2 mb-0 ${
           accent
             ? 'text-matcha-600 dark:text-matcha-300'
             : 'text-ink-700 dark:text-sage-100'
@@ -41,35 +46,82 @@ function StatCard({
   )
 }
 
-function formatShortDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  } catch {
-    return iso
+function practiceStatusBadge(status: PracticeCollectionStatus): {
+  label: string
+  className: string
+} {
+  if (status === 'completed') {
+    return {
+      label: 'Completed',
+      className:
+        'bg-matcha-100/85 dark:bg-matcha-900/45 text-matcha-700 dark:text-matcha-300 border-matcha-300/70 dark:border-matcha-700/60',
+    }
+  }
+  if (status === 'in_progress') {
+    return {
+      label: 'In Progress',
+      className:
+        'bg-rice-paper-200/90 dark:bg-tea-slate-100/80 text-ink-700 dark:text-sage-200 border-earth-beige/80 dark:border-tea-slate-50/70',
+    }
+  }
+  return {
+    label: 'Not Started',
+    className:
+      'bg-rice-paper-200/60 dark:bg-tea-slate-300/60 text-ink-400 dark:text-sage-400 border-rice-paper-400/60 dark:border-tea-slate-50/40',
   }
 }
 
-export default function StudyDashboardClient() {
-  const [data, setData] = useState<StudyDashboardData | null>(null)
-  const [status, setStatus] = useState<DashboardStatus>('loading')
-  const [error, setError] = useState('')
+function examStatusBadge(status: MockExamCollectionStatus): {
+  label: string
+  className: string
+} {
+  if (status === 'passed') {
+    return {
+      label: 'Passed',
+      className:
+        'bg-matcha-100/85 dark:bg-matcha-900/45 text-matcha-700 dark:text-matcha-300 border-matcha-300/70 dark:border-matcha-700/60',
+    }
+  }
+  if (status === 'not_passed') {
+    return {
+      label: 'Not Passed',
+      className:
+        'bg-earth-rust/[0.10] dark:bg-earth-rust/[0.20] text-[#7A4932] dark:text-[#E2BBA2] border-earth-rust/40 dark:border-earth-rust/55',
+    }
+  }
+  return {
+    label: 'Not Attempted',
+    className:
+      'bg-rice-paper-200/60 dark:bg-tea-slate-300/60 text-ink-400 dark:text-sage-400 border-rice-paper-400/60 dark:border-tea-slate-50/40',
+  }
+}
 
-  const dataRef = useRef<StudyDashboardData | null>(null)
+export default function StudyDashboardClient({
+  userId,
+  initialCatalog,
+}: {
+  userId: string
+  initialCatalog: StudyDashboardCatalog | null
+}) {
+  const [catalog, setCatalog] = useState<StudyDashboardCatalog | null>(initialCatalog)
+  const [status, setStatus] = useState<DashboardStatus>(
+    initialCatalog ? 'loaded' : 'loading'
+  )
+  const [error, setError] = useState('')
+  const [storageReady, setStorageReady] = useState(false)
+  const [storageVersion, setStorageVersion] = useState(0)
+
+  const catalogRef = useRef<StudyDashboardCatalog | null>(initialCatalog)
   const abortRef = useRef<AbortController | null>(null)
   const seqRef = useRef(0)
 
-  const loadDashboard = useCallback(async () => {
+  const loadCatalog = useCallback(async () => {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
     const seq = ++seqRef.current
 
-    setStatus(dataRef.current ? 'refreshing' : 'loading')
+    setStatus(catalogRef.current ? 'refreshing' : 'loading')
     setError('')
 
     try {
@@ -78,33 +130,56 @@ export default function StudyDashboardClient() {
         signal: controller.signal,
       })
       if (!res.ok) {
-        throw new Error('Unable to load your study progress.')
+        throw new Error('Unable to load your exam collections.')
       }
-      const json = (await res.json()) as StudyDashboardData
+      const json = (await res.json()) as StudyDashboardCatalog
       if (seq !== seqRef.current) return
-      dataRef.current = json
-      setData(json)
+      catalogRef.current = json
+      setCatalog(json)
       setStatus('loaded')
     } catch (err) {
       if (controller.signal.aborted || seq !== seqRef.current) return
       setError(err instanceof Error ? err.message : 'Unable to load dashboard.')
-      setStatus(dataRef.current ? 'loaded' : 'error')
+      setStatus(catalogRef.current ? 'loaded' : 'error')
     }
   }, [])
 
+  // Hydrate browser-local progress after mount and listen for cross-tab storage updates
   useEffect(() => {
-    loadDashboard()
+    setStorageReady(true)
+    function onStorage() {
+      setStorageVersion((v) => v + 1)
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  // Fetch catalog only if SSR initial load failed
+  useEffect(() => {
+    if (!initialCatalog) {
+      loadCatalog()
+    }
     return () => {
       abortRef.current?.abort()
       seqRef.current += 1
     }
-  }, [loadDashboard])
+  }, [initialCatalog, loadCatalog])
 
-  if (status === 'loading' && !data) {
+  const overview = useMemo(() => {
+    if (!catalog) return null
+    // Reference storageVersion so cross-tab updates recompute cleanly
+    void storageVersion
+    if (!storageReady) {
+      return computeDashboardOverview(userId, catalog.exams, null)
+    }
+    return computeDashboardOverview(userId, catalog.exams)
+  }, [catalog, userId, storageReady, storageVersion])
+
+  if (status === 'loading' && !catalog) {
     return <StudyDashboardSkeleton />
   }
 
-  if (status === 'error' || !data) {
+  if ((status === 'error' || !catalog || !overview) && !catalog) {
     return (
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 animate-study-feedback">
         <div
@@ -114,7 +189,7 @@ export default function StudyDashboardClient() {
           <span>{error || 'Dashboard data is currently unavailable.'}</span>
           <button
             type="button"
-            onClick={loadDashboard}
+            onClick={loadCatalog}
             className="self-start sm:self-auto px-4 py-2 rounded-zen text-xs font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 dark:border-rose-400/40 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none shrink-0"
           >
             Try Again
@@ -124,6 +199,7 @@ export default function StudyDashboardClient() {
     )
   }
 
+  if (!overview) return null
   const isRefreshing = status === 'refreshing'
 
   return (
@@ -131,7 +207,7 @@ export default function StudyDashboardClient() {
       className="max-w-5xl mx-auto px-4 sm:px-6 py-10 space-y-10 animate-study-feedback"
       aria-busy={isRefreshing || undefined}
     >
-      {/* ── Top Heading + Primary CTA ── */}
+      {/* ── Top Heading + Primary CTAs ── */}
       <section className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
@@ -150,15 +226,15 @@ export default function StudyDashboardClient() {
             )}
           </div>
           <p className="text-[0.9rem] text-ink-500 dark:text-sage-400 mt-1.5 mb-0">
-            FSRS-6 spaced repetition (90% target retention), calm active recall, and CSA mock exams.
+            Track your Practice Mode progress, server-graded CSA Mock Exams, and bookmarked Active Recall reviews.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
           <StudyLink
-            href="/study/flashcards"
+            href="/study/practice"
             className="px-4 py-2 rounded-zen text-[0.84rem] font-medium bg-matcha-500 hover:bg-matcha-600 dark:bg-matcha-600 dark:hover:bg-matcha-500 text-white shadow-zen-sm no-underline transition-colors duration-200 motion-reduce:transition-none"
           >
-            Start Active Recall
+            Open Practice Mode
           </StudyLink>
           <StudyLink
             href="/study/exams"
@@ -177,7 +253,7 @@ export default function StudyDashboardClient() {
           <span>{error}</span>
           <button
             type="button"
-            onClick={loadDashboard}
+            onClick={loadCatalog}
             disabled={isRefreshing}
             className="px-3 py-1 rounded-zen text-xs font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 dark:border-rose-400/40 disabled:opacity-50 shrink-0"
           >
@@ -186,201 +262,152 @@ export default function StudyDashboardClient() {
         </div>
       )}
 
-      {/* ── Core Metrics ── */}
+      {/* ── Core Practice & Mock Exam Metrics ── */}
       <section aria-label="Study metrics" className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Due Today" value={data.dueToday} sublabel="Ready for recall" accent />
-        <StatCard label="New Cards" value={data.newCards} sublabel="Not yet introduced" />
         <StatCard
-          label="Cards Studied"
-          value={data.totalCardsStudied}
-          sublabel={`of ${data.totalPublishedQuestions} total`}
+          label="Completed Practice"
+          value={`${overview.completedPracticeCount}/${overview.totalCollections}`}
+          sublabel="Practice collections"
+          accent
         />
         <StatCard
-          label="Study Streak"
-          value={`${data.studyStreakDays}d`}
-          sublabel="Consecutive UTC days"
+          label="Completed Mock Exams"
+          value={`${overview.completedMockExamCount}/${overview.totalCollections}`}
+          sublabel="Server-graded exams"
+        />
+        <StatCard
+          label="Latest Practice Accuracy"
+          value={
+            overview.latestPracticeAccuracy !== null
+              ? `${overview.latestPracticeAccuracy}%`
+              : '—'
+          }
+          sublabel={
+            overview.latestPracticeAccuracy !== null
+              ? 'Most recent practice'
+              : 'No practice graded yet'
+          }
+        />
+        <StatCard
+          label="Best Exam Score"
+          value={overview.bestExamScore !== null ? `${overview.bestExamScore}%` : '—'}
+          sublabel={
+            overview.bestExamScore !== null
+              ? 'Highest graded simulation'
+              : 'No mock exam submitted yet'
+          }
         />
       </section>
 
-      {/* ── Upcoming Reviews ── */}
-      <section className="rounded-card p-6 bg-rice-paper-50/90 dark:bg-tea-slate-200/60 border border-rice-paper-400/70 dark:border-tea-slate-50/50">
-        <h2 className="font-serif text-lg font-medium text-ink-700 dark:text-sage-100 mt-0 mb-4">
-          Upcoming Reviews
-        </h2>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-          {[
-            { label: 'Tomorrow', count: data.upcomingReviews.tomorrow },
-            { label: 'Next 3 Days', count: data.upcomingReviews.next3Days },
-            { label: 'Next 7 Days', count: data.upcomingReviews.next7Days },
-            { label: 'Later', count: data.upcomingReviews.later },
-          ].map((b) => (
-            <div
-              key={b.label}
-              className="rounded-zen py-3 px-4 bg-rice-paper-200/60 dark:bg-tea-slate-300/60 border border-rice-paper-400/50 dark:border-tea-slate-50/40"
-            >
-              <div className="font-serif text-xl font-medium text-ink-700 dark:text-sage-100">
-                {b.count}
-              </div>
-              <div className="text-[0.74rem] text-ink-400 dark:text-sage-500 mt-0.5">
-                {b.label}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* ── Progress by Exam ── */}
+      {/* ── Exam Collections: Practice Progress & Mock Exam Progress ── */}
       <section className="space-y-4">
         <h2 className="font-serif text-lg font-medium text-ink-700 dark:text-sage-100 m-0">
-          Progress by Exam Collection
+          Exam Collections
         </h2>
-        {data.progressByExam.length === 0 ? (
+        {overview.exams.length === 0 ? (
           <div className="rounded-card p-8 text-center bg-rice-paper-50/70 dark:bg-tea-slate-200/40 border border-rice-paper-400/60 dark:border-tea-slate-50/40 text-sm text-ink-400 dark:text-sage-500">
             No published exam collections found yet. Import your question bank to begin studying.
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {data.progressByExam.map((exam) => {
-              const pct =
-                exam.totalQuestions > 0
-                  ? Math.round((exam.studiedCount / exam.totalQuestions) * 100)
-                  : 0
+            {overview.exams.map(({ exam, practice, mockExam }) => {
+              const pBadge = practiceStatusBadge(practice.status)
+              const eBadge = examStatusBadge(mockExam.status)
+
               return (
-                <div
+                <article
                   key={exam.examId}
-                  className="rounded-card p-5 bg-rice-paper-50/90 dark:bg-tea-slate-200/65 border border-rice-paper-400/70 dark:border-tea-slate-50/50 shadow-zen-sm flex flex-col gap-3"
+                  className="rounded-card p-5 sm:p-6 bg-rice-paper-50/90 dark:bg-tea-slate-200/65 border border-rice-paper-400/70 dark:border-tea-slate-50/50 shadow-zen-sm flex flex-col justify-between gap-5"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <span className="text-[0.68rem] uppercase tracking-[0.16em] text-matcha-600 dark:text-matcha-400 font-medium">
-                        {exam.certificationCategory}
+                  <div>
+                    <span className="text-[0.68rem] uppercase tracking-[0.16em] text-matcha-600 dark:text-matcha-400 font-medium">
+                      {exam.certificationCategory} · {exam.questionCount} questions
+                    </span>
+                    <h3 className="font-serif text-base sm:text-lg font-medium text-ink-700 dark:text-sage-100 mt-1 mb-0">
+                      {exam.title}
+                    </h3>
+                  </div>
+
+                  {/* Practice Progress */}
+                  <div className="space-y-2.5 pt-3 border-t border-rice-paper-400/50 dark:border-tea-slate-50/40">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[0.72rem] uppercase tracking-[0.14em] font-medium text-ink-400 dark:text-sage-500">
+                        Practice Progress
                       </span>
-                      <h3 className="font-serif text-base font-medium text-ink-700 dark:text-sage-100 mt-0.5 mb-0">
-                        {exam.title}
-                      </h3>
-                    </div>
-                    <span className="text-xs font-mono text-ink-500 dark:text-sage-400 shrink-0">
-                      {exam.studiedCount}/{exam.totalQuestions}
-                    </span>
-                  </div>
-
-                  <div className="w-full h-1.5 rounded-pill bg-rice-paper-300 dark:bg-tea-slate-100 overflow-hidden">
-                    <div
-                      className="h-full bg-matcha-500 dark:bg-matcha-400 transition-all duration-300 motion-reduce:transition-none"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-[0.76rem] text-ink-400 dark:text-sage-500">
-                    <span>
-                      Due: <strong className="text-ink-600 dark:text-sage-200">{exam.dueCount}</strong> · Mastered:{' '}
-                      <strong className="text-ink-600 dark:text-sage-200">{exam.masteredCount}</strong>
-                    </span>
-                    <div className="flex items-center gap-3">
-                      <StudyLink
-                        href={`/study/flashcards?examId=${encodeURIComponent(exam.examId)}`}
-                        className="text-matcha-600 dark:text-matcha-300 hover:underline no-underline font-medium"
+                      <span
+                        className={`px-2 py-0.5 rounded-pill text-[0.68rem] font-medium border ${pBadge.className}`}
                       >
-                        Recall
-                      </StudyLink>
+                        {pBadge.label}
+                      </span>
+                    </div>
+
+                    <div className="w-full h-1.5 rounded-pill bg-rice-paper-300 dark:bg-tea-slate-100 overflow-hidden">
+                      <div
+                        className="h-full bg-matcha-500 dark:bg-matcha-400 transition-all duration-300 motion-reduce:transition-none"
+                        style={{ width: `${practice.progressPercent}%` }}
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[0.78rem] text-ink-500 dark:text-sage-400">
+                      <span className="font-mono text-xs tabular-nums">
+                        {practice.checkedCount}/{practice.totalQuestions} checked
+                        {practice.accuracyPercent !== null && (
+                          <> · {practice.accuracyPercent}% accuracy</>
+                        )}
+                      </span>
                       <StudyLink
                         href={`/study/practice?examId=${encodeURIComponent(exam.examId)}`}
-                        className="text-ink-600 dark:text-sage-300 hover:underline no-underline"
+                        className="text-xs font-medium text-matcha-600 dark:text-matcha-300 hover:underline no-underline"
                       >
-                        Practice
-                      </StudyLink>
-                      <StudyLink
-                        href={`/study/exams/${encodeURIComponent(exam.examId)}`}
-                        className="text-ink-600 dark:text-sage-300 hover:underline no-underline"
-                      >
-                        Exam
+                        {practice.actionLabel} →
                       </StudyLink>
                     </div>
                   </div>
-                </div>
+
+                  {/* Mock Exam Progress */}
+                  <div className="space-y-2.5 pt-3 border-t border-rice-paper-400/50 dark:border-tea-slate-50/40">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[0.72rem] uppercase tracking-[0.14em] font-medium text-ink-400 dark:text-sage-500">
+                        Mock Exam Progress
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded-pill text-[0.68rem] font-medium border ${eBadge.className}`}
+                      >
+                        {eBadge.label}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[0.78rem] text-ink-500 dark:text-sage-400">
+                      <span className="font-mono text-xs tabular-nums">
+                        {mockExam.latestScorePercent !== null ? (
+                          <>
+                            Latest: <strong className="text-ink-700 dark:text-sage-100">{mockExam.latestScorePercent}%</strong>
+                            {' · '}
+                            Best: <strong className="text-ink-700 dark:text-sage-100">{mockExam.bestScorePercent}%</strong>
+                          </>
+                        ) : (
+                          'No submitted attempt yet'
+                        )}
+                      </span>
+                      <StudyLink
+                        href={`/study/exams/${encodeURIComponent(exam.examId)}`}
+                        className="text-xs font-medium text-ink-700 dark:text-sage-200 hover:text-matcha-600 dark:hover:text-matcha-300 hover:underline no-underline"
+                      >
+                        Start Exam →
+                      </StudyLink>
+                    </div>
+                  </div>
+                </article>
               )
             })}
           </div>
         )}
       </section>
 
-      {/* ── Progress by Topic ── */}
-      {data.progressByTopic.length > 0 && (
-        <section className="rounded-card p-6 bg-rice-paper-50/90 dark:bg-tea-slate-200/60 border border-rice-paper-400/70 dark:border-tea-slate-50/50">
-          <h2 className="font-serif text-lg font-medium text-ink-700 dark:text-sage-100 mt-0 mb-4">
-            Progress by Topic
-          </h2>
-          <div className="space-y-3">
-            {data.progressByTopic.map((topic) => {
-              const pct =
-                topic.totalQuestions > 0
-                  ? Math.round((topic.studiedCount / topic.totalQuestions) * 100)
-                  : 0
-              return (
-                <div key={topic.topic} className="space-y-1">
-                  <div className="flex items-center justify-between text-[0.84rem]">
-                    <span className="text-ink-700 dark:text-sage-200 font-medium">{topic.topic}</span>
-                    <span className="text-xs font-mono text-ink-400 dark:text-sage-400">
-                      {topic.studiedCount}/{topic.totalQuestions} studied · {topic.dueCount} due
-                    </span>
-                  </div>
-                  <div className="w-full h-1.5 rounded-pill bg-rice-paper-300 dark:bg-tea-slate-100 overflow-hidden">
-                    <div
-                      className="h-full bg-matcha-500/85 dark:bg-matcha-400/85"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* ── Recently Reviewed History ── */}
-      <section className="rounded-card p-6 bg-rice-paper-50/90 dark:bg-tea-slate-200/60 border border-rice-paper-400/70 dark:border-tea-slate-50/50">
-        <h2 className="font-serif text-lg font-medium text-ink-700 dark:text-sage-100 mt-0 mb-4">
-          Recent Review History
-        </h2>
-        {data.recentlyReviewed.length === 0 ? (
-          <p className="text-sm text-ink-400 dark:text-sage-500 m-0">
-            No FSRS reviews recorded yet. Complete your first Active Recall card to start tracking memory retention.
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-[0.82rem]">
-              <thead>
-                <tr className="border-b border-rice-paper-400/70 dark:border-tea-slate-50/50 text-ink-400 dark:text-sage-500 text-[0.72rem] uppercase tracking-wider">
-                  <th className="py-2 pr-4 font-medium">Question</th>
-                  <th className="py-2 pr-4 font-medium">Topic</th>
-                  <th className="py-2 pr-4 font-medium">Rating</th>
-                  <th className="py-2 pr-4 font-medium">State</th>
-                  <th className="py-2 font-medium">Reviewed</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-rice-paper-400/40 dark:divide-tea-slate-50/30">
-                {data.recentlyReviewed.map((ev) => (
-                  <tr key={ev.eventId}>
-                    <td className="py-2.5 pr-4 font-mono text-xs text-ink-600 dark:text-sage-300">
-                      {ev.questionId}
-                    </td>
-                    <td className="py-2.5 pr-4 text-ink-600 dark:text-sage-300">{ev.topic}</td>
-                    <td className="py-2.5 pr-4 capitalize font-medium text-matcha-600 dark:text-matcha-300">
-                      {ev.rating}
-                    </td>
-                    <td className="py-2.5 pr-4 text-ink-500 dark:text-sage-400">
-                      {ev.resultingState}
-                    </td>
-                    <td className="py-2.5 text-ink-400 dark:text-sage-500 whitespace-nowrap">
-                      {formatShortDate(ev.reviewedAt)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      {/* ── Local Storage Scope Note ── */}
+      <p className="text-[0.76rem] text-ink-400 dark:text-sage-500 m-0 pt-2 border-t border-rice-paper-400/50 dark:border-tea-slate-50/35">
+        Practice progress, mock exam summaries, and bookmarks are stored locally in this browser for your account and are not synchronized across devices.
+      </p>
     </div>
   )
 }

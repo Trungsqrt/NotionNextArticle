@@ -8,7 +8,7 @@ import { PracticeModeSkeleton } from '../../../components/study/StudySkeletons'
 export const dynamic = 'force-dynamic'
 
 export default async function StudyPracticePage() {
-  await requireStudyPageSession({ returnTo: '/study/practice' })
+  const user = await requireStudyPageSession({ returnTo: '/study/practice' })
 
   let exams: ExamCollection[] = []
   try {
@@ -20,7 +20,7 @@ export default async function StudyPracticePage() {
 
   return (
     <Suspense fallback={<PracticeModeSkeleton />}>
-      <PracticeModeClient exams={exams} />
+      <PracticeModeClient exams={exams} userId={user.userId} />
     </Suspense>
   )
 }
