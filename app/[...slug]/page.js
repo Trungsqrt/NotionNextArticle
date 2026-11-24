@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getAllPosts, getPageBySlug, getSiblingPages, getArticleTranslations } from '../../lib/notion'
 import { DEFAULT_LOCALE, getLocaleMeta } from '../../lib/locales'
+import { SITE_URL } from '../../lib/site-url'
 import NotionContent from '../../components/NotionContent'
 import TableOfContents from '../../components/TableOfContents'
 import ArticleCover from '../../components/ArticleCover'
@@ -27,7 +28,6 @@ export async function generateStaticParams() {
   }
 }
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
 const AUTHOR_NAME = 'Jun Mai - Trungsqrt'
 
 /** Decodes a URL segment (e.g. non-ASCII slugs) without throwing. */

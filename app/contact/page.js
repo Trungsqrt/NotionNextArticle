@@ -1,8 +1,6 @@
 import { Suspense } from 'react'
 import ContactForm from '../../components/ContactForm'
-
-const SITE_URL =
-  process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
+import { SITE_URL } from '../../lib/site-url'
 
 export const metadata = {
   title: {

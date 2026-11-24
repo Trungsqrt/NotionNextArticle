@@ -1,4 +1,4 @@
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
+import { SITE_URL } from '../lib/site-url'
 
 export default function robots() {
   return {

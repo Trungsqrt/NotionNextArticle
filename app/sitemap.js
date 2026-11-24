@@ -1,6 +1,5 @@
 import { getAllPosts } from '../lib/notion'
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://notion-next-article-pink.vercel.app'
+import { SITE_URL } from '../lib/site-url'
 
 // Revalidate sitemap every hour in background
 export const revalidate = 3600
