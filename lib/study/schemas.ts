@@ -248,12 +248,12 @@ export function normalizeUsername(raw: string): string {
   return normalizedUsernameSchema.parse(raw)
 }
 
-export type ParsedStudyUser = z.infer<typeof studyUserSchema>
-export type ParsedExamCollection = z.infer<typeof examCollectionSchema>
-export type ParsedStudyQuestion = z.infer<typeof studyQuestionSchema>
-export type ParsedFsrsCardSnapshot = z.infer<typeof fsrsCardSnapshotSchema>
-export type ParsedFsrsCardState = z.infer<typeof fsrsCardStateSchema>
-export type ParsedReviewEvent = z.infer<typeof reviewEventSchema>
+type ParsedStudyUser = z.infer<typeof studyUserSchema>
+type ParsedExamCollection = z.infer<typeof examCollectionSchema>
+type ParsedStudyQuestion = z.infer<typeof studyQuestionSchema>
+type ParsedFsrsCardSnapshot = z.infer<typeof fsrsCardSnapshotSchema>
+type ParsedFsrsCardState = z.infer<typeof fsrsCardStateSchema>
+type ParsedReviewEvent = z.infer<typeof reviewEventSchema>
 
 // Compile-time structural alignment checks between Zod schemas and domain types
 const _assertUser: (u: ParsedStudyUser) => StudyUser = (u) => u

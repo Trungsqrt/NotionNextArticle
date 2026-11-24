@@ -13,6 +13,8 @@ import { getStudyNotionConfig, type StudyNotionConfig } from './config'
 import {
   createDataSourceResolver,
   extractNotionErrorInfo,
+  normalizeNotionId,
+  parseTypedNotionIdentifier,
   type RetrievedDatabaseLike,
   type RetrievedDataSourceLike,
 } from './notion-data-source'
@@ -98,16 +100,8 @@ export interface StudyNotionClient {
   ): Promise<FreshImageBlockUrl | null>
 }
 
-const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504])
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function getHttpStatus(err: unknown): number | null {
-  if (!err || typeof err !== 'object') return null
-  const status = (err as { status?: unknown }).status
-  return typeof status === 'number' ? status : null
 }
 
 function getRetryAfterMs(err: unknown): number | null {
@@ -120,21 +114,6 @@ function getRetryAfterMs(err: unknown): number | null {
     return Math.min(seconds * 1000, 30000)
   }
   return null
-}
-
-function isRetryableError(err: unknown): boolean {
-  const status = getHttpStatus(err)
-  if (status !== null) return RETRYABLE_STATUS_CODES.has(status)
-  if (err instanceof Error) {
-    const msg = err.message.toLowerCase()
-    return (
-      msg.includes('timeout') ||
-      msg.includes('econnreset') ||
-      msg.includes('etimedout') ||
-      msg.includes('fetch failed')
-    )
-  }
-  return false
 }
 
 async function withTimeout<T>(fn: () => Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -175,10 +154,6 @@ export interface NotionOwnerPageLike extends NotionPageRecord {
     database_id?: string
     data_source_id?: string
   }
-}
-
-function normalizeNotionId(id: string): string {
-  return id.replace(/-/g, '').trim().toLowerCase()
 }
 
 /**
@@ -318,7 +293,7 @@ export function createStudyNotionClient(
         const info = extractNotionErrorInfo(err)
         // Non-idempotent writes (e.g. pages.create) only retry explicit 429 rate limits, never 5xx/timeouts
         const canRetry = isIdempotent
-          ? isRetryableError(err)
+          ? info.category === 'transient'
           : info.status === 429 || info.code === 'rate_limited'
         if (attempt > config.maxRetries || !canRetry) {
           const safeMsg = info.status
@@ -643,7 +618,7 @@ export function createStudyNotionClient(
           expiryTime: block.image.file?.expiry_time || null,
         }
       } catch (err) {
-        const status = getHttpStatus(err)
+        const { status } = extractNotionErrorInfo(err)
         if (status === 404 || status === 400) return null
         throw err
       }
@@ -653,7 +628,8 @@ export function createStudyNotionClient(
       blockId: string,
       options: { questionsDbId: string; allowDraft?: boolean }
     ): Promise<FreshImageBlockUrl | null> {
-      const allowedDbIds = [options.questionsDbId]
+      const bareQuestionsDbId = parseTypedNotionIdentifier(options.questionsDbId).id
+      const allowedDbIds = [bareQuestionsDbId]
       try {
         const resolvedDsId = await resolveDataSourceId(options.questionsDbId)
         if (resolvedDsId) allowedDbIds.push(resolvedDsId)
@@ -675,7 +651,7 @@ export function createStudyNotionClient(
             )) as NotionOwnerPageLike,
         })
       } catch (err) {
-        const status = getHttpStatus(err)
+        const { status } = extractNotionErrorInfo(err)
         if (status === 404 || status === 400) return null
         throw err
       }

@@ -1,8 +1,5 @@
 import { classifyBlock } from './block-classifier'
-import {
-  extractMermaidLabelSpans,
-  formatRichTextContext,
-} from './extractor'
+import { extractMermaidLabelSpans } from './extractor'
 import {
   normalizeTreeNodes,
   attachTreeMeta,
