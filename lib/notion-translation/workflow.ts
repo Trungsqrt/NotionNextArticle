@@ -18,7 +18,7 @@ import {
   upsertNotionTranslationMappingRecord,
   type NotionOperationOptions,
 } from './notion-client'
-import { normalizeTreeNodes, readRawNotionTree } from './reader'
+import { readRawNotionTree } from './reader'
 import { extractTranslationManifest } from './extractor'
 import {
   QuotaExhaustedError,

@@ -10,6 +10,14 @@
 
 import { Client } from '@notionhq/client'
 import { getStudyNotionConfig, type StudyNotionConfig } from './config'
+import {
+  createDataSourceResolver,
+  extractNotionErrorInfo,
+  normalizeNotionId,
+  parseTypedNotionIdentifier,
+  type RetrievedDatabaseLike,
+  type RetrievedDataSourceLike,
+} from './notion-data-source'
 
 export interface NotionPageRecord {
   id: string
@@ -25,6 +33,8 @@ export interface QueryDatabaseOptions {
   sorts?: Array<Record<string, unknown>>
   pageSize?: number
   maxPages?: number
+  /** Expected Notion property names for verified schema & multi-data-source selection */
+  expectedProperties?: readonly string[]
 }
 
 export interface UploadedStudyFile {
@@ -54,6 +64,11 @@ export class StudyNotionUploadExpiredError extends Error {
 export const NOTION_FREE_PLAN_MAX_FILE_BYTES = 5 * 1024 * 1024 // 5 MB (Notion Free plan per-file limit)
 export const NOTION_SINGLE_PART_MAX_BYTES = 20 * 1024 * 1024 // 20 MB (Notion API single-part limit)
 
+export interface CreatePageOptions {
+  /** Expected Notion property names for verified data source resolution */
+  expectedProperties?: readonly string[]
+}
+
 export interface StudyNotionClient {
   queryDatabaseAll(
     databaseId: string,
@@ -61,7 +76,8 @@ export interface StudyNotionClient {
   ): Promise<NotionPageRecord[]>
   createPage(
     databaseId: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    options?: CreatePageOptions
   ): Promise<NotionPageRecord>
   updatePage(
     pageId: string,
@@ -84,16 +100,8 @@ export interface StudyNotionClient {
   ): Promise<FreshImageBlockUrl | null>
 }
 
-const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504])
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function getHttpStatus(err: unknown): number | null {
-  if (!err || typeof err !== 'object') return null
-  const status = (err as { status?: unknown }).status
-  return typeof status === 'number' ? status : null
 }
 
 function getRetryAfterMs(err: unknown): number | null {
@@ -106,21 +114,6 @@ function getRetryAfterMs(err: unknown): number | null {
     return Math.min(seconds * 1000, 30000)
   }
   return null
-}
-
-function isRetryableError(err: unknown): boolean {
-  const status = getHttpStatus(err)
-  if (status !== null) return RETRYABLE_STATUS_CODES.has(status)
-  if (err instanceof Error) {
-    const msg = err.message.toLowerCase()
-    return (
-      msg.includes('timeout') ||
-      msg.includes('econnreset') ||
-      msg.includes('etimedout') ||
-      msg.includes('fetch failed')
-    )
-  }
-  return false
 }
 
 async function withTimeout<T>(fn: () => Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -161,10 +154,6 @@ export interface NotionOwnerPageLike extends NotionPageRecord {
     database_id?: string
     data_source_id?: string
   }
-}
-
-function normalizeNotionId(id: string): string {
-  return id.replace(/-/g, '').trim().toLowerCase()
 }
 
 /**
@@ -254,8 +243,16 @@ export function createStudyNotionClient(
     timeoutMs: config.timeoutMs,
   })
 
-  // Cache resolved data_source_id per database_id for Notion SDK v5
-  const dataSourceIdCache = new Map<string, string>()
+  const sdkAny = sdk as unknown as {
+    dataSources?: {
+      query?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>
+      retrieve?: (args: { data_source_id: string }) => Promise<RetrievedDataSourceLike>
+    }
+    databases: {
+      retrieve: (args: { database_id: string }) => Promise<RetrievedDatabaseLike>
+      query?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>
+    }
+  }
 
   // Sequential minimum-interval throttle queue to stay within Notion's ~3 req/s limit
   let throttleChain: Promise<void> = Promise.resolve()
@@ -281,20 +278,30 @@ export function createStudyNotionClient(
     return resultPromise
   }
 
-  async function executeWithRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  async function executeWithRetry<T>(
+    label: string,
+    fn: () => Promise<T>,
+    options?: { isIdempotent?: boolean }
+  ): Promise<T> {
+    const isIdempotent = options?.isIdempotent ?? true
     let attempt = 0
     while (true) {
       try {
         return await scheduleThrottled(() => withTimeout(fn, config.timeoutMs, label))
       } catch (err) {
         attempt += 1
-        if (attempt > config.maxRetries || !isRetryableError(err)) {
-          const status = getHttpStatus(err)
-          const safeMsg = status
-            ? `Study Notion API error (${label}, HTTP ${status})`
-            : `Study Notion API error (${label})`
-          const wrapped = new Error(safeMsg)
-          ;(wrapped as Error & { status?: number }).status = status ?? undefined
+        const info = extractNotionErrorInfo(err)
+        // Non-idempotent writes (e.g. pages.create) only retry explicit 429 rate limits, never 5xx/timeouts
+        const canRetry = isIdempotent
+          ? info.category === 'transient'
+          : info.status === 429 || info.code === 'rate_limited'
+        if (attempt > config.maxRetries || !canRetry) {
+          const safeMsg = info.status
+            ? `Study Notion API error (${label}, HTTP ${info.status}${info.code ? `, ${info.code}` : ''})`
+            : `Study Notion API error (${label}${info.code ? `, ${info.code}` : ''})`
+          const wrapped = new Error(safeMsg) as Error & { status?: number; notionCode?: string }
+          wrapped.status = info.status ?? undefined
+          wrapped.notionCode = info.code ?? undefined
           throw wrapped
         }
         const retryAfterMs = getRetryAfterMs(err)
@@ -304,25 +311,37 @@ export function createStudyNotionClient(
     }
   }
 
-  async function resolveDataSourceId(databaseId: string): Promise<string> {
-    const cleanId = databaseId.trim()
-    const cached = dataSourceIdCache.get(cleanId)
-    if (cached) return cached
+  // Verified, bounded-TTL, single-flight Database ID -> Data Source ID resolver
+  // (never caches unverified, failed, or schema-incompatible lookups)
+  const dataSourceResolver = createDataSourceResolver(
+    {
+      retrieveDatabase: (dbId) =>
+        executeWithRetry('databases.retrieve', () =>
+          sdkAny.databases.retrieve({ database_id: dbId })
+        ),
+      ...(typeof sdkAny.dataSources?.retrieve === 'function'
+        ? {
+            retrieveDataSource: (dsId: string) =>
+              executeWithRetry('dataSources.retrieve', () =>
+                sdkAny.dataSources!.retrieve!({ data_source_id: dsId })
+              ),
+          }
+        : {}),
+    },
+    { ttlMs: 15 * 60 * 1000, maxEntries: 100 }
+  )
 
-    try {
-      const dbInfo = (await executeWithRetry('databases.retrieve', () =>
-        sdk.databases.retrieve({ database_id: cleanId })
-      )) as { data_sources?: Array<{ id?: string }> }
-      const dsId = dbInfo?.data_sources?.[0]?.id
-      if (dsId) {
-        dataSourceIdCache.set(cleanId, dsId)
-        return dsId
-      }
-    } catch {
-      // cleanId may already be a data_source_id; fall through
-    }
-    dataSourceIdCache.set(cleanId, cleanId)
-    return cleanId
+  async function resolveDataSourceId(
+    databaseId: string,
+    expectedProperties?: readonly string[],
+    forceRefresh: boolean = false
+  ): Promise<string> {
+    const resolved = await dataSourceResolver.resolve(databaseId, {
+      expectedProperties,
+      requireSchemaMatch: Boolean(expectedProperties && expectedProperties.length > 0),
+      forceRefresh,
+    })
+    return resolved.dataSourceId
   }
 
   return {
@@ -337,63 +356,100 @@ export function createStudyNotionClient(
       )
       const pageSize = Math.min(Math.max(options.pageSize ?? 100, 1), 100)
 
-      const results: NotionPageRecord[] = []
-      let cursor: string | undefined = undefined
-      let pageCount = 0
-
-      const sdkAny = sdk as unknown as {
-        dataSources?: { query?: (args: Record<string, unknown>) => Promise<Record<string, unknown>> }
-        databases: { query?: (args: Record<string, unknown>) => Promise<Record<string, unknown>> }
-      }
-
       const useDataSources = typeof sdkAny.dataSources?.query === 'function'
-      const targetId = useDataSources ? await resolveDataSourceId(cleanId) : cleanId
 
-      while (pageCount < maxPages) {
-        const queryArgs: Record<string, unknown> = {
-          ...(useDataSources ? { data_source_id: targetId } : { database_id: targetId }),
-          page_size: pageSize,
-          ...(options.filter ? { filter: options.filter } : {}),
-          ...(options.sorts ? { sorts: options.sorts } : {}),
-          ...(cursor ? { start_cursor: cursor } : {}),
-        }
+      const runPaginatedQuery = async (targetId: string): Promise<NotionPageRecord[]> => {
+        const results: NotionPageRecord[] = []
+        let cursor: string | undefined = undefined
+        let pageCount = 0
 
-        const res = (await executeWithRetry('database.query', () =>
-          useDataSources
-            ? sdkAny.dataSources!.query!(queryArgs)
-            : sdkAny.databases.query!(queryArgs)
-        )) as {
-          results?: NotionPageRecord[]
-          has_more?: boolean
-          next_cursor?: string | null
-        }
+        while (pageCount < maxPages) {
+          const queryArgs: Record<string, unknown> = {
+            ...(useDataSources ? { data_source_id: targetId } : { database_id: targetId }),
+            page_size: pageSize,
+            ...(options.filter ? { filter: options.filter } : {}),
+            ...(options.sorts ? { sorts: options.sorts } : {}),
+            ...(cursor ? { start_cursor: cursor } : {}),
+          }
 
-        if (Array.isArray(res.results)) {
-          for (const item of res.results) {
-            if (!item.archived && !item.in_trash) {
-              results.push(item)
+          const res = (await executeWithRetry('database.query', () =>
+            useDataSources
+              ? sdkAny.dataSources!.query!(queryArgs)
+              : sdkAny.databases.query!(queryArgs)
+          )) as {
+            results?: NotionPageRecord[]
+            has_more?: boolean
+            next_cursor?: string | null
+          }
+
+          if (Array.isArray(res.results)) {
+            for (const item of res.results) {
+              if (!item.archived && !item.in_trash) {
+                results.push(item)
+              }
             }
           }
+
+          pageCount += 1
+          if (!res.has_more || !res.next_cursor) break
+          cursor = res.next_cursor
         }
 
-        pageCount += 1
-        if (!res.has_more || !res.next_cursor) break
-        cursor = res.next_cursor
+        return results
       }
 
-      return results
+      if (!useDataSources) {
+        return runPaginatedQuery(cleanId)
+      }
+
+      const targetId = await resolveDataSourceId(cleanId, options.expectedProperties, false)
+      try {
+        return await runPaginatedQuery(targetId)
+      } catch (err) {
+        const info = extractNotionErrorInfo(err)
+        // Stale cached data_source_id recovery: invalidate, re-resolve, and retry read AT MOST ONCE
+        if (info.category === 'not_found') {
+          dataSourceResolver.invalidate(cleanId, 'query_object_not_found')
+          console.warn('[study-notion/ds] retry_after_object_not_found', {
+            inputId: cleanId,
+            staleDataSourceId: targetId,
+          })
+          const freshTargetId = await resolveDataSourceId(
+            cleanId,
+            options.expectedProperties,
+            true
+          )
+          return await runPaginatedQuery(freshTargetId)
+        }
+        throw err
+      }
     },
 
     async createPage(
       databaseId: string,
-      properties: Record<string, unknown>
+      properties: Record<string, unknown>,
+      options?: CreatePageOptions
     ): Promise<NotionPageRecord> {
       const cleanId = databaseId.trim()
-      const res = await executeWithRetry('pages.create', () =>
-        sdk.pages.create({
-          parent: { database_id: cleanId },
-          properties: properties as Parameters<typeof sdk.pages.create>[0]['properties'],
-        })
+      const useDataSources = typeof sdkAny.dataSources?.query === 'function'
+
+      // Target the exact same verified data_source_id used for reads when SDK v5 dataSources is active
+      const parent = useDataSources
+        ? {
+            type: 'data_source_id' as const,
+            data_source_id: await resolveDataSourceId(cleanId, options?.expectedProperties, false),
+          }
+        : { database_id: cleanId }
+
+      // Non-idempotent write: do NOT blindly retry on 5xx or timeout
+      const res = await executeWithRetry(
+        'pages.create',
+        () =>
+          sdk.pages.create({
+            parent: parent as Parameters<typeof sdk.pages.create>[0]['parent'],
+            properties: properties as Parameters<typeof sdk.pages.create>[0]['properties'],
+          }),
+        { isIdempotent: false }
       )
       return res as unknown as NotionPageRecord
     },
@@ -562,7 +618,7 @@ export function createStudyNotionClient(
           expiryTime: block.image.file?.expiry_time || null,
         }
       } catch (err) {
-        const status = getHttpStatus(err)
+        const { status } = extractNotionErrorInfo(err)
         if (status === 404 || status === 400) return null
         throw err
       }
@@ -572,7 +628,8 @@ export function createStudyNotionClient(
       blockId: string,
       options: { questionsDbId: string; allowDraft?: boolean }
     ): Promise<FreshImageBlockUrl | null> {
-      const allowedDbIds = [options.questionsDbId]
+      const bareQuestionsDbId = parseTypedNotionIdentifier(options.questionsDbId).id
+      const allowedDbIds = [bareQuestionsDbId]
       try {
         const resolvedDsId = await resolveDataSourceId(options.questionsDbId)
         if (resolvedDsId) allowedDbIds.push(resolvedDsId)
@@ -594,7 +651,7 @@ export function createStudyNotionClient(
             )) as NotionOwnerPageLike,
         })
       } catch (err) {
-        const status = getHttpStatus(err)
+        const { status } = extractNotionErrorInfo(err)
         if (status === 404 || status === 400) return null
         throw err
       }

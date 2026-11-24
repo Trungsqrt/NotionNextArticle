@@ -23,7 +23,6 @@ import type {
   PendingWriteOperation,
   ResourceMappingEntry,
   ResourceMappingStoreData,
-  SegmentCacheEntry,
   SegmentCacheStoreData,
   TranslateManifestResult,
   UploadedAssetRecord,
