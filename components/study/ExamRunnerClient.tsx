@@ -8,6 +8,7 @@ import type {
 import StudyRichText from './StudyRichText'
 import { StudyLink } from './StudyNavigationContext'
 import { ExamRunnerSkeleton, ZenPendingDot } from './StudySkeletons'
+import { shouldIgnoreStudyShortcut } from '../../lib/study/keyboard'
 
 function formatTimer(seconds: number): string {
   const safe = Math.max(0, seconds)
@@ -143,6 +144,46 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
       handleSubmit()
     }
   }, [session, result, remainingSeconds, submitting, handleSubmit])
+
+  const totalQuestions = session?.questions.length ?? 0
+  const canGoPrevious = Boolean(session && !submitting && currentIdx > 0)
+  const canGoNext = Boolean(session && !submitting && currentIdx < totalQuestions - 1)
+
+  const goPrevious = useCallback(() => {
+    if (!canGoPrevious) return
+    setCurrentIdx((i) => Math.max(0, i - 1))
+  }, [canGoPrevious])
+
+  const goNext = useCallback(() => {
+    if (!canGoNext) return
+    setCurrentIdx((i) => Math.min(totalQuestions - 1, i + 1))
+  }, [canGoNext, totalQuestions])
+
+  // Keyboard shortcuts: ArrowLeft = Previous, ArrowRight / Enter = Next.
+  // Never automatically submits the exam.
+  useEffect(() => {
+    if (loading || !session || result || submitting) return
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (shouldIgnoreStudyShortcut(e)) return
+
+      if (e.key === 'ArrowLeft') {
+        if (!canGoPrevious) return
+        e.preventDefault()
+        goPrevious()
+        return
+      }
+
+      if (e.key === 'ArrowRight' || e.key === 'Enter') {
+        if (!canGoNext) return
+        e.preventDefault()
+        goNext()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [loading, session, result, submitting, canGoPrevious, canGoNext, goPrevious, goNext])
 
   function toggleOption(questionId: string, optionId: string, isMulti: boolean) {
     if (submitting) return
@@ -443,21 +484,24 @@ export default function ExamRunnerClient({ examId }: { examId: string }) {
           <div className="flex items-center justify-between pt-2">
             <button
               type="button"
-              disabled={currentIdx === 0 || submitting}
-              onClick={() => setCurrentIdx((i) => Math.max(0, i - 1))}
-              className="px-3.5 py-2 rounded-zen text-xs font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 disabled:opacity-40"
+              disabled={!canGoPrevious}
+              aria-keyshortcuts="ArrowLeft"
+              onClick={goPrevious}
+              className="px-3.5 py-2 rounded-zen text-xs font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 disabled:opacity-40 transition-colors duration-150 motion-reduce:transition-none"
             >
               ← Previous
             </button>
             <button
               type="button"
-              disabled={currentIdx >= session.questions.length - 1 || submitting}
-              onClick={() =>
-                setCurrentIdx((i) => Math.min(session.questions.length - 1, i + 1))
-              }
-              className="px-3.5 py-2 rounded-zen text-xs font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 disabled:opacity-40"
+              disabled={!canGoNext}
+              aria-keyshortcuts="ArrowRight Enter"
+              onClick={goNext}
+              className="px-3.5 py-2 rounded-zen text-xs font-medium border border-rice-paper-400/80 dark:border-tea-slate-50/60 disabled:opacity-40 transition-colors duration-150 motion-reduce:transition-none"
             >
               Next →
+              <span className="hidden sm:inline font-mono text-[0.68rem] opacity-65 ml-1.5">
+                (Enter)
+              </span>
             </button>
           </div>
         </article>
