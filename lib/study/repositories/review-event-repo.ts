@@ -19,6 +19,13 @@ import {
   mapReviewEventToNotionProperties,
 } from './mappers'
 
+const EXPECTED_REVIEW_EVENT_PROPS = [
+  REVIEW_EVENT_PROPS.eventId,
+  REVIEW_EVENT_PROPS.userId,
+  REVIEW_EVENT_PROPS.questionId,
+  REVIEW_EVENT_PROPS.reviewedAt,
+] as const
+
 export function createNotionReviewEventRepository(
   client: StudyNotionClient,
   databaseId: string
@@ -31,6 +38,7 @@ export function createNotionReviewEventRepository(
       },
       pageSize: 2,
       maxPages: 1,
+      expectedProperties: EXPECTED_REVIEW_EVENT_PROPS,
     })
     return pages[0] || null
   }
@@ -61,6 +69,7 @@ export function createNotionReviewEventRepository(
         sorts: [{ property: REVIEW_EVENT_PROPS.reviewedAt, direction: 'descending' }],
         pageSize: 1,
         maxPages: 1,
+        expectedProperties: EXPECTED_REVIEW_EVENT_PROPS,
       })
       return pages[0] ? mapNotionPageToReviewEvent(pages[0]) : null
     },
@@ -77,6 +86,7 @@ export function createNotionReviewEventRepository(
         },
         sorts: [{ property: REVIEW_EVENT_PROPS.reviewedAt, direction: 'descending' }],
         ...(limit ? { pageSize: Math.min(limit, 100), maxPages: Math.ceil(limit / 100) } : {}),
+        expectedProperties: EXPECTED_REVIEW_EVENT_PROPS,
       })
 
       const mapped = pages.map(mapNotionPageToReviewEvent)

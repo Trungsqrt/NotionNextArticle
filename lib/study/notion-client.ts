@@ -10,6 +10,12 @@
 
 import { Client } from '@notionhq/client'
 import { getStudyNotionConfig, type StudyNotionConfig } from './config'
+import {
+  createDataSourceResolver,
+  extractNotionErrorInfo,
+  type RetrievedDatabaseLike,
+  type RetrievedDataSourceLike,
+} from './notion-data-source'
 
 export interface NotionPageRecord {
   id: string
@@ -25,6 +31,8 @@ export interface QueryDatabaseOptions {
   sorts?: Array<Record<string, unknown>>
   pageSize?: number
   maxPages?: number
+  /** Expected Notion property names for verified schema & multi-data-source selection */
+  expectedProperties?: readonly string[]
 }
 
 export interface UploadedStudyFile {
@@ -254,8 +262,16 @@ export function createStudyNotionClient(
     timeoutMs: config.timeoutMs,
   })
 
-  // Cache resolved data_source_id per database_id for Notion SDK v5
-  const dataSourceIdCache = new Map<string, string>()
+  const sdkAny = sdk as unknown as {
+    dataSources?: {
+      query?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>
+      retrieve?: (args: { data_source_id: string }) => Promise<RetrievedDataSourceLike>
+    }
+    databases: {
+      retrieve: (args: { database_id: string }) => Promise<RetrievedDatabaseLike>
+      query?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>
+    }
+  }
 
   // Sequential minimum-interval throttle queue to stay within Notion's ~3 req/s limit
   let throttleChain: Promise<void> = Promise.resolve()
@@ -289,12 +305,13 @@ export function createStudyNotionClient(
       } catch (err) {
         attempt += 1
         if (attempt > config.maxRetries || !isRetryableError(err)) {
-          const status = getHttpStatus(err)
-          const safeMsg = status
-            ? `Study Notion API error (${label}, HTTP ${status})`
-            : `Study Notion API error (${label})`
-          const wrapped = new Error(safeMsg)
-          ;(wrapped as Error & { status?: number }).status = status ?? undefined
+          const info = extractNotionErrorInfo(err)
+          const safeMsg = info.status
+            ? `Study Notion API error (${label}, HTTP ${info.status}${info.code ? `, ${info.code}` : ''})`
+            : `Study Notion API error (${label}${info.code ? `, ${info.code}` : ''})`
+          const wrapped = new Error(safeMsg) as Error & { status?: number; notionCode?: string }
+          wrapped.status = info.status ?? undefined
+          wrapped.notionCode = info.code ?? undefined
           throw wrapped
         }
         const retryAfterMs = getRetryAfterMs(err)
@@ -304,25 +321,36 @@ export function createStudyNotionClient(
     }
   }
 
-  async function resolveDataSourceId(databaseId: string): Promise<string> {
-    const cleanId = databaseId.trim()
-    const cached = dataSourceIdCache.get(cleanId)
-    if (cached) return cached
+  // Verified, bounded-TTL, single-flight Database ID -> Data Source ID resolver
+  // (never caches unverified or failed lookups)
+  const dataSourceResolver = createDataSourceResolver(
+    {
+      retrieveDatabase: (dbId) =>
+        executeWithRetry('databases.retrieve', () =>
+          sdkAny.databases.retrieve({ database_id: dbId })
+        ),
+      ...(typeof sdkAny.dataSources?.retrieve === 'function'
+        ? {
+            retrieveDataSource: (dsId: string) =>
+              executeWithRetry('dataSources.retrieve', () =>
+                sdkAny.dataSources!.retrieve!({ data_source_id: dsId })
+              ),
+          }
+        : {}),
+    },
+    { ttlMs: 15 * 60 * 1000, maxEntries: 100 }
+  )
 
-    try {
-      const dbInfo = (await executeWithRetry('databases.retrieve', () =>
-        sdk.databases.retrieve({ database_id: cleanId })
-      )) as { data_sources?: Array<{ id?: string }> }
-      const dsId = dbInfo?.data_sources?.[0]?.id
-      if (dsId) {
-        dataSourceIdCache.set(cleanId, dsId)
-        return dsId
-      }
-    } catch {
-      // cleanId may already be a data_source_id; fall through
-    }
-    dataSourceIdCache.set(cleanId, cleanId)
-    return cleanId
+  async function resolveDataSourceId(
+    databaseId: string,
+    expectedProperties?: readonly string[],
+    forceRefresh: boolean = false
+  ): Promise<string> {
+    const resolved = await dataSourceResolver.resolve(databaseId, {
+      expectedProperties,
+      forceRefresh,
+    })
+    return resolved.dataSourceId
   }
 
   return {
@@ -337,51 +365,73 @@ export function createStudyNotionClient(
       )
       const pageSize = Math.min(Math.max(options.pageSize ?? 100, 1), 100)
 
-      const results: NotionPageRecord[] = []
-      let cursor: string | undefined = undefined
-      let pageCount = 0
-
-      const sdkAny = sdk as unknown as {
-        dataSources?: { query?: (args: Record<string, unknown>) => Promise<Record<string, unknown>> }
-        databases: { query?: (args: Record<string, unknown>) => Promise<Record<string, unknown>> }
-      }
-
       const useDataSources = typeof sdkAny.dataSources?.query === 'function'
-      const targetId = useDataSources ? await resolveDataSourceId(cleanId) : cleanId
 
-      while (pageCount < maxPages) {
-        const queryArgs: Record<string, unknown> = {
-          ...(useDataSources ? { data_source_id: targetId } : { database_id: targetId }),
-          page_size: pageSize,
-          ...(options.filter ? { filter: options.filter } : {}),
-          ...(options.sorts ? { sorts: options.sorts } : {}),
-          ...(cursor ? { start_cursor: cursor } : {}),
-        }
+      const runPaginatedQuery = async (targetId: string): Promise<NotionPageRecord[]> => {
+        const results: NotionPageRecord[] = []
+        let cursor: string | undefined = undefined
+        let pageCount = 0
 
-        const res = (await executeWithRetry('database.query', () =>
-          useDataSources
-            ? sdkAny.dataSources!.query!(queryArgs)
-            : sdkAny.databases.query!(queryArgs)
-        )) as {
-          results?: NotionPageRecord[]
-          has_more?: boolean
-          next_cursor?: string | null
-        }
+        while (pageCount < maxPages) {
+          const queryArgs: Record<string, unknown> = {
+            ...(useDataSources ? { data_source_id: targetId } : { database_id: targetId }),
+            page_size: pageSize,
+            ...(options.filter ? { filter: options.filter } : {}),
+            ...(options.sorts ? { sorts: options.sorts } : {}),
+            ...(cursor ? { start_cursor: cursor } : {}),
+          }
 
-        if (Array.isArray(res.results)) {
-          for (const item of res.results) {
-            if (!item.archived && !item.in_trash) {
-              results.push(item)
+          const res = (await executeWithRetry('database.query', () =>
+            useDataSources
+              ? sdkAny.dataSources!.query!(queryArgs)
+              : sdkAny.databases.query!(queryArgs)
+          )) as {
+            results?: NotionPageRecord[]
+            has_more?: boolean
+            next_cursor?: string | null
+          }
+
+          if (Array.isArray(res.results)) {
+            for (const item of res.results) {
+              if (!item.archived && !item.in_trash) {
+                results.push(item)
+              }
             }
           }
+
+          pageCount += 1
+          if (!res.has_more || !res.next_cursor) break
+          cursor = res.next_cursor
         }
 
-        pageCount += 1
-        if (!res.has_more || !res.next_cursor) break
-        cursor = res.next_cursor
+        return results
       }
 
-      return results
+      if (!useDataSources) {
+        return runPaginatedQuery(cleanId)
+      }
+
+      const targetId = await resolveDataSourceId(cleanId, options.expectedProperties, false)
+      try {
+        return await runPaginatedQuery(targetId)
+      } catch (err) {
+        const info = extractNotionErrorInfo(err)
+        // Stale cached data_source_id recovery: invalidate, re-resolve, and retry read AT MOST ONCE
+        if (info.category === 'not_found') {
+          dataSourceResolver.invalidate(cleanId, 'query_object_not_found')
+          console.warn('[study-notion/ds] retry_after_object_not_found', {
+            inputId: cleanId,
+            staleDataSourceId: targetId,
+          })
+          const freshTargetId = await resolveDataSourceId(
+            cleanId,
+            options.expectedProperties,
+            true
+          )
+          return await runPaginatedQuery(freshTargetId)
+        }
+        throw err
+      }
     },
 
     async createPage(

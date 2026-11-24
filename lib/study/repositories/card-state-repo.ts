@@ -22,6 +22,13 @@ import {
   mapFsrsCardStateToNotionProperties,
 } from './mappers'
 
+const EXPECTED_CARD_STATE_PROPS = [
+  CARD_STATE_PROPS.stateKey,
+  CARD_STATE_PROPS.userId,
+  CARD_STATE_PROPS.questionId,
+  CARD_STATE_PROPS.due,
+] as const
+
 export function createNotionFsrsCardStateRepository(
   client: StudyNotionClient,
   databaseId: string
@@ -34,6 +41,7 @@ export function createNotionFsrsCardStateRepository(
       },
       pageSize: 2,
       maxPages: 1,
+      expectedProperties: EXPECTED_CARD_STATE_PROPS,
     })
     return pages[0] || null
   }
@@ -55,6 +63,7 @@ export function createNotionFsrsCardStateRepository(
           rich_text: { equals: userId.trim() },
         },
         sorts: [{ property: CARD_STATE_PROPS.due, direction: 'ascending' }],
+        expectedProperties: EXPECTED_CARD_STATE_PROPS,
       })
       return pages.map(mapNotionPageToFsrsCardState)
     },
@@ -74,6 +83,7 @@ export function createNotionFsrsCardStateRepository(
           ],
         },
         sorts: [{ property: CARD_STATE_PROPS.due, direction: 'ascending' }],
+        expectedProperties: EXPECTED_CARD_STATE_PROPS,
       })
       return pages.map(mapNotionPageToFsrsCardState)
     },

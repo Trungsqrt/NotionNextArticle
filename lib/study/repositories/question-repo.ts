@@ -22,6 +22,12 @@ import {
 // Notion compound `or` filters support at most 100 conditions; chunk safely at 50
 const QUESTION_ID_QUERY_CHUNK_SIZE = 50
 
+const EXPECTED_QUESTION_PROPS = [
+  QUESTION_PROPS.questionId,
+  QUESTION_PROPS.examId,
+  QUESTION_PROPS.questionText,
+] as const
+
 export function createNotionQuestionBankRepository(
   client: StudyNotionClient,
   databaseId: string,
@@ -37,6 +43,7 @@ export function createNotionQuestionBankRepository(
       },
       pageSize: 2,
       maxPages: 1,
+      expectedProperties: EXPECTED_QUESTION_PROPS,
     })
     return pages[0] || null
   }
