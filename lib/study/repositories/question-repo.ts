@@ -26,6 +26,8 @@ const EXPECTED_QUESTION_PROPS = [
   QUESTION_PROPS.questionId,
   QUESTION_PROPS.examId,
   QUESTION_PROPS.questionText,
+  QUESTION_PROPS.optionsJson,
+  QUESTION_PROPS.correctOptionIdsJson,
 ] as const
 
 export function createNotionQuestionBankRepository(
@@ -93,6 +95,7 @@ export function createNotionQuestionBankRepository(
       const pages = await client.queryDatabaseAll(databaseId, {
         filter,
         sorts: [{ property: QUESTION_PROPS.questionId, direction: 'ascending' }],
+        expectedProperties: EXPECTED_QUESTION_PROPS,
       })
 
       const mapped = pages.map(mapNotionPageToStudyQuestion)
@@ -131,7 +134,10 @@ export function createNotionQuestionBankRepository(
                 })),
               }
 
-        const pages = await client.queryDatabaseAll(databaseId, { filter })
+        const pages = await client.queryDatabaseAll(databaseId, {
+          filter,
+          expectedProperties: EXPECTED_QUESTION_PROPS,
+        })
         for (const page of pages) {
           const mapped = mapNotionPageToStudyQuestion(page)
           if (useCache && mapped.status === 'published') {
@@ -151,7 +157,9 @@ export function createNotionQuestionBankRepository(
 
       const saved = existing
         ? await client.updatePage(existing.id, properties)
-        : await client.createPage(databaseId, properties)
+        : await client.createPage(databaseId, properties, {
+            expectedProperties: EXPECTED_QUESTION_PROPS,
+          })
 
       const mapped = mapNotionPageToStudyQuestion(saved)
       if (useCache) {

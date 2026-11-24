@@ -19,6 +19,12 @@ import {
   invalidateCachedExam,
 } from '../cache/content-cache'
 
+const EXPECTED_EXAM_PROPS = [
+  EXAM_PROPS.examId,
+  EXAM_PROPS.title,
+  EXAM_PROPS.status,
+] as const
+
 export function createNotionExamCollectionRepository(
   client: StudyNotionClient,
   databaseId: string,
@@ -34,6 +40,7 @@ export function createNotionExamCollectionRepository(
       },
       pageSize: 2,
       maxPages: 1,
+      expectedProperties: EXPECTED_EXAM_PROPS,
     })
     return pages[0] || null
   }
@@ -70,6 +77,7 @@ export function createNotionExamCollectionRepository(
       const pages = await client.queryDatabaseAll(databaseId, {
         filter,
         sorts: [{ property: EXAM_PROPS.examId, direction: 'ascending' }],
+        expectedProperties: EXPECTED_EXAM_PROPS,
       })
 
       const mapped = pages.map(mapNotionPageToExamCollection)
@@ -86,7 +94,9 @@ export function createNotionExamCollectionRepository(
 
       const saved = existing
         ? await client.updatePage(existing.id, properties)
-        : await client.createPage(databaseId, properties)
+        : await client.createPage(databaseId, properties, {
+            expectedProperties: EXPECTED_EXAM_PROPS,
+          })
 
       const mapped = mapNotionPageToExamCollection(saved)
       if (useCache) {

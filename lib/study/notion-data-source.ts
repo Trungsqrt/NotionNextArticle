@@ -2,14 +2,19 @@
  * lib/study/notion-data-source.ts — Verified Notion Database / Data Source ID resolver
  * ────────────────────────────────────────────────────────────────────────────────────
  * Explicitly distinguishes Notion `database_id` from `data_source_id` using verified
- * API responses, preventing permanent cache poisoning after transient errors.
+ * API responses (or optional `db:` / `ds:` explicit prefixes), preventing permanent
+ * cache poisoning after transient errors.
  *
  * Guarantees:
- * - NEVER caches unverified IDs or fallback results on error.
+ * - NEVER caches unverified IDs, fallback results, or schema-incompatible sources.
  * - Distinguishes transient errors (429, 5xx, timeouts) from invalid IDs (404) and
  *   permission errors (401/403).
  * - Bounded TTL cache (default 15m, max 100 entries) with LRU eviction.
- * - Single-flight deduplication so concurrent cache misses share one resolution call.
+ * - Single-flight deduplication for BOTH normal misses AND concurrent `forceRefresh`.
+ * - Monotonic per-ID generation counter prevents older in-flight resolutions from
+ *   overwriting newer verified mappings after `invalidate()`.
+ * - Strict schema validation (`requireSchemaMatch`) rejects empty/missing schema
+ *   metadata and verifies cached & in-flight results against the caller's requirements.
  * - Multi-data-source selection verifies expected property schema instead of blindly
  *   picking `data_sources[0]`.
  * - Emits secret-safe structured logs for cache HIT/MISS, invalidation, recovery,
@@ -67,9 +72,9 @@ export interface DataSourceResolverAdapter {
 export interface ResolveDataSourceOptions {
   /** Expected Notion property names used to verify schema & disambiguate multi-data-source DBs */
   expectedProperties?: readonly string[]
-  /** When true, throws DataSourceResolutionError('schema_mismatch') if expectedProperties are missing */
+  /** When true, throws DataSourceResolutionError('schema_mismatch') if schema metadata is missing or expectedProperties are absent */
   requireSchemaMatch?: boolean
-  /** Bypasses any cached entry and performs a fresh verified lookup */
+  /** Bypasses any cached entry and performs a fresh verified lookup (deduplicated concurrently) */
   forceRefresh?: boolean
 }
 
@@ -97,6 +102,28 @@ export class DataSourceResolutionError extends Error {
     this.category = options.category
     this.httpStatus = options.httpStatus
     this.notionCode = options.notionCode
+  }
+}
+
+/**
+ * Parses an optional explicit identifier prefix (`db:<id>`, `database:<id>`,
+ * `ds:<id>`, `data_source:<id>`) while preserving 100% backward compatibility
+ * with plain UUID environment variables.
+ */
+export function parseTypedNotionIdentifier(raw: string): {
+  id: string
+  explicitKind: NotionIdentifierKind | null
+} {
+  const trimmed = raw.trim()
+  const match = /^(db|database|ds|data_source):(.+)$/i.exec(trimmed)
+  if (!match) {
+    return { id: trimmed, explicitKind: null }
+  }
+  const prefix = match[1].toLowerCase()
+  const id = match[2].trim()
+  return {
+    id,
+    explicitKind: prefix === 'ds' || prefix === 'data_source' ? 'data_source_id' : 'database_id',
   }
 }
 
@@ -177,7 +204,7 @@ function normalizeNotionId(id: string): string {
   return id.replace(/-/g, '').trim().toLowerCase()
 }
 
-function defaultLogger(): DataSourceResolverLogger {
+function defaultLogger(): Required<DataSourceResolverLogger> {
   return {
     info(event, meta) {
       if (process.env.STUDY_NOTION_DEBUG === 'true') {
@@ -214,16 +241,22 @@ export function createDataSourceResolver(
   const nowFn = config?.nowFn ?? (() => Date.now())
   const fallbackLogger = defaultLogger()
   const logger: Required<DataSourceResolverLogger> = {
-    info: config?.logger?.info ?? fallbackLogger.info!,
-    warn: config?.logger?.warn ?? fallbackLogger.warn!,
-    error: config?.logger?.error ?? fallbackLogger.error!,
+    info: config?.logger?.info ?? fallbackLogger.info,
+    warn: config?.logger?.warn ?? fallbackLogger.warn,
+    error: config?.logger?.error ?? fallbackLogger.error,
   }
 
   const cache = new Map<string, ResolvedNotionDataSource>()
   const inFlight = new Map<string, Promise<ResolvedNotionDataSource>>()
+  const inFlightRefresh = new Map<string, Promise<ResolvedNotionDataSource>>()
+  const generations = new Map<string, number>()
 
-  function buildCacheKey(inputId: string, expectedProperties?: readonly string[]): string {
-    const normId = normalizeNotionId(inputId)
+  function getGeneration(normId: string): number {
+    return generations.get(normId) || 0
+  }
+
+  function buildCacheKey(cleanId: string, expectedProperties?: readonly string[]): string {
+    const normId = normalizeNotionId(cleanId)
     if (!expectedProperties || expectedProperties.length === 0) return normId
     const sortedProps = [...expectedProperties].map((p) => p.trim()).sort().join('|')
     return `${normId}::${sortedProps}`
@@ -261,6 +294,50 @@ export function createDataSourceResolver(
     return expectedProperties.filter((p) => !actualSet.has(p))
   }
 
+  /**
+   * Validates a resolved entry (fresh, cached, or in-flight) against the caller's
+   * schema requirements so weaker cached entries can never bypass stricter callers.
+   */
+  function validateSchemaAgainstOptions(
+    resolved: ResolvedNotionDataSource,
+    options: ResolveDataSourceOptions
+  ): void {
+    const expectedProps = options.expectedProperties
+    if (!expectedProps || expectedProps.length === 0) return
+
+    if (resolved.propertyNames.length === 0) {
+      if (options.requireSchemaMatch) {
+        logger.error('schema_mismatch', {
+          inputId: resolved.inputId,
+          dataSourceId: resolved.dataSourceId,
+          reason: 'missing_schema_metadata',
+          expectedProperties: [...expectedProps],
+        })
+        throw new DataSourceResolutionError(
+          `Data source "${resolved.dataSourceId}" returned no schema metadata; cannot verify required properties (${expectedProps.join(', ')})`,
+          { category: 'schema_mismatch' }
+        )
+      }
+      return
+    }
+
+    const missing = findMissingProperties(resolved.propertyNames, expectedProps)
+    if (missing.length > 0) {
+      logger.warn('schema_mismatch', {
+        inputId: resolved.inputId,
+        dataSourceId: resolved.dataSourceId,
+        dataSourceName: resolved.dataSourceName,
+        missingProperties: missing,
+      })
+      if (options.requireSchemaMatch) {
+        throw new DataSourceResolutionError(
+          `Data source "${resolved.dataSourceId}" is missing required Notion properties: ${missing.join(', ')}`,
+          { category: 'schema_mismatch' }
+        )
+      }
+    }
+  }
+
   async function inspectCandidateSchema(
     candidateId: string,
     fallbackProps?: Record<string, unknown>
@@ -279,11 +356,73 @@ export function createDataSourceResolver(
     }
   }
 
-  async function resolveUncached(
+  async function resolveAsDataSourceDirect(
     cleanId: string,
     options: ResolveDataSourceOptions
   ): Promise<ResolvedNotionDataSource> {
+    if (!adapter.retrieveDataSource) {
+      throw new DataSourceResolutionError(
+        `Notion identifier "${cleanId}" cannot be verified as a data_source_id without dataSources.retrieve`,
+        { category: 'not_found', httpStatus: 404, notionCode: 'object_not_found' }
+      )
+    }
+
+    try {
+      const dsInfo = await adapter.retrieveDataSource(cleanId)
+      if (!dsInfo?.id) {
+        throw new DataSourceResolutionError(
+          `Invalid Notion data source response for "${cleanId}"`,
+          { category: 'not_found', httpStatus: 404, notionCode: 'object_not_found' }
+        )
+      }
+
+      const now = nowFn()
+      const resolved: ResolvedNotionDataSource = {
+        inputId: cleanId,
+        inputKind: 'data_source_id',
+        databaseId: dsInfo.parent?.database_id || null,
+        dataSourceId: dsInfo.id,
+        dataSourceName: typeof dsInfo.name === 'string' ? dsInfo.name : null,
+        propertyNames: Object.keys(dsInfo.properties || {}),
+        resolvedAt: now,
+        expiresAt: now + ttlMs,
+      }
+      validateSchemaAgainstOptions(resolved, options)
+      return resolved
+    } catch (dsErr) {
+      if (dsErr instanceof DataSourceResolutionError) throw dsErr
+      const info = extractNotionErrorInfo(dsErr)
+      logger.error('upstream_error', {
+        op: 'dataSources.retrieve',
+        inputId: cleanId,
+        category: info.category,
+        httpStatus: info.status,
+        notionCode: info.code,
+      })
+      throw new DataSourceResolutionError(
+        info.category === 'not_found'
+          ? `Notion identifier "${cleanId}" is neither an accessible database_id nor a valid data_source_id`
+          : `Failed to verify Notion data_source "${cleanId}" (${info.category})`,
+        {
+          category: info.category,
+          httpStatus: info.status ?? undefined,
+          notionCode: info.code ?? undefined,
+        }
+      )
+    }
+  }
+
+  async function resolveUncached(
+    rawInputId: string,
+    options: ResolveDataSourceOptions
+  ): Promise<ResolvedNotionDataSource> {
+    const { id: cleanId, explicitKind } = parseTypedNotionIdentifier(rawInputId)
     const expectedProps = options.expectedProperties
+
+    // Explicit `ds:<id>` bypasses databases.retrieve completely (zero unnecessary 404 warnings)
+    if (explicitKind === 'data_source_id') {
+      return resolveAsDataSourceDirect(cleanId, options)
+    }
 
     // Step 1: Try retrieving as a Notion Database first
     let dbInfo: RetrievedDatabaseLike | null = null
@@ -291,7 +430,6 @@ export function createDataSourceResolver(
       dbInfo = await adapter.retrieveDatabase(cleanId)
     } catch (err) {
       const info = extractNotionErrorInfo(err)
-      // Transient and permission errors MUST NOT fall through to dataSources.retrieve or cache!
       if (info.category === 'transient') {
         logger.warn('upstream_error', {
           op: 'databases.retrieve',
@@ -318,7 +456,7 @@ export function createDataSourceResolver(
           { category: 'permission', httpStatus: info.status ?? undefined, notionCode: info.code ?? undefined }
         )
       }
-      if (info.category !== 'not_found') {
+      if (info.category !== 'not_found' || explicitKind === 'database_id') {
         logger.error('upstream_error', {
           op: 'databases.retrieve',
           inputId: cleanId,
@@ -326,9 +464,14 @@ export function createDataSourceResolver(
           httpStatus: info.status,
           notionCode: info.code,
         })
-        throw err
+        throw info.category === 'not_found'
+          ? new DataSourceResolutionError(
+              `Explicit database_id "${cleanId}" was not found`,
+              { category: 'not_found', httpStatus: 404, notionCode: 'object_not_found' }
+            )
+          : err
       }
-      // Only on 404 object_not_found do we check whether cleanId is already a data_source_id
+      // Only on 404 object_not_found with untyped ID do we check whether cleanId is a data_source_id
     }
 
     // Step 2: If databases.retrieve succeeded, verify & select the right data_source
@@ -369,24 +512,8 @@ export function createDataSourceResolver(
           }
         }
 
-        const missing = findMissingProperties(propertyNames, expectedProps)
-        if (missing.length > 0 && propertyNames.length > 0) {
-          logger.warn('schema_mismatch', {
-            inputId: cleanId,
-            dataSourceId: only.id,
-            dataSourceName: dsName,
-            missingProperties: missing,
-          })
-          if (options.requireSchemaMatch) {
-            throw new DataSourceResolutionError(
-              `Data source "${only.id}" is missing required Notion properties: ${missing.join(', ')}`,
-              { category: 'schema_mismatch' }
-            )
-          }
-        }
-
         const now = nowFn()
-        return {
+        const resolved: ResolvedNotionDataSource = {
           inputId: cleanId,
           inputKind: 'database_id',
           databaseId: dbInfo.id || cleanId,
@@ -396,6 +523,8 @@ export function createDataSourceResolver(
           resolvedAt: now,
           expiresAt: now + ttlMs,
         }
+        validateSchemaAgainstOptions(resolved, options)
+        return resolved
       }
 
       // Multiple data sources exist: DO NOT blindly select data_sources[0]!
@@ -427,7 +556,9 @@ export function createDataSourceResolver(
         })
       }
 
-      const exactMatches = inspectedCandidates.filter((c) => c.missing.length === 0)
+      const exactMatches = inspectedCandidates.filter(
+        (c) => c.propertyNames.length > 0 && c.missing.length === 0
+      )
       if (exactMatches.length === 1) {
         const chosen = exactMatches[0]
         const now = nowFn()
@@ -458,71 +589,7 @@ export function createDataSourceResolver(
     }
 
     // Step 3: databases.retrieve returned 404 object_not_found -> verify if cleanId is a data_source_id
-    if (!adapter.retrieveDataSource) {
-      throw new DataSourceResolutionError(
-        `Notion database "${cleanId}" not found and SDK cannot verify data_source_id`,
-        { category: 'not_found', httpStatus: 404, notionCode: 'object_not_found' }
-      )
-    }
-
-    try {
-      const dsInfo = await adapter.retrieveDataSource(cleanId)
-      if (!dsInfo?.id) {
-        throw new DataSourceResolutionError(
-          `Invalid Notion data source response for "${cleanId}"`,
-          { category: 'not_found', httpStatus: 404, notionCode: 'object_not_found' }
-        )
-      }
-
-      const propertyNames = Object.keys(dsInfo.properties || {})
-      const missing = findMissingProperties(propertyNames, expectedProps)
-      if (missing.length > 0 && propertyNames.length > 0) {
-        logger.warn('schema_mismatch', {
-          inputId: cleanId,
-          dataSourceId: dsInfo.id,
-          dataSourceName: dsInfo.name ?? null,
-          missingProperties: missing,
-        })
-        if (options.requireSchemaMatch) {
-          throw new DataSourceResolutionError(
-            `Data source "${dsInfo.id}" is missing required Notion properties: ${missing.join(', ')}`,
-            { category: 'schema_mismatch' }
-          )
-        }
-      }
-
-      const now = nowFn()
-      return {
-        inputId: cleanId,
-        inputKind: 'data_source_id',
-        databaseId: dsInfo.parent?.database_id || null,
-        dataSourceId: dsInfo.id,
-        dataSourceName: typeof dsInfo.name === 'string' ? dsInfo.name : null,
-        propertyNames,
-        resolvedAt: now,
-        expiresAt: now + ttlMs,
-      }
-    } catch (dsErr) {
-      if (dsErr instanceof DataSourceResolutionError) throw dsErr
-      const info = extractNotionErrorInfo(dsErr)
-      logger.error('upstream_error', {
-        op: 'dataSources.retrieve',
-        inputId: cleanId,
-        category: info.category,
-        httpStatus: info.status,
-        notionCode: info.code,
-      })
-      throw new DataSourceResolutionError(
-        info.category === 'not_found'
-          ? `Notion identifier "${cleanId}" is neither an accessible database_id nor a valid data_source_id`
-          : `Failed to verify Notion data_source "${cleanId}" (${info.category})`,
-        {
-          category: info.category,
-          httpStatus: info.status ?? undefined,
-          notionCode: info.code ?? undefined,
-        }
-      )
-    }
+    return resolveAsDataSourceDirect(cleanId, options)
   }
 
   return {
@@ -530,52 +597,82 @@ export function createDataSourceResolver(
       inputId: string,
       options: ResolveDataSourceOptions = {}
     ): Promise<ResolvedNotionDataSource> {
-      const cleanId = inputId.trim()
+      const { id: cleanId } = parseTypedNotionIdentifier(inputId)
+      const normId = normalizeNotionId(cleanId)
       const key = buildCacheKey(cleanId, options.expectedProperties)
 
       if (!options.forceRefresh) {
         const cached = readCached(key)
         if (cached) {
-          logger.info('cache_hit', {
-            inputId: cleanId,
-            inputKind: cached.inputKind,
-            dataSourceId: cached.dataSourceId,
-          })
-          return cached
+          // Always re-verify schema requirements so weaker cached entries cannot bypass stricter callers
+          if (
+            options.requireSchemaMatch &&
+            options.expectedProperties?.length &&
+            cached.propertyNames.length === 0
+          ) {
+            // Cached entry lacked schema metadata; fall through to perform a schema-verified lookup
+            cache.delete(key)
+          } else {
+            validateSchemaAgainstOptions(cached, options)
+            logger.info('cache_hit', {
+              inputId: cleanId,
+              inputKind: cached.inputKind,
+              dataSourceId: cached.dataSourceId,
+            })
+            return cached
+          }
         }
       }
 
-      const existingFlight = inFlight.get(key)
-      if (existingFlight && !options.forceRefresh) {
-        logger.info('single_flight_join', { inputId: cleanId })
-        return existingFlight
+      const flightMap = options.forceRefresh ? inFlightRefresh : inFlight
+      const existingFlight = flightMap.get(key)
+      if (existingFlight) {
+        logger.info('single_flight_join', {
+          inputId: cleanId,
+          forceRefresh: Boolean(options.forceRefresh),
+        })
+        const joined = await existingFlight
+        validateSchemaAgainstOptions(joined, options)
+        return joined
       }
 
       logger.info('cache_miss', { inputId: cleanId, forceRefresh: Boolean(options.forceRefresh) })
+      const startGeneration = getGeneration(normId)
 
-      const promise = resolveUncached(cleanId, options)
+      const promise = resolveUncached(inputId, options)
         .then((resolved) => {
-          writeCached(key, resolved)
-          logger.info('resolved', {
-            inputId: cleanId,
-            inputKind: resolved.inputKind,
-            dataSourceId: resolved.dataSourceId,
-            databaseId: resolved.databaseId,
-          })
+          // Guard against stale in-flight resolution overwriting cache after invalidation
+          if (getGeneration(normId) === startGeneration) {
+            writeCached(key, resolved)
+            logger.info('resolved', {
+              inputId: cleanId,
+              inputKind: resolved.inputKind,
+              dataSourceId: resolved.dataSourceId,
+              databaseId: resolved.databaseId,
+            })
+          } else {
+            logger.warn('stale_inflight_discarded', {
+              inputId: cleanId,
+              dataSourceId: resolved.dataSourceId,
+            })
+          }
           return resolved
         })
         .finally(() => {
-          if (inFlight.get(key) === promise) {
-            inFlight.delete(key)
+          if (flightMap.get(key) === promise) {
+            flightMap.delete(key)
           }
         })
 
-      inFlight.set(key, promise)
+      flightMap.set(key, promise)
       return promise
     },
 
     invalidate(inputId: string, reason: string = 'manual'): void {
-      const normPrefix = normalizeNotionId(inputId)
+      const { id: cleanId } = parseTypedNotionIdentifier(inputId)
+      const normPrefix = normalizeNotionId(cleanId)
+      generations.set(normPrefix, getGeneration(normPrefix) + 1)
+
       let removed = 0
       for (const k of [...cache.keys()]) {
         if (k === normPrefix || k.startsWith(`${normPrefix}::`)) {
@@ -583,14 +680,21 @@ export function createDataSourceResolver(
           removed += 1
         }
       }
+      for (const k of [...inFlight.keys()]) {
+        if (k === normPrefix || k.startsWith(`${normPrefix}::`)) {
+          inFlight.delete(k)
+        }
+      }
       if (removed > 0) {
-        logger.warn('cache_invalidate', { inputId: inputId.trim(), reason, removed })
+        logger.warn('cache_invalidate', { inputId: cleanId, reason, removed })
       }
     },
 
     clear(): void {
       cache.clear()
       inFlight.clear()
+      inFlightRefresh.clear()
+      generations.clear()
     },
 
     getCacheSize(): number {

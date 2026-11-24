@@ -12,6 +12,14 @@ import {
   mapStudyUserToNotionProperties,
 } from './mappers'
 
+const EXPECTED_USER_PROPS = [
+  USER_PROPS.userId,
+  USER_PROPS.username,
+  USER_PROPS.accessKeyHash,
+  USER_PROPS.status,
+  USER_PROPS.credentialVersion,
+] as const
+
 export function createNotionStudyUserRepository(
   client: StudyNotionClient,
   databaseId: string
@@ -24,6 +32,7 @@ export function createNotionStudyUserRepository(
       },
       pageSize: 2,
       maxPages: 1,
+      expectedProperties: EXPECTED_USER_PROPS,
     })
     return pages[0] || null
   }
@@ -44,6 +53,7 @@ export function createNotionStudyUserRepository(
         },
         pageSize: 2,
         maxPages: 1,
+        expectedProperties: EXPECTED_USER_PROPS,
       })
 
       if (pages.length === 0) return null
@@ -62,7 +72,9 @@ export function createNotionStudyUserRepository(
 
       const saved = existing
         ? await client.updatePage(existing.id, properties)
-        : await client.createPage(databaseId, properties)
+        : await client.createPage(databaseId, properties, {
+            expectedProperties: EXPECTED_USER_PROPS,
+          })
 
       return mapNotionPageToStudyUser(saved)
     },

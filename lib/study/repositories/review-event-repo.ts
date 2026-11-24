@@ -109,7 +109,9 @@ export function createNotionReviewEventRepository(
       }
 
       const properties = mapReviewEventToNotionProperties(valid)
-      const createdPage = await client.createPage(databaseId, properties)
+      const createdPage = await client.createPage(databaseId, properties, {
+        expectedProperties: EXPECTED_REVIEW_EVENT_PROPS,
+      })
       return {
         event: mapNotionPageToReviewEvent(createdPage),
         created: true,

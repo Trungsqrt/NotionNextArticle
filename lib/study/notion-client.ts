@@ -62,6 +62,11 @@ export class StudyNotionUploadExpiredError extends Error {
 export const NOTION_FREE_PLAN_MAX_FILE_BYTES = 5 * 1024 * 1024 // 5 MB (Notion Free plan per-file limit)
 export const NOTION_SINGLE_PART_MAX_BYTES = 20 * 1024 * 1024 // 20 MB (Notion API single-part limit)
 
+export interface CreatePageOptions {
+  /** Expected Notion property names for verified data source resolution */
+  expectedProperties?: readonly string[]
+}
+
 export interface StudyNotionClient {
   queryDatabaseAll(
     databaseId: string,
@@ -69,7 +74,8 @@ export interface StudyNotionClient {
   ): Promise<NotionPageRecord[]>
   createPage(
     databaseId: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    options?: CreatePageOptions
   ): Promise<NotionPageRecord>
   updatePage(
     pageId: string,
@@ -297,15 +303,24 @@ export function createStudyNotionClient(
     return resultPromise
   }
 
-  async function executeWithRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  async function executeWithRetry<T>(
+    label: string,
+    fn: () => Promise<T>,
+    options?: { isIdempotent?: boolean }
+  ): Promise<T> {
+    const isIdempotent = options?.isIdempotent ?? true
     let attempt = 0
     while (true) {
       try {
         return await scheduleThrottled(() => withTimeout(fn, config.timeoutMs, label))
       } catch (err) {
         attempt += 1
-        if (attempt > config.maxRetries || !isRetryableError(err)) {
-          const info = extractNotionErrorInfo(err)
+        const info = extractNotionErrorInfo(err)
+        // Non-idempotent writes (e.g. pages.create) only retry explicit 429 rate limits, never 5xx/timeouts
+        const canRetry = isIdempotent
+          ? isRetryableError(err)
+          : info.status === 429 || info.code === 'rate_limited'
+        if (attempt > config.maxRetries || !canRetry) {
           const safeMsg = info.status
             ? `Study Notion API error (${label}, HTTP ${info.status}${info.code ? `, ${info.code}` : ''})`
             : `Study Notion API error (${label}${info.code ? `, ${info.code}` : ''})`
@@ -322,7 +337,7 @@ export function createStudyNotionClient(
   }
 
   // Verified, bounded-TTL, single-flight Database ID -> Data Source ID resolver
-  // (never caches unverified or failed lookups)
+  // (never caches unverified, failed, or schema-incompatible lookups)
   const dataSourceResolver = createDataSourceResolver(
     {
       retrieveDatabase: (dbId) =>
@@ -348,6 +363,7 @@ export function createStudyNotionClient(
   ): Promise<string> {
     const resolved = await dataSourceResolver.resolve(databaseId, {
       expectedProperties,
+      requireSchemaMatch: Boolean(expectedProperties && expectedProperties.length > 0),
       forceRefresh,
     })
     return resolved.dataSourceId
@@ -436,14 +452,29 @@ export function createStudyNotionClient(
 
     async createPage(
       databaseId: string,
-      properties: Record<string, unknown>
+      properties: Record<string, unknown>,
+      options?: CreatePageOptions
     ): Promise<NotionPageRecord> {
       const cleanId = databaseId.trim()
-      const res = await executeWithRetry('pages.create', () =>
-        sdk.pages.create({
-          parent: { database_id: cleanId },
-          properties: properties as Parameters<typeof sdk.pages.create>[0]['properties'],
-        })
+      const useDataSources = typeof sdkAny.dataSources?.query === 'function'
+
+      // Target the exact same verified data_source_id used for reads when SDK v5 dataSources is active
+      const parent = useDataSources
+        ? {
+            type: 'data_source_id' as const,
+            data_source_id: await resolveDataSourceId(cleanId, options?.expectedProperties, false),
+          }
+        : { database_id: cleanId }
+
+      // Non-idempotent write: do NOT blindly retry on 5xx or timeout
+      const res = await executeWithRetry(
+        'pages.create',
+        () =>
+          sdk.pages.create({
+            parent: parent as Parameters<typeof sdk.pages.create>[0]['parent'],
+            properties: properties as Parameters<typeof sdk.pages.create>[0]['properties'],
+          }),
+        { isIdempotent: false }
       )
       return res as unknown as NotionPageRecord
     },

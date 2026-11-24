@@ -4,9 +4,24 @@ import {
   createDataSourceResolver,
   DataSourceResolutionError,
   extractNotionErrorInfo,
+  parseTypedNotionIdentifier,
   type DataSourceResolverAdapter,
   type DataSourceResolverLogger,
 } from '../../lib/study/notion-data-source'
+import { createNotionStudyRepositories } from '../../lib/study/repositories'
+import { getPracticeExamPayload } from '../../lib/study/services/practice-service'
+import {
+  mapExamCollectionToNotionProperties,
+  mapStudyQuestionToNotionProperties,
+} from '../../lib/study/repositories/mappers'
+import type { StudyNotionClient, NotionPageRecord } from '../../lib/study/notion-client'
+import type { StudyNotionConfig } from '../../lib/study/config'
+import {
+  SYNTHETIC_EXAM,
+  SYNTHETIC_SINGLE_CHOICE_QUESTION,
+  SYNTHETIC_CARD_STATE,
+} from './fixtures/synthetic-study-data'
+import { clearStudyContentCache } from '../../lib/study/cache/content-cache'
 
 function createSilentLogger() {
   const events: Array<{ level: string; event: string; meta: Record<string, unknown> }> = []
@@ -323,5 +338,324 @@ describe('Notion Database / Data Source ID Resolution & Cache Safety', () => {
       extractNotionErrorInfo(makeNotionErr(429, 'rate_limited', 'Slow down')).category,
       'transient'
     )
+  })
+
+  it('enforces strict schema validation on cached entries and rejects missing/empty schema metadata', async () => {
+    const { logger } = createSilentLogger()
+
+    // Case A: Cached entry with incomplete schema cannot bypass a stricter caller
+    const partialResolver = createDataSourceResolver(
+      {
+        async retrieveDatabase(id) {
+          return { id, data_sources: [{ id: 'ds-partial' }] }
+        },
+        async retrieveDataSource(dsId) {
+          return { id: dsId, properties: { Name: {} } }
+        },
+      },
+      { logger }
+    )
+
+    // Non-strict caller caches ds-partial
+    const loose = await partialResolver.resolve('db-partial', {
+      expectedProperties: ['State Key', 'Due'],
+      requireSchemaMatch: false,
+    })
+    assert.equal(loose.dataSourceId, 'ds-partial')
+    assert.equal(partialResolver.getCacheSize(), 1)
+
+    // Stricter caller hitting the same cache key MUST be rejected with schema_mismatch
+    await assert.rejects(
+      () =>
+        partialResolver.resolve('db-partial', {
+          expectedProperties: ['State Key', 'Due'],
+          requireSchemaMatch: true,
+        }),
+      (err: unknown) =>
+        err instanceof DataSourceResolutionError && err.category === 'schema_mismatch'
+    )
+
+    // Case B: Empty/missing schema metadata is rejected when requireSchemaMatch is true (never cached!)
+    const emptySchemaResolver = createDataSourceResolver(
+      {
+        async retrieveDatabase(id) {
+          return { id, data_sources: [{ id: 'ds-empty-schema' }] }
+        },
+        async retrieveDataSource(dsId) {
+          return { id: dsId, properties: {} }
+        },
+      },
+      { logger }
+    )
+    await assert.rejects(
+      () =>
+        emptySchemaResolver.resolve('db-empty-schema', {
+          expectedProperties: ['Due'],
+          requireSchemaMatch: true,
+        }),
+      (err: unknown) =>
+        err instanceof DataSourceResolutionError && err.category === 'schema_mismatch'
+    )
+    assert.equal(emptySchemaResolver.getCacheSize(), 0)
+  })
+
+  it('deduplicates concurrent forceRefresh calls and prevents stale in-flight resolution from overwriting after invalidation', async () => {
+    const { logger } = createSilentLogger()
+    let refreshCalls = 0
+
+    const refreshResolver = createDataSourceResolver(
+      {
+        async retrieveDatabase(id) {
+          refreshCalls += 1
+          await new Promise((r) => setTimeout(r, 25))
+          return { id, data_sources: [{ id: `ds-refresh-${refreshCalls}` }] }
+        },
+      },
+      { logger }
+    )
+
+    // 5 concurrent forced refreshes share ONE upstream databases.retrieve call
+    const refreshed = await Promise.all([
+      refreshResolver.resolve('db-force', { forceRefresh: true }),
+      refreshResolver.resolve('db-force', { forceRefresh: true }),
+      refreshResolver.resolve('db-force', { forceRefresh: true }),
+      refreshResolver.resolve('db-force', { forceRefresh: true }),
+      refreshResolver.resolve('db-force', { forceRefresh: true }),
+    ])
+    assert.equal(refreshCalls, 1)
+    for (const r of refreshed) {
+      assert.equal(r.dataSourceId, 'ds-refresh-1')
+    }
+
+    // Stale in-flight resolution started before invalidate() MUST NOT overwrite newer verified mapping
+    let callNum = 0
+    let resolveFirst!: (val: { id: string; data_sources: Array<{ id: string }> }) => void
+    const raceResolver = createDataSourceResolver(
+      {
+        retrieveDatabase(id) {
+          callNum += 1
+          if (callNum === 1) {
+            return new Promise((r) => {
+              resolveFirst = r
+            })
+          }
+          return Promise.resolve({ id, data_sources: [{ id: 'ds-newer-v2' }] })
+        },
+      },
+      { logger }
+    )
+
+    const p1 = raceResolver.resolve('db-race')
+    // While p1 is still in flight, invalidate() runs and p2 resolves the newer v2 mapping
+    raceResolver.invalidate('db-race', 'stale_detected')
+    const p2Result = await raceResolver.resolve('db-race', { forceRefresh: true })
+    assert.equal(p2Result.dataSourceId, 'ds-newer-v2')
+
+    // Now p1 finishes late with stale v1 — it MUST NOT overwrite ds-newer-v2 in cache!
+    resolveFirst({ id: 'db-race', data_sources: [{ id: 'ds-stale-v1' }] })
+    await p1
+    const afterRace = await raceResolver.resolve('db-race')
+    assert.equal(afterRace.dataSourceId, 'ds-newer-v2')
+  })
+
+  it('supports explicit ds:/db: prefixes to eliminate unnecessary databases.retrieve probes', async () => {
+    const { logger } = createSilentLogger()
+    let dbCalls = 0
+    let dsCalls = 0
+
+    assert.deepEqual(parseTypedNotionIdentifier('ds:35dac39b-0efb-8072-bd21-000b9f247718'), {
+      id: '35dac39b-0efb-8072-bd21-000b9f247718',
+      explicitKind: 'data_source_id',
+    })
+    assert.deepEqual(parseTypedNotionIdentifier('420ac39b-0efb-804c-9334-eff9900065a3'), {
+      id: '420ac39b-0efb-804c-9334-eff9900065a3',
+      explicitKind: null,
+    })
+
+    const resolver = createDataSourceResolver(
+      {
+        async retrieveDatabase() {
+          dbCalls += 1
+          throw new Error('Should not probe databases.retrieve for explicit ds: prefix')
+        },
+        async retrieveDataSource(dsId) {
+          dsCalls += 1
+          return { id: dsId, properties: { Name: {} } }
+        },
+      },
+      { logger }
+    )
+
+    const res = await resolver.resolve('ds:35dac39b-0efb-8072-bd21-000b9f247718')
+    assert.equal(res.inputKind, 'data_source_id')
+    assert.equal(res.dataSourceId, '35dac39b-0efb-8072-bd21-000b9f247718')
+    assert.equal(dbCalls, 0)
+    assert.equal(dsCalls, 1)
+  })
+
+  it('loads Practice exam & creates FSRS pages using the verified schema-matching data source across multi-data-source DBs', async () => {
+    clearStudyContentCache()
+    const { logger } = createSilentLogger()
+
+    const resolver = createDataSourceResolver(
+      {
+        async retrieveDatabase(id) {
+          if (id === 'db-questions') {
+            return {
+              id,
+              data_sources: [
+                { id: 'ds-wrong-archive', name: 'Archive' },
+                { id: 'ds-questions-real', name: 'Question Bank' },
+              ],
+            }
+          }
+          if (id === 'db-exams') {
+            return { id, data_sources: [{ id: 'ds-exams-real', name: 'Exam Collections' }] }
+          }
+          if (id === 'db-card-states') {
+            return {
+              id,
+              data_sources: [
+                { id: 'ds-card-wrong', name: 'Notes' },
+                { id: 'ds-card-real', name: 'FSRS Card States' },
+              ],
+            }
+          }
+          return { id, data_sources: [{ id: `ds-${id}` }] }
+        },
+        async retrieveDataSource(dsId) {
+          if (dsId === 'ds-questions-real') {
+            return {
+              id: dsId,
+              properties: {
+                'Question ID': {},
+                'Exam ID': {},
+                'Question Text': {},
+                'Options JSON': {},
+                'Correct Option IDs': {},
+              },
+            }
+          }
+          if (dsId === 'ds-exams-real') {
+            return { id: dsId, properties: { 'Exam ID': {}, Title: {}, Status: {} } }
+          }
+          if (dsId === 'ds-card-real') {
+            return {
+              id: dsId,
+              properties: { 'State Key': {}, 'User ID': {}, 'Question ID': {}, Due: {}, Revision: {} },
+            }
+          }
+          return { id: dsId, properties: { Name: {} } }
+        },
+      },
+      { logger }
+    )
+
+    const queriedDataSources: string[] = []
+    const createdParents: Array<{ type: 'data_source_id'; data_source_id: string }> = []
+
+    const examPage: NotionPageRecord = {
+      id: 'page-exam-1',
+      properties: mapExamCollectionToNotionProperties(SYNTHETIC_EXAM),
+    }
+    const questionPage: NotionPageRecord = {
+      id: 'page-q-1',
+      properties: mapStudyQuestionToNotionProperties(SYNTHETIC_SINGLE_CHOICE_QUESTION),
+    }
+
+    const client: StudyNotionClient = {
+      async queryDatabaseAll(dbId, opts = {}) {
+        const resolved = await resolver.resolve(dbId, {
+          expectedProperties: opts.expectedProperties,
+          requireSchemaMatch: Boolean(opts.expectedProperties?.length),
+        })
+        queriedDataSources.push(resolved.dataSourceId)
+        if (resolved.dataSourceId === 'ds-exams-real') return [examPage]
+        if (resolved.dataSourceId === 'ds-questions-real') return [questionPage]
+        return []
+      },
+      async createPage(dbId, properties, opts) {
+        const resolved = await resolver.resolve(dbId, {
+          expectedProperties: opts?.expectedProperties,
+          requireSchemaMatch: Boolean(opts?.expectedProperties?.length),
+        })
+        createdParents.push({ type: 'data_source_id', data_source_id: resolved.dataSourceId })
+        return { id: 'page-created-1', properties }
+      },
+      async updatePage(pageId, properties) {
+        return { id: pageId, properties }
+      },
+      async retrievePage(pageId) {
+        return { id: pageId, properties: {} }
+      },
+    }
+
+    const config: StudyNotionConfig = {
+      token: 'secret_test',
+      usersDbId: 'db-users',
+      examsDbId: 'db-exams',
+      questionsDbId: 'db-questions',
+      cardStatesDbId: 'db-card-states',
+      reviewEventsDbId: 'db-review-events',
+      timeoutMs: 5000,
+      maxRetries: 0,
+      minIntervalMs: 0,
+      maxPaginationPages: 10,
+    }
+
+    const repos = createNotionStudyRepositories(client, config, { useContentCache: false })
+
+    // Practice exam loading selects ds-questions-real (NOT ds-wrong-archive)
+    const payload = await getPracticeExamPayload(SYNTHETIC_EXAM.examId, repos)
+    assert.ok(payload)
+    assert.equal(payload.questions.length, 1)
+    assert.ok(queriedDataSources.includes('ds-questions-real'))
+    assert.equal(queriedDataSources.includes('ds-wrong-archive'), false)
+
+    // FSRS Card State creation targets the verified ds-card-real data source (NOT ds-card-wrong)
+    await repos.cardStates.save(SYNTHETIC_CARD_STATE, { expectedRevision: 0 })
+    assert.deepEqual(createdParents, [
+      { type: 'data_source_id', data_source_id: 'ds-card-real' },
+    ])
+  })
+
+  it('recovers stale nested public child database data_source_id via parent database_id on 404 object_not_found', async () => {
+    const notionMod = (await import('../../lib/notion-datasource-recovery.js')) as {
+      executePublicDataSourceQueryWithRecovery: (args: {
+        targetId: string
+        isDataSourceId?: boolean
+        parentDatabaseId?: string | null
+        resolveDataSource: (id: string, forceRefresh?: boolean) => Promise<string>
+        invalidateMapping?: (id: string) => void
+        runQuery: (dsId: string) => Promise<{ results: Array<{ id: string }> }>
+      }) => Promise<{ results: Array<{ id: string }> }>
+    }
+
+    const invalidated: string[] = []
+    const queried: string[] = []
+    let resolveForceCalls = 0
+
+    const res = await notionMod.executePublicDataSourceQueryWithRecovery({
+      targetId: 'ds-nested-stale-v1',
+      isDataSourceId: true,
+      parentDatabaseId: 'db-nested-parent',
+      invalidateMapping: (id) => invalidated.push(id),
+      resolveDataSource: async (_id, force) => {
+        if (force) resolveForceCalls += 1
+        return 'ds-nested-fresh-v2'
+      },
+      runQuery: async (dsId) => {
+        queried.push(dsId)
+        if (dsId === 'ds-nested-stale-v1') {
+          throw makeNotionErr(404, 'object_not_found', 'Could not find data_source')
+        }
+        return { results: [{ id: 'row-1' }] }
+      },
+    })
+
+    assert.deepEqual(invalidated, ['db-nested-parent'])
+    assert.equal(resolveForceCalls, 1)
+    assert.deepEqual(queried, ['ds-nested-stale-v1', 'ds-nested-fresh-v2'])
+    assert.equal(res.results.length, 1)
   })
 })

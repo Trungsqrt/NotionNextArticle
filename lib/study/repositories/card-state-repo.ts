@@ -134,7 +134,9 @@ export function createNotionFsrsCardStateRepository(
       }
 
       const properties = mapFsrsCardStateToNotionProperties(valid)
-      const created = await client.createPage(databaseId, properties)
+      const created = await client.createPage(databaseId, properties, {
+        expectedProperties: EXPECTED_CARD_STATE_PROPS,
+      })
       return mapNotionPageToFsrsCardState(created)
     },
   }
