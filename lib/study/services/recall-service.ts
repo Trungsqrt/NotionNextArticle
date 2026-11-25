@@ -308,9 +308,11 @@ export async function getRecallQueue(
   // Bookmark-only Active Recall: never auto-include unbookmarked published questions.
   // Use server-side Study Bookmarks by default when `bookmarkedQuestionIds` is not explicitly supplied.
   let rawBookmarkedIds: readonly string[] | undefined = options?.bookmarkedQuestionIds
+  let bookmarksByExam: Record<string, string[]> | null = null
   if (rawBookmarkedIds === undefined && repos.bookmarks) {
     const loaded = await listAllUserBookmarks(userId, repos, { examId: options?.examId })
     rawBookmarkedIds = loaded.questionIds
+    bookmarksByExam = loaded.bookmarksByExam
   }
 
   const bookmarkedSet = normalizeBookmarkedIds(rawBookmarkedIds)
@@ -325,27 +327,69 @@ export async function getRecallQueue(
     }
   }
 
-  // Only read published exams and current card states — never scan full review history on queue loads
+  // Restrict exam & question loading strictly to published exam collections that contain bookmarks
+  const bookmarkedExamIds = bookmarksByExam
+    ? Object.keys(bookmarksByExam).filter((id) => (bookmarksByExam![id]?.length ?? 0) > 0)
+    : null
+
+  const loadRelevantPublishedExams = async () => {
+    if (options?.examId) {
+      if (bookmarkedExamIds && !bookmarkedExamIds.includes(options.examId)) {
+        return []
+      }
+      const exam = await repos.exams.findByExamId(options.examId)
+      return exam && exam.status === 'published' ? [exam] : []
+    }
+    if (bookmarkedExamIds && bookmarkedExamIds.length === 1) {
+      const exam = await repos.exams.findByExamId(bookmarkedExamIds[0])
+      return exam && exam.status === 'published' ? [exam] : []
+    }
+    const published = await repos.exams.list({ status: 'published' })
+    if (!bookmarkedExamIds) return published
+    const allowedExamSet = new Set(bookmarkedExamIds)
+    return published.filter((exam) => allowedExamSet.has(exam.examId))
+  }
+
+  // Only read published exams with bookmarks and current card states — never scan full review history
   const [exams, userStates] = await Promise.all([
-    options?.examId
-      ? repos.exams.findByExamId(options.examId).then((e) => (e && e.status === 'published' ? [e] : []))
-      : repos.exams.list({ status: 'published' }),
+    loadRelevantPublishedExams(),
     repos.cardStates.listByUser(userId),
   ])
+
+  if (exams.length === 0) {
+    return {
+      items: [],
+      dueCount: 0,
+      newCount: 0,
+      totalAvailable: 0,
+      bookmarkedCount: 0,
+      upcomingReviews,
+    }
+  }
 
   const stateByQuestion = new Map<string, FsrsCardState>()
   for (const st of userStates) {
     stateByQuestion.set(st.questionId, st)
   }
 
+  // Load questions only from published exams containing bookmarks (reuses published content cache)
   const questionLists = await Promise.all(
     exams.map((exam) => repos.questions.listByExamId(exam.examId, { status: 'published' }))
   )
   const allQuestions: StudyQuestion[] = questionLists.flat()
 
-  // Validate incoming bookmark IDs server-side against published questions in the selected exam scope,
+  // Validate bookmarked question IDs against published questions in the selected exam scope,
   // strictly before applying queue limits and computing rating previews.
-  const bookmarkedQuestions = allQuestions.filter((q) => bookmarkedSet.has(q.questionId))
+  const bookmarkedByExamSets = bookmarksByExam
+    ? new Map(
+        Object.entries(bookmarksByExam).map(([eId, qIds]) => [eId, normalizeBookmarkedIds(qIds)])
+      )
+    : null
+  const bookmarkedQuestions = allQuestions.filter((q) =>
+    bookmarkedByExamSets
+      ? Boolean(bookmarkedByExamSets.get(q.examId)?.has(q.questionId))
+      : bookmarkedSet.has(q.questionId)
+  )
 
   const endOfTodayDate = new Date(nowMs)
   endOfTodayDate.setUTCHours(23, 59, 59, 999)

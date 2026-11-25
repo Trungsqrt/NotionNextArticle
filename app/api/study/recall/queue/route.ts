@@ -16,6 +16,22 @@ const recallQueuePostSchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
 })
 
+function logUnexpectedRecallQueueError(method: 'GET' | 'POST', err: unknown): void {
+  const e = (err && typeof err === 'object' ? err : {}) as {
+    name?: string
+    code?: string
+    status?: number
+    notionCode?: string
+  }
+  console.error('[study-recall-queue] unexpected_error', {
+    route: '/api/study/recall/queue',
+    method,
+    errorName: typeof e.name === 'string' ? e.name : 'UnknownError',
+    code: typeof e.code === 'string' ? e.code : typeof e.notionCode === 'string' ? e.notionCode : undefined,
+    status: typeof e.status === 'number' ? e.status : undefined,
+  })
+}
+
 export async function GET(request: Request) {
   const rate = checkApiRateLimit(getClientIp(request), 'study-recall-queue', 60, 60 * 1000)
   if (!rate.allowed) {
@@ -47,7 +63,8 @@ export async function GET(request: Request) {
       limit,
     })
     return NextResponse.json(queue, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
-  } catch {
+  } catch (err) {
+    logUnexpectedRecallQueueError('GET', err)
     return NextResponse.json(
       { error: 'Unable to load recall queue right now.' },
       { status: 503, headers: NO_STORE_PRIVATE_HEADERS }
@@ -99,7 +116,8 @@ export async function POST(request: Request) {
       limit: parsed.data.limit ?? 20,
     })
     return NextResponse.json(queue, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
-  } catch {
+  } catch (err) {
+    logUnexpectedRecallQueueError('POST', err)
     return NextResponse.json(
       { error: 'Unable to load recall queue right now.' },
       { status: 503, headers: NO_STORE_PRIVATE_HEADERS }

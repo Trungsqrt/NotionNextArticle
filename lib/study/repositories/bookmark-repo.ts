@@ -9,7 +9,7 @@
 import type { StudyBookmarkRecord } from '../types'
 import { buildBookmarkKey, studyBookmarkRecordSchema } from '../schemas'
 import type { StudyNotionClient } from '../notion-client'
-import type { StudyBookmarkRepository } from './interfaces'
+import type { SaveBookmarkOptions, StudyBookmarkRepository } from './interfaces'
 import {
   BOOKMARK_PROPS,
   mapNotionPageToStudyBookmarkRecord,
@@ -28,9 +28,10 @@ export function createNotionStudyBookmarkRepository(
   client: StudyNotionClient,
   databaseId: string
 ): StudyBookmarkRepository {
-  // Remembers resolved Notion page IDs within this repository instance to avoid
-  // an extra query when findByUserAndExam() is immediately followed by save().
-  const knownPageIds = new Map<string, string>()
+  // Remembers resolved Notion page IDs (and confirmed misses as `null`) within this
+  // repository instance to avoid a redundant lookup when findByUserAndExam() is
+  // immediately followed by save() under the per-(userId, examId) lock.
+  const knownPageIds = new Map<string, string | null>()
 
   async function findPageByBookmarkKey(bookmarkKey: string) {
     const pages = await client.queryDatabaseAll(databaseId, {
@@ -43,9 +44,7 @@ export function createNotionStudyBookmarkRepository(
       expectedProperties: EXPECTED_BOOKMARK_PROPS,
     })
     const page = pages[0] || null
-    if (page) {
-      knownPageIds.set(bookmarkKey, page.id)
-    }
+    knownPageIds.set(bookmarkKey, page ? page.id : null)
     return page
   }
 
@@ -74,13 +73,21 @@ export function createNotionStudyBookmarkRepository(
       })
     },
 
-    async save(record: StudyBookmarkRecord): Promise<StudyBookmarkRecord> {
+    async save(
+      record: StudyBookmarkRecord,
+      options: SaveBookmarkOptions = {}
+    ): Promise<StudyBookmarkRecord> {
       const valid = studyBookmarkRecordSchema.parse(record)
       const properties = mapStudyBookmarkRecordToNotionProperties(valid)
-      const existingPageId =
-        knownPageIds.get(valid.bookmarkKey) ??
-        (await findPageByBookmarkKey(valid.bookmarkKey))?.id ??
-        null
+
+      let existingPageId: string | null
+      if (knownPageIds.has(valid.bookmarkKey)) {
+        existingPageId = knownPageIds.get(valid.bookmarkKey) ?? null
+      } else if (options.skipExistenceCheck) {
+        existingPageId = null
+      } else {
+        existingPageId = (await findPageByBookmarkKey(valid.bookmarkKey))?.id ?? null
+      }
 
       const saved = existingPageId
         ? await client.updatePage(existingPageId, properties)

@@ -10,6 +10,10 @@ import {
   createNotionStudyRepositories,
   ConcurrencyConflictError,
 } from '../../../../lib/study/repositories'
+import {
+  DistributedLockLostError,
+  DistributedLockUnavailableError,
+} from '../../../../lib/study/concurrency/distributed-lock'
 import { stableIdSchema } from '../../../../lib/study/schemas'
 import {
   BookmarkServiceError,
@@ -27,17 +31,20 @@ const bookmarkMutationSchema = z.discriminatedUnion('action', [
     action: z.enum(['add', 'remove']),
     examId: stableIdSchema,
     questionId: stableIdSchema,
+    expectedUserId: stableIdSchema.optional(),
   }),
   z.object({
     action: z.literal('sync'),
     examId: stableIdSchema,
     add: z.array(stableIdSchema).max(500).default([]),
     remove: z.array(stableIdSchema).max(500).default([]),
+    expectedUserId: stableIdSchema.optional(),
   }),
   z.object({
     action: z.literal('import'),
     examId: stableIdSchema,
     questionIds: z.array(stableIdSchema).max(500),
+    expectedUserId: stableIdSchema.optional(),
   }),
 ])
 
@@ -58,6 +65,27 @@ function buildRateLimitedResponse(err: unknown): NextResponse | null {
     )
   }
   return null
+}
+
+function logUnexpectedBookmarkError(
+  method: 'GET' | 'POST',
+  action: string,
+  err: unknown
+): void {
+  const e = (err && typeof err === 'object' ? err : {}) as {
+    name?: string
+    code?: string
+    status?: number
+    notionCode?: string
+  }
+  console.error('[study-bookmarks] unexpected_error', {
+    route: '/api/study/bookmarks',
+    method,
+    action,
+    errorName: typeof e.name === 'string' ? e.name : 'UnknownError',
+    code: typeof e.code === 'string' ? e.code : typeof e.notionCode === 'string' ? e.notionCode : undefined,
+    status: typeof e.status === 'number' ? e.status : undefined,
+  })
 }
 
 export async function GET(request: Request) {
@@ -94,11 +122,17 @@ export async function GET(request: Request) {
         )
       }
       const result = await getUserBookmarksForExam(guard.user.userId, parsedExamId.data, repos)
-      return NextResponse.json(result, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
+      return NextResponse.json(
+        { ...result, userId: guard.user.userId },
+        { status: 200, headers: NO_STORE_PRIVATE_HEADERS }
+      )
     }
 
     const result = await listAllUserBookmarks(guard.user.userId, repos)
-    return NextResponse.json(result, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
+    return NextResponse.json(
+      { ...result, userId: guard.user.userId },
+      { status: 200, headers: NO_STORE_PRIVATE_HEADERS }
+    )
   } catch (err) {
     if (err instanceof BookmarkServiceError) {
       return NextResponse.json(
@@ -108,6 +142,7 @@ export async function GET(request: Request) {
     }
     const rateLimited = buildRateLimitedResponse(err)
     if (rateLimited) return rateLimited
+    logUnexpectedBookmarkError('GET', rawExamId ? 'get_exam' : 'list_all', err)
     return NextResponse.json(
       { error: 'Unable to load bookmarks right now.' },
       { status: 503, headers: NO_STORE_PRIVATE_HEADERS }
@@ -153,6 +188,17 @@ export async function POST(request: Request) {
     )
   }
 
+  // Prevent pending browser operations from ever being applied to a different authenticated account
+  if (parsed.data.expectedUserId && parsed.data.expectedUserId !== guard.user.userId) {
+    return NextResponse.json(
+      {
+        error: 'Signed-in account changed. Please refresh before syncing bookmarks.',
+        code: 'ACCOUNT_MISMATCH',
+      },
+      { status: 403, headers: NO_STORE_PRIVATE_HEADERS }
+    )
+  }
+
   try {
     const repos = createNotionStudyRepositories()
     if (parsed.data.action === 'import') {
@@ -164,7 +210,10 @@ export async function POST(request: Request) {
         },
         repos
       )
-      return NextResponse.json(result, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
+      return NextResponse.json(
+        { ...result, userId: guard.user.userId },
+        { status: 200, headers: NO_STORE_PRIVATE_HEADERS }
+      )
     }
 
     if (parsed.data.action === 'sync') {
@@ -177,7 +226,10 @@ export async function POST(request: Request) {
         },
         repos
       )
-      return NextResponse.json(result, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
+      return NextResponse.json(
+        { ...result, userId: guard.user.userId },
+        { status: 200, headers: NO_STORE_PRIVATE_HEADERS }
+      )
     }
 
     const result = await mutateUserBookmark(
@@ -189,7 +241,10 @@ export async function POST(request: Request) {
       },
       repos
     )
-    return NextResponse.json(result, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
+    return NextResponse.json(
+      { ...result, userId: guard.user.userId },
+      { status: 200, headers: NO_STORE_PRIVATE_HEADERS }
+    )
   } catch (err) {
     if (err instanceof BookmarkServiceError) {
       return NextResponse.json(
@@ -197,7 +252,7 @@ export async function POST(request: Request) {
         { status: err.status, headers: NO_STORE_PRIVATE_HEADERS }
       )
     }
-    if (err instanceof ConcurrencyConflictError) {
+    if (err instanceof ConcurrencyConflictError || err instanceof DistributedLockLostError) {
       return NextResponse.json(
         {
           error: 'Bookmarks were updated concurrently. Please retry.',
@@ -206,8 +261,18 @@ export async function POST(request: Request) {
         { status: 409, headers: NO_STORE_PRIVATE_HEADERS }
       )
     }
+    if (err instanceof DistributedLockUnavailableError) {
+      return NextResponse.json(
+        {
+          error: 'Bookmark synchronization is temporarily unavailable. Please retry.',
+          code: err.code,
+        },
+        { status: 503, headers: NO_STORE_PRIVATE_HEADERS }
+      )
+    }
     const rateLimited = buildRateLimitedResponse(err)
     if (rateLimited) return rateLimited
+    logUnexpectedBookmarkError('POST', parsed.data.action, err)
     return NextResponse.json(
       { error: 'Unable to synchronize bookmark right now.' },
       { status: 503, headers: NO_STORE_PRIVATE_HEADERS }

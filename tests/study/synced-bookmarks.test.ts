@@ -36,9 +36,15 @@ import {
 } from '../../lib/study/local-progress'
 import {
   createBookmarkSyncController,
+  createQuestionBookmarkFeedback,
   parseRetryAfterHeaderMs,
   type BookmarkSyncSnapshot,
+  type BookmarkTransientFeedbackPhase,
 } from '../../lib/study/bookmark-sync'
+import {
+  DistributedLockLostError,
+  DistributedLockUnavailableError,
+} from '../../lib/study/concurrency/distributed-lock'
 import { proxy } from '../../proxy'
 import {
   SYNTHETIC_EXAM,
@@ -585,7 +591,6 @@ describe('Non-blocking Bookmark Synchronization', () => {
       fetchImpl: mockFetch,
       storage,
       debounceMs: 25,
-      savedIndicatorMs: 0,
     })
 
     await ctrl.loadFromServer()
@@ -685,7 +690,6 @@ describe('Non-blocking Bookmark Synchronization', () => {
       timeoutMs: 25,
       maxRetries: 2,
       retryBaseDelayMs: 50,
-      savedIndicatorMs: 0,
       sleepFn: async (ms) => {
         sleepDelays.push(ms)
       },
@@ -756,7 +760,6 @@ describe('Non-blocking Bookmark Synchronization', () => {
       fetchImpl: mockFetch,
       storage,
       debounceMs: 40,
-      savedIndicatorMs: 0,
     })
 
     // Start independent GET (still slow/pending)
@@ -805,5 +808,498 @@ describe('Non-blocking Bookmark Synchronization', () => {
     assert.equal(mixed.changed, true)
     assert.deepEqual(mixed.questionIds, ['q-2', 'q-3'])
     assert.equal(counters.bookmarkSaves, 2)
+  })
+
+  it('prevents stale GET from overwriting a newer successful POST and validates API payloads', async () => {
+    const storage = createMemoryStorage()
+    let releaseSlowGet: (() => void) | null = null
+    let returnMalformedPost = false
+
+    const mockFetch: typeof fetch = async (_input, init) => {
+      const method = (init?.method || 'GET').toUpperCase()
+      if (method === 'GET') {
+        await new Promise<void>((resolve) => {
+          releaseSlowGet = resolve
+        })
+        return new Response(
+          JSON.stringify({ examId: 'exam-1', userId: SYNTHETIC_USER.userId, questionIds: ['q-1'] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+      const body = JSON.parse(String(init?.body || '{}')) as {
+        expectedUserId?: string
+        add: string[]
+      }
+      assert.equal(body.expectedUserId, SYNTHETIC_USER.userId)
+      if (returnMalformedPost) {
+        // Malformed payload missing persisted questionId must NOT clear pending ops
+        return new Response(JSON.stringify({ examId: 'exam-1', questionIds: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(
+        JSON.stringify({
+          examId: 'exam-1',
+          userId: SYNTHETIC_USER.userId,
+          questionIds: ['q-1', ...body.add],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    const ctrl = createBookmarkSyncController({
+      userId: SYNTHETIC_USER.userId,
+      examId: 'exam-1',
+      validQuestionIds: new Set(['q-1', 'q-2', 'q-3']),
+      onStateChange: () => {},
+      fetchImpl: mockFetch,
+      storage,
+      debounceMs: 0,
+    })
+
+    // Start slow GET, then immediately bookmark q-2 and let POST complete first
+    const getPromise = ctrl.loadFromServer()
+    ctrl.toggle('q-2')
+    await new Promise((r) => setTimeout(r, 30))
+    assert.deepEqual(ctrl.getSnapshot().bookmarks, { 'q-1': true, 'q-2': true })
+    assert.equal(ctrl.getSnapshot().status, 'saved')
+
+    // Now the stale GET resolves with only ['q-1'] — must NOT overwrite ['q-1', 'q-2']!
+    releaseSlowGet!()
+    await getPromise
+    assert.deepEqual(ctrl.getSnapshot().bookmarks, { 'q-1': true, 'q-2': true })
+
+    // Unconfirmed HTTP 200 response must NOT acknowledge/clear pending ops
+    returnMalformedPost = true
+    ctrl.toggle('q-3')
+    await new Promise((r) => setTimeout(r, 30))
+    assert.equal(ctrl.getSnapshot().status, 'not_synced')
+    assert.equal(ctrl.getSnapshot().pendingCount, 1)
+    assert.equal(readPendingBookmarkOps(SYNTHETIC_USER.userId, 'exam-1', storage)['q-3']?.action, 'add')
+
+    ctrl.destroy()
+  })
+
+  it('does not clobber newer pending LocalStorage ops when switching away and returning before old save completes', async () => {
+    const storage = createMemoryStorage()
+    let releaseFirstPost: (() => void) | null = null
+    let postCall = 0
+    const serverSet = new Set<string>()
+
+    const mockFetch: typeof fetch = async (_input, init) => {
+      const method = (init?.method || 'GET').toUpperCase()
+      if (method === 'GET') {
+        return new Response(
+          JSON.stringify({ examId: 'exam-1', userId: SYNTHETIC_USER.userId, questionIds: [...serverSet] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+      postCall += 1
+      const callNum = postCall
+      const body = JSON.parse(String(init?.body || '{}')) as { add: string[]; remove: string[] }
+      if (callNum === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirstPost = resolve
+        })
+      }
+      for (const id of body.remove) serverSet.delete(id)
+      for (const id of body.add) serverSet.add(id)
+      return new Response(
+        JSON.stringify({ examId: 'exam-1', userId: SYNTHETIC_USER.userId, questionIds: [...serverSet] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // 1. User bookmarks q-1 on Exam 1 (ctrlA); POST #1 stays in flight
+    const ctrlA = createBookmarkSyncController({
+      userId: SYNTHETIC_USER.userId,
+      examId: 'exam-1',
+      validQuestionIds: new Set(['q-1', 'q-2']),
+      onStateChange: () => {},
+      fetchImpl: mockFetch,
+      storage,
+      debounceMs: 0,
+    })
+    ctrlA.toggle('q-1')
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(postCall, 1)
+
+    // 2. User switches to Exam 2 (ctrlA destroyed while POST #1 is still in flight)
+    ctrlA.destroy()
+
+    // 3. User returns to Exam 1 BEFORE POST #1 finishes (ctrlB mounts and bookmarks q-2)
+    const ctrlB = createBookmarkSyncController({
+      userId: SYNTHETIC_USER.userId,
+      examId: 'exam-1',
+      validQuestionIds: new Set(['q-1', 'q-2']),
+      onStateChange: () => {},
+      fetchImpl: mockFetch,
+      storage,
+      debounceMs: 30,
+    })
+    assert.equal(ctrlB.getSnapshot().bookmarks['q-1'], true)
+    ctrlB.toggle('q-2')
+    assert.deepEqual(ctrlB.getSnapshot().bookmarks, { 'q-1': true, 'q-2': true })
+
+    // 4. Old ctrlA's POST #1 completes — must reconcile q-1 into ctrlB WITHOUT erasing q-2
+    releaseFirstPost!()
+    await new Promise((r) => setTimeout(r, 80))
+
+    assert.deepEqual([...serverSet].sort(), ['q-1', 'q-2'])
+    assert.deepEqual(ctrlB.getSnapshot().bookmarks, { 'q-1': true, 'q-2': true })
+    assert.equal(ctrlB.getSnapshot().pendingCount, 0)
+    assert.deepEqual(readPendingBookmarkOps(SYNTHETIC_USER.userId, 'exam-1', storage), {})
+
+    ctrlB.destroy()
+  })
+
+  it('scopes minimal bookmark feedback to the triggering question: >400ms spinner, 600ms checkmark, immediate hide on navigation', async () => {
+    const phases: BookmarkTransientFeedbackPhase[] = []
+    const feedback = createQuestionBookmarkFeedback({
+      onPhaseChange: (p) => phases.push(p),
+      loadingDelayMs: 40,
+      successDurationMs: 50,
+    })
+
+    const baseSnap: BookmarkSyncSnapshot = {
+      bookmarks: { 'q-1': true },
+      serverBookmarks: {},
+      loadedFromServer: true,
+      isInitialLoadPending: false,
+      status: 'saving',
+      pendingCount: 1,
+      savingQuestionIds: ['q-1'],
+      lastConfirmedEvent: null,
+      loadFailed: false,
+      errorMessage: null,
+    }
+
+    // 1. Fast successful sync (< loadingDelayMs): never shows loading, shows checkmark briefly, hides
+    feedback.setActiveQuestion('q-1')
+    feedback.onBookmarkTriggered('q-1')
+    feedback.onSyncSnapshot(baseSnap)
+    await new Promise((r) => setTimeout(r, 15))
+    assert.equal(feedback.getPhase(), 'hidden')
+    feedback.onSyncSnapshot({
+      ...baseSnap,
+      status: 'saved',
+      pendingCount: 0,
+      savingQuestionIds: [],
+      lastConfirmedEvent: { id: 1, questionIds: ['q-1'] },
+    })
+    assert.equal(feedback.getPhase(), 'success')
+    assert.equal(phases.includes('loading'), false)
+    await new Promise((r) => setTimeout(r, 70))
+    assert.equal(feedback.getPhase(), 'hidden')
+
+    // 2. Slow successful sync (> loadingDelayMs): shows loading, then brief checkmark, then hidden
+    phases.length = 0
+    feedback.onBookmarkTriggered('q-1')
+    feedback.onSyncSnapshot(baseSnap)
+    await new Promise((r) => setTimeout(r, 55))
+    assert.equal(feedback.getPhase(), 'loading')
+    feedback.onSyncSnapshot({
+      ...baseSnap,
+      status: 'saved',
+      pendingCount: 0,
+      savingQuestionIds: [],
+      lastConfirmedEvent: { id: 2, questionIds: ['q-1'] },
+    })
+    assert.equal(feedback.getPhase(), 'success')
+    await new Promise((r) => setTimeout(r, 70))
+    assert.equal(feedback.getPhase(), 'hidden')
+
+    // 3. Bookmark q-1 and immediately navigate to q-2: hides feedback immediately & never shows q-1's checkmark on q-2
+    phases.length = 0
+    feedback.onBookmarkTriggered('q-1')
+    feedback.onSyncSnapshot(baseSnap)
+    feedback.setActiveQuestion('q-2')
+    assert.equal(feedback.getPhase(), 'hidden')
+    await new Promise((r) => setTimeout(r, 55))
+    assert.equal(feedback.getPhase(), 'hidden')
+    feedback.onSyncSnapshot({
+      ...baseSnap,
+      status: 'saved',
+      pendingCount: 0,
+      savingQuestionIds: [],
+      lastConfirmedEvent: { id: 3, questionIds: ['q-1'] },
+    })
+    assert.equal(feedback.getPhase(), 'hidden')
+    assert.deepEqual(phases, [])
+
+    feedback.destroy()
+  })
+
+  it('renews distributed bookmark lock during slow Notion writes, aborts on lost ownership, and fails closed when Redis fails', async () => {
+    const prevUrl = process.env.UPSTASH_REDIS_REST_URL
+    const prevToken = process.env.UPSTASH_REDIS_REST_TOKEN
+    process.env.UPSTASH_REDIS_REST_URL = 'https://mock-upstash.local'
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'mock-token'
+
+    try {
+      // 1. Slow Notion write exceeding initial lock TTL stays alive via PEXPIRE heartbeat renewals
+      let renewCalls = 0
+      let releaseCalls = 0
+      const renewingFetch: typeof fetch = async (_url, init) => {
+        const cmds = JSON.parse(String(init?.body || '[]')) as string[][]
+        const [op, script] = cmds[0]
+        if (op === 'SET') {
+          return new Response(JSON.stringify([{ result: 'OK' }]), { status: 200 })
+        }
+        if (op === 'EVAL' && script.includes('pexpire')) {
+          renewCalls += 1
+          return new Response(JSON.stringify([{ result: 1 }]), { status: 200 })
+        }
+        if (op === 'EVAL' && script.includes('del')) {
+          releaseCalls += 1
+          return new Response(JSON.stringify([{ result: 1 }]), { status: 200 })
+        }
+        return new Response(JSON.stringify([{ result: null }]), { status: 200 })
+      }
+
+      const { repos: slowRepos, counters: slowCounters } = createSyncedBookmarkTestRepos({
+        delayBookmarkSaveMs: 10,
+      })
+      const origFind = slowRepos.bookmarks!.findByUserAndExam.bind(slowRepos.bookmarks!)
+      slowRepos.bookmarks!.findByUserAndExam = async (u, e) => {
+        // Exceed the 220ms TTL cleanly so heartbeat renewals must fire
+        await new Promise((r) => setTimeout(r, 280))
+        return origFind(u, e)
+      }
+
+      const slowResult = await mutateUserBookmark(
+        {
+          userId: SYNTHETIC_USER.userId,
+          examId: 'exam-1',
+          questionId: 'q-1',
+          action: 'add',
+          lockOptions: {
+            ttlMs: 220,
+            renewIntervalMs: 70,
+            fetchImpl: renewingFetch,
+          },
+        },
+        slowRepos
+      )
+      assert.deepEqual(slowResult.questionIds, ['q-1'])
+      assert.ok(renewCalls >= 2, `Expected >=2 lock renewals, got ${renewCalls}`)
+      assert.equal(releaseCalls, 1)
+      assert.equal(slowCounters.bookmarkSaves, 1)
+
+      // 2. When renewal detects lost ownership (EVAL returns 0), abort BEFORE Notion write
+      const lostOwnerFetch: typeof fetch = async (_url, init) => {
+        const cmds = JSON.parse(String(init?.body || '[]')) as string[][]
+        const [op, script] = cmds[0]
+        if (op === 'SET') {
+          return new Response(JSON.stringify([{ result: 'OK' }]), { status: 200 })
+        }
+        if (op === 'EVAL' && script.includes('pexpire')) {
+          return new Response(JSON.stringify([{ result: 0 }]), { status: 200 })
+        }
+        return new Response(JSON.stringify([{ result: 0 }]), { status: 200 })
+      }
+
+      const { repos: lostRepos, counters: lostCounters } = createSyncedBookmarkTestRepos()
+      const origLostFind = lostRepos.bookmarks!.findByUserAndExam.bind(lostRepos.bookmarks!)
+      lostRepos.bookmarks!.findByUserAndExam = async (u, e) => {
+        await new Promise((r) => setTimeout(r, 150))
+        return origLostFind(u, e)
+      }
+
+      await assert.rejects(
+        () =>
+          mutateUserBookmark(
+            {
+              userId: SYNTHETIC_USER.userId,
+              examId: 'exam-1',
+              questionId: 'q-1',
+              action: 'add',
+              lockOptions: {
+                ttlMs: 200,
+                renewIntervalMs: 50,
+                fetchImpl: lostOwnerFetch,
+              },
+            },
+            lostRepos
+          ),
+        (err: unknown) => err instanceof DistributedLockLostError
+      )
+      assert.equal(lostCounters.bookmarkSaves, 0, 'Must never write to Notion after losing lock ownership')
+
+      // 3. When configured Redis fails on acquire, fail closed (503) instead of writing unlocked
+      const failingRedisFetch: typeof fetch = async () =>
+        new Response('Service Unavailable', { status: 503 })
+      const { repos: failClosedRepos, counters: failClosedCounters } =
+        createSyncedBookmarkTestRepos()
+
+      await assert.rejects(
+        () =>
+          mutateUserBookmark(
+            {
+              userId: SYNTHETIC_USER.userId,
+              examId: 'exam-1',
+              questionId: 'q-1',
+              action: 'add',
+              lockOptions: { fetchImpl: failingRedisFetch },
+            },
+            failClosedRepos
+          ),
+        (err: unknown) => err instanceof DistributedLockUnavailableError
+      )
+      assert.equal(failClosedCounters.bookmarkSaves, 0)
+    } finally {
+      if (prevUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL
+      else process.env.UPSTASH_REDIS_REST_URL = prevUrl
+      if (prevToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN
+      else process.env.UPSTASH_REDIS_REST_TOKEN = prevToken
+    }
+  })
+
+  it('loads questions ONLY from the 1 exam containing bookmarks out of 6 published exams, and skips redundant query on first bookmark creation', async () => {
+    // Part A: 6 published exams, bookmarks only in exam-3 -> listByExamId called ONLY for exam-3
+    const sixExams: ExamCollection[] = Array.from({ length: 6 }, (_, i) => ({
+      ...SYNTHETIC_EXAM,
+      examId: `exam-${i + 1}`,
+      title: `CSA Practice ${i + 1}`,
+      questionCount: 2,
+      status: 'published' as const,
+    }))
+    const listedExamQuestionIds: string[] = []
+    let examsListCalled = 0
+
+    const { repos: baseRepos } = createSyncedBookmarkTestRepos()
+    const sixExamRepos: StudyRepositories = {
+      ...baseRepos,
+      exams: {
+        async findByExamId(id) {
+          return sixExams.find((e) => e.examId === id) || null
+        },
+        async list(opts) {
+          examsListCalled += 1
+          return opts?.status ? sixExams.filter((e) => e.status === opts.status) : sixExams
+        },
+        async upsert(e) {
+          return e
+        },
+      },
+      questions: {
+        async findByQuestionId(id) {
+          if (id === 'q-exam3-1') {
+            return { ...SYNTHETIC_SINGLE_CHOICE_QUESTION, questionId: id, examId: 'exam-3', status: 'published' }
+          }
+          return null
+        },
+        async listByExamId(examId) {
+          listedExamQuestionIds.push(examId)
+          if (examId === 'exam-3') {
+            return [
+              { ...SYNTHETIC_SINGLE_CHOICE_QUESTION, questionId: 'q-exam3-1', examId: 'exam-3', status: 'published' },
+              { ...SYNTHETIC_SINGLE_CHOICE_QUESTION, questionId: 'q-exam3-2', examId: 'exam-3', status: 'published' },
+            ]
+          }
+          return []
+        },
+        async listByQuestionIds() {
+          return []
+        },
+        async upsert(q) {
+          return q
+        },
+      },
+    }
+
+    await mutateUserBookmark(
+      { userId: SYNTHETIC_USER.userId, examId: 'exam-3', questionId: 'q-exam3-1', action: 'add' },
+      sixExamRepos
+    )
+    listedExamQuestionIds.length = 0
+    examsListCalled = 0
+
+    const queue = await getRecallQueue(SYNTHETIC_USER.userId, sixExamRepos, {
+      nowIso: '2026-04-10T10:00:00.000Z',
+    })
+    assert.equal(queue.bookmarkedCount, 1)
+    assert.equal(queue.items.length, 1)
+    assert.equal(queue.items[0].prompt.questionId, 'q-exam3-1')
+    assert.deepEqual(listedExamQuestionIds, ['exam-3'])
+    assert.equal(examsListCalled, 0, 'Single bookmarked exam resolves via findByExamId without scanning all exams')
+
+    // Part B: First bookmark creation under lock performs 1 queryDatabaseAll + 1 createPage (0 redundant existence lookup)
+    let queryCount = 0
+    let createCount = 0
+    let updateCount = 0
+    const rows: NotionPageRecord[] = []
+    const countingClient: StudyNotionClient = {
+      async queryDatabaseAll(_dbId, opts) {
+        queryCount += 1
+        const filter = opts?.filter as { title?: { equals?: string } } | undefined
+        if (filter?.title?.equals) {
+          return rows.filter((r) => {
+            const prop = r.properties['Bookmark Key'] as {
+              title?: Array<{ plain_text?: string; text?: { content?: string } }>
+            }
+            const val = prop?.title?.[0]?.plain_text ?? prop?.title?.[0]?.text?.content
+            return val === filter.title?.equals
+          })
+        }
+        return rows
+      },
+      async createPage(_dbId, properties) {
+        createCount += 1
+        const page: NotionPageRecord = { id: `page-${createCount}`, properties }
+        rows.push(page)
+        return page
+      },
+      async updatePage(pageId, properties) {
+        updateCount += 1
+        const idx = rows.findIndex((r) => r.id === pageId)
+        rows[idx] = { ...rows[idx], properties }
+        return rows[idx]
+      },
+      async retrievePage(pageId) {
+        return rows.find((r) => r.id === pageId)!
+      },
+    }
+
+    const notionRepos = createNotionStudyRepositories(
+      countingClient,
+      {
+        token: 'secret_test',
+        usersDbId: 'db-u',
+        examsDbId: 'db-e',
+        questionsDbId: 'db-q',
+        cardStatesDbId: 'db-c',
+        reviewEventsDbId: 'db-r',
+        bookmarksDbId: 'db-bm',
+        timeoutMs: 5000,
+        maxRetries: 0,
+        minIntervalMs: 0,
+        maxPaginationPages: 10,
+      },
+      { useContentCache: false }
+    )
+
+    const wiredRepos: StudyRepositories = {
+      ...baseRepos,
+      bookmarks: notionRepos.bookmarks,
+    }
+
+    await mutateUserBookmark(
+      { userId: SYNTHETIC_USER.userId, examId: 'exam-1', questionId: 'q-1', action: 'add' },
+      wiredRepos
+    )
+    assert.equal(queryCount, 1, 'First bookmark creation must issue exactly 1 lookup query (no redundant second query)')
+    assert.equal(createCount, 1)
+    assert.equal(updateCount, 0)
+
+    // Subsequent update on the same repo instance reuses cached pageId (1 lookup + 1 update)
+    await mutateUserBookmark(
+      { userId: SYNTHETIC_USER.userId, examId: 'exam-1', questionId: 'q-2', action: 'add' },
+      wiredRepos
+    )
+    assert.equal(queryCount, 2)
+    assert.equal(createCount, 1)
+    assert.equal(updateCount, 1)
   })
 })

@@ -32,8 +32,11 @@ import {
 } from '../../lib/study/local-progress'
 import {
   createBookmarkSyncController,
+  createQuestionBookmarkFeedback,
   type BookmarkSyncController,
   type BookmarkSyncSnapshot,
+  type BookmarkTransientFeedbackPhase,
+  type QuestionBookmarkFeedbackController,
 } from '../../lib/study/bookmark-sync'
 
 type PracticeFilter = 'all' | 'incorrect' | 'bookmarked'
@@ -50,6 +53,8 @@ const INITIAL_BOOKMARK_SYNC_SNAPSHOT: BookmarkSyncSnapshot = {
   isInitialLoadPending: false,
   status: 'idle',
   pendingCount: 0,
+  savingQuestionIds: [],
+  lastConfirmedEvent: null,
   loadFailed: false,
   errorMessage: null,
 }
@@ -116,6 +121,8 @@ export default function PracticeModeClient({
   const [bookmarkSync, setBookmarkSync] = useState<BookmarkSyncSnapshot>(
     INITIAL_BOOKMARK_SYNC_SNAPSHOT
   )
+  const [bookmarkFeedbackPhase, setBookmarkFeedbackPhase] =
+    useState<BookmarkTransientFeedbackPhase>('hidden')
   const [legacyImportCandidate, setLegacyImportCandidate] = useState<{
     examId: string
     questionIds: string[]
@@ -136,6 +143,7 @@ export default function PracticeModeClient({
   const payloadRef = useRef<PracticeExamPayload | null>(null)
   const hydratedExamIdRef = useRef<string>('')
   const bookmarkSyncRef = useRef<BookmarkSyncController | null>(null)
+  const bookmarkFeedbackRef = useRef<QuestionBookmarkFeedbackController | null>(null)
   const checkedLegacyImportExamRef = useRef<string>('')
   const examAbortRef = useRef<AbortController | null>(null)
   const examLoadSeqRef = useRef(0)
@@ -208,6 +216,7 @@ export default function PracticeModeClient({
               return
             }
             setBookmarkSync(snapshot)
+            bookmarkFeedbackRef.current?.onSyncSnapshot(snapshot)
           },
         })
         bookmarkSyncRef.current = syncController
@@ -318,8 +327,15 @@ export default function PracticeModeClient({
     [exams, userId]
   )
 
-  // Initial exam load on mount
+  // Initial exam load on mount + lifecycle for minimal question-scoped bookmark feedback
   useEffect(() => {
+    const feedbackCtrl = createQuestionBookmarkFeedback({
+      onPhaseChange: setBookmarkFeedbackPhase,
+      loadingDelayMs: 400,
+      successDurationMs: 600,
+    })
+    bookmarkFeedbackRef.current = feedbackCtrl
+
     if (initialExamId) {
       loadExam(initialExamId, { syncUrlOnSuccess: false })
     }
@@ -328,6 +344,8 @@ export default function PracticeModeClient({
       checkAbortRef.current?.abort()
       bookmarkSyncRef.current?.destroy()
       bookmarkSyncRef.current = null
+      feedbackCtrl.destroy()
+      bookmarkFeedbackRef.current = null
       examLoadSeqRef.current += 1
       checkSeqRef.current += 1
     }
@@ -447,6 +465,7 @@ export default function PracticeModeClient({
   )
 
   function toggleBookmark(questionId: string) {
+    bookmarkFeedbackRef.current?.onBookmarkTriggered(questionId)
     bookmarkSyncRef.current?.toggle(questionId)
   }
 
@@ -460,7 +479,12 @@ export default function PracticeModeClient({
         const res = await fetch('/api/study/bookmarks', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'import', examId, questionIds }),
+          body: JSON.stringify({
+            action: 'import',
+            examId,
+            questionIds,
+            expectedUserId: userId,
+          }),
           cache: 'no-store',
         })
         if (!res.ok) throw new Error('Unable to import local bookmarks right now.')
@@ -631,6 +655,13 @@ export default function PracticeModeClient({
 
   const safeIndex = Math.min(currentIndex, Math.max(0, filteredQuestions.length - 1))
   const currentQ = filteredQuestions[safeIndex] || null
+  const currentQuestionId = currentQ?.questionId ?? null
+
+  // Immediately hide transient bookmark feedback when navigating to another question
+  // without canceling any pending background synchronization.
+  useEffect(() => {
+    bookmarkFeedbackRef.current?.setActiveQuestion(currentQuestionId)
+  }, [currentQuestionId])
   const currentGraded = currentQ ? Boolean(results[currentQ.questionId]) : false
   const hasCurrentSelection = currentQ
     ? (selections[currentQ.questionId] || []).length > 0
@@ -1215,27 +1246,7 @@ export default function PracticeModeClient({
               <span>{currentQ.questionType === 'multi_select' ? 'Multi-select' : 'Single-choice'}</span>
             </div>
             <div className="flex items-center gap-2">
-              {bookmarkSync.status === 'saving' && (
-                <span
-                  role="status"
-                  aria-live="polite"
-                  className="inline-flex items-center gap-1 text-[0.7rem] text-ink-400 dark:text-sage-400 animate-study-feedback"
-                >
-                  <ZenPendingDot />
-                  <span>Saving…</span>
-                </span>
-              )}
-              {bookmarkSync.status === 'saved' && (
-                <span
-                  role="status"
-                  aria-live="polite"
-                  className="inline-flex items-center gap-1 text-[0.7rem] text-matcha-600 dark:text-matcha-400 animate-study-feedback"
-                >
-                  <FeedbackCheckIcon className="w-3 h-3" />
-                  <span>Saved</span>
-                </span>
-              )}
-              {bookmarkSync.status === 'not_synced' && (
+              {bookmarkSync.status === 'not_synced' ? (
                 <span
                   role="status"
                   aria-live="polite"
@@ -1254,6 +1265,25 @@ export default function PracticeModeClient({
                   >
                     Retry
                   </button>
+                </span>
+              ) : (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="inline-flex items-center justify-center w-4 h-4 shrink-0"
+                >
+                  {bookmarkFeedbackPhase === 'loading' && (
+                    <>
+                      <ZenPendingDot />
+                      <span className="sr-only">Saving bookmark</span>
+                    </>
+                  )}
+                  {bookmarkFeedbackPhase === 'success' && (
+                    <>
+                      <FeedbackCheckIcon className="w-3.5 h-3.5 text-matcha-600 dark:text-matcha-400 animate-study-feedback" />
+                      <span className="sr-only">Bookmark saved</span>
+                    </>
+                  )}
                 </span>
               )}
               <button

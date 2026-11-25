@@ -4,8 +4,8 @@ This guide documents the private Notion databases that back the **Private Study 
 
 > **Security Isolation Rule (Mandatory)**
 > Create a **separate Notion Internal Integration** (for example, `Study System Private`) with its own token (`STUDY_NOTION_TOKEN`).
-> - Connect `Study System Private` **ONLY** to the 5 databases inside your private **Study System** page.
-> - **NEVER** connect your public Knowledge Hub integration (`NOTION_TOKEN`) to the **Study System** page or any of its 5 databases.
+> - Connect `Study System Private` **ONLY** to the 6 databases inside your private **Study System** page.
+> - **NEVER** connect your public Knowledge Hub integration (`NOTION_TOKEN`) to the **Study System** page or any of its 6 databases.
 > - **NEVER** connect `Study System Private` to your public Articles or Translation Mapping databases.
 
 ---
@@ -19,8 +19,8 @@ This guide documents the private Notion databases that back the **Private Study 
    - Name it **`Study System Private`**.
    - Capabilities: enable **Read content**, **Update content**, and **Insert content**.
    - Copy the Internal Integration Secret and set it as `STUDY_NOTION_TOKEN` in `.env.local` (and Vercel Production Environment Variables).
-3. **Create the 5 Databases Inside `Study System`**:
-   - Create 5 full-page or inline databases inside `Study System` using the exact property names and types listed in Section 2:
+3. **Create the 6 Databases Inside `Study System`**:
+   - Create 6 full-page or inline databases inside `Study System` using the exact property names and types listed in Section 2:
      1. `Study Users`
      2. `Exam Collections`
      3. `Question Bank`
@@ -28,7 +28,7 @@ This guide documents the private Notion databases that back the **Private Study 
      5. `Review Events`
      6. `Study Bookmarks`
 4. **Connect the Integration**:
-   - Open the parent **`Study System`** page → top-right `•••` menu → **Connections** → select **`Study System Private`** (connecting the parent page grants access to all 5 child databases).
+   - Open the parent **`Study System`** page → top-right `•••` menu → **Connections** → select **`Study System Private`** (connecting the parent page grants access to all 6 child databases).
    - Double-check that your public Knowledge Hub integration is **not** listed under Connections.
 5. **Copy Database IDs into `.env.local`**:
    - Open each database as a full page and copy its 32-character database ID from the URL (`https://www.notion.so/<workspace>/<DATABASE_ID>?v=...`).
@@ -101,16 +101,6 @@ This guide documents the private Notion databases that back the **Private Study 
 | `Revision` | `number` | Monotonic integer `>= 1` used for optimistic concurrency checks |
 | `Scheduler Version` | `rich_text` | e.g. `ts-fsrs-5` |
 | `Parameters Version` | `rich_text` | e.g. `fsrs-default-v1` |
-
-### 2.6 `Study Bookmarks` (`STUDY_NOTION_BOOKMARKS_DB_ID`)
-
-| Property Name | Notion Type | Notes |
-|---|---|---|
-| `Bookmark Key` | `title` | Composite key `${userId}::${examId}` (one record per user & exam collection) |
-| `User ID` | `rich_text` | References `Study Users.User ID` |
-| `Exam ID` | `rich_text` | References `Exam Collections.Exam ID` |
-| `Bookmarked Questions JSON` | `rich_text` | JSON array of bookmarked question IDs (`["csa-exam-01-q-001", ...]`); never stores question content or answers |
-| `Updated At` | `date` | ISO-8601 timestamp |
 | `Updated At` | `date` | ISO-8601 timestamp |
 
 ### 2.5 `Review Events` (`STUDY_NOTION_REVIEW_EVENTS_DB_ID`)
@@ -155,6 +145,7 @@ This guide documents the private Notion databases that back the **Private Study 
   - `ReviewEventRepository.appendIfNotExists(event)` writes immutable append-only records keyed by `eventId`, preventing duplicate logs on retried requests.
   - `lib/study/services/recall-service.ts` acquires a distributed Upstash Redis per-card lease lock (`SET NX PX` + Lua release) when `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` are configured (layered over an in-process mutex), rejects reused `eventId`s with different payloads (`409 Conflict`), prevents stale timestamps/events from overwriting newer card states, reconciles partial failures deterministically via O(1) indexed `findLatestByUserAndQuestion(userId, questionId)`, and exposes `reconcileCardStateForQuestion`.
   - `FsrsCardStateRepository.save(state, { expectedRevision })` checks `expectedRevision`, monotonic `revision`, and monotonic `updatedAt` before writing, throwing `ConcurrencyConflictError` (`409 Conflict`) on conflict.
+  - **Bookmark Distributed Locking (`lib/study/concurrency/distributed-lock.ts` & `lib/study/services/bookmark-service.ts`)**: Bookmark writes acquire a per-`(userId, examId)` lock (`30s` lease TTL with periodic owner-checked Lua `PEXPIRE` heartbeat renewal and a pre-write `lease.assertValid()` check) layered over an in-process mutex. When Upstash Redis is configured and unreachable/failing, bookmark writes **fail closed** (`503` / `409`) instead of proceeding unlocked; set `STUDY_DISTRIBUTED_LOCK_FAIL_CLOSED=true` to also fail closed in production if Upstash env vars are absent. Local development works without Redis via the in-process mutex. Remaining limitation: Notion does not provide native atomic compare-and-swap (CAS), so a severe process stall between `lease.assertValid()` and Notion's HTTP commit could still race in extreme conditions.
   - **Known Limitation & Smallest Isolated Upgrade for Full ACID Guarantees**: Redis lease locks + optimistic revision checks do not provide strict multi-table ACID atomicity across `ReviewEvent` and `FsrsCardState` if a lease expires mid-write or a process crashes between the two Notion writes. To achieve strict ACID concurrency without altering the Question Bank, keep Notion for `StudyUsers`, `ExamCollections`, and `QuestionBank`, and replace **only** `FsrsCardStateRepository` + `ReviewEventRepository` with a transactional SQL store (Postgres / Neon / Turso) using a single transaction (`BEGIN ... INSERT review_events ... UPDATE fsrs_card_states WHERE revision = $expected ... COMMIT`).
 - **Distributed Rate Limiting (Production on Vercel)**:
   - Set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in Vercel Environment Variables to enable shared Redis-backed rate limiting across all serverless instances for `/api/study/auth/login`, `/api/study/recall/review`, and `/api/study/images/[blockId]`.

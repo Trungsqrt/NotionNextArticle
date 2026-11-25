@@ -105,8 +105,17 @@ export interface ReviewEventRepository {
   ): Promise<AppendReviewEventResult>
 }
 
+export interface SaveBookmarkOptions {
+  /**
+   * When true and the bookmark page ID is not already known, creates the record
+   * directly without issuing a redundant second existence lookup. Only pass true
+   * immediately after a confirmed lookup under the per-(userId, examId) lock.
+   */
+  skipExistenceCheck?: boolean
+}
+
 export interface StudyBookmarkRepository {
   findByUserAndExam(userId: string, examId: string): Promise<StudyBookmarkRecord | null>
   listByUser(userId: string): Promise<StudyBookmarkRecord[]>
-  save(record: StudyBookmarkRecord): Promise<StudyBookmarkRecord>
+  save(record: StudyBookmarkRecord, options?: SaveBookmarkOptions): Promise<StudyBookmarkRecord>
 }

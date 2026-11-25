@@ -404,9 +404,9 @@ export default function StudyDashboardClient({
         )}
       </section>
 
-      {/* ── Local Storage Scope Note ── */}
+      {/* ── Sync & Storage Scope Note ── */}
       <p className="text-[0.76rem] text-ink-400 dark:text-sage-500 m-0 pt-2 border-t border-rice-paper-400/50 dark:border-tea-slate-50/35">
-        Practice progress, mock exam summaries, and bookmarks are stored locally in this browser for your account and are not synchronized across devices.
+        Bookmarks synchronize with your account through Notion across devices. Practice progress and mock exam summaries remain stored locally in this browser.
       </p>
     </div>
   )

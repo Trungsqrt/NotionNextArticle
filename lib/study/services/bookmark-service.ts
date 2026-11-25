@@ -2,15 +2,25 @@
  * lib/study/services/bookmark-service.ts — Synchronized Study Bookmarks service
  * ──────────────────────────────────────────────────────────────────────────────
  * Persists user- and exam-scoped bookmarked question IDs in the private Notion
- * `Study Bookmarks` database. Uses per-(userId, examId) serialization locks
- * (in-process mutex + optional Upstash Redis lease lock) so rapid or concurrent
- * bookmark toggles do not overwrite each other.
+ * `Study Bookmarks` database.
+ *
+ * Concurrency & Consistency:
+ * - Serializes read-modify-write updates per `(userId, examId)` using
+ *   `withDistributedLock` (in-process mutex + Upstash Redis lease with periodic
+ *   `PEXPIRE` heartbeat renewal and pre-write ownership assertion).
+ * - Fails closed (`503 LOCK_UNAVAILABLE` or `409 LOCK_LOST`) when configured
+ *   distributed locking fails or loses ownership rather than proceeding unlocked.
+ * - Remaining limitation: Notion does not provide native atomic compare-and-swap
+ *   (CAS) or transactions, so a severe pause between the pre-write lease check
+ *   and Notion's HTTP commit could still race in extreme conditions.
  */
 
-import { randomUUID } from 'node:crypto'
 import type { StudyRepositories } from '../repositories'
-import { ConcurrencyConflictError } from '../repositories'
 import { buildBookmarkKey } from '../schemas'
+import {
+  withDistributedLock,
+  type DistributedLockOptions,
+} from '../concurrency/distributed-lock'
 
 export class BookmarkServiceError extends Error {
   readonly status: number
@@ -46,110 +56,7 @@ export interface BookmarkImportResult {
   updatedAt: string
 }
 
-export interface BookmarkBatchSyncResult {
-  examId: string
-  questionIds: string[]
-  changed: boolean
-  updatedAt: string
-}
-
 const MAX_BOOKMARKS_PER_EXAM = 500
-const bookmarkLocks = new Map<string, Promise<unknown>>()
-
-async function withInProcessLock<T>(key: string, task: () => Promise<T>): Promise<T> {
-  const prev = bookmarkLocks.get(key) || Promise.resolve()
-  const next = prev.then(task, task)
-  const cleanup = next.then(
-    () => {
-      if (bookmarkLocks.get(key) === cleanup) bookmarkLocks.delete(key)
-    },
-    () => {
-      if (bookmarkLocks.get(key) === cleanup) bookmarkLocks.delete(key)
-    }
-  )
-  bookmarkLocks.set(key, cleanup)
-  return next
-}
-
-function getUpstashLockConfig(): { url: string; token: string } | null {
-  const url = (process.env.UPSTASH_REDIS_REST_URL || '').trim().replace(/\/+$/, '')
-  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim()
-  if (!url || !token) return null
-  return { url, token }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-const RELEASE_LOCK_LUA =
-  'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end'
-
-async function withBookmarkLock<T>(bookmarkKey: string, task: () => Promise<T>): Promise<T> {
-  return withInProcessLock(bookmarkKey, async () => {
-    const upstash = getUpstashLockConfig()
-    if (!upstash) return task()
-
-    const lockKey = `study:lock:bookmark:${bookmarkKey}`
-    const lockToken = randomUUID()
-    const ttlMs = 8000
-    const maxAttempts = 5
-    let acquired = false
-    let redisReachable = true
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        const res = await fetch(`${upstash.url}/pipeline`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${upstash.token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify([['SET', lockKey, lockToken, 'NX', 'PX', String(ttlMs)]]),
-          signal: AbortSignal.timeout(3000),
-        })
-        if (res.ok) {
-          const payload = (await res.json()) as Array<{ result?: unknown }>
-          if (payload?.[0]?.result === 'OK') {
-            acquired = true
-            break
-          }
-        } else {
-          redisReachable = false
-          break
-        }
-      } catch {
-        redisReachable = false
-        break
-      }
-      await sleep(50 * (attempt + 1))
-    }
-
-    if (!acquired && redisReachable) {
-      throw new ConcurrencyConflictError(bookmarkKey, -1, -1)
-    }
-
-    try {
-      return await task()
-    } finally {
-      if (acquired) {
-        try {
-          await fetch(`${upstash.url}/pipeline`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${upstash.token}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify([['EVAL', RELEASE_LOCK_LUA, '1', lockKey, lockToken]]),
-            signal: AbortSignal.timeout(3000),
-          })
-        } catch {
-          // Lease expires automatically
-        }
-      }
-    }
-  })
-}
 
 function requireBookmarksRepo(repos: StudyRepositories) {
   if (!repos.bookmarks) {
@@ -226,6 +133,100 @@ export async function listAllUserBookmarks(
   return { bookmarksByExam, questionIds }
 }
 
+/**
+ * Shared locked read-modify-write core for single mutations, coalesced syncs,
+ * and legacy bookmark imports.
+ */
+async function applyBookmarkDelta(
+  input: {
+    userId: string
+    examId: string
+    addIds: readonly string[]
+    removeIds: readonly string[]
+    nowIso?: string
+    lockOptions?: DistributedLockOptions
+  },
+  repos: StudyRepositories
+): Promise<{
+  examId: string
+  questionIds: string[]
+  addedCount: number
+  changed: boolean
+  updatedAt: string
+}> {
+  const bookmarksRepo = requireBookmarksRepo(repos)
+  const cleanExamId = input.examId.trim()
+  const bookmarkKey = buildBookmarkKey(input.userId, cleanExamId)
+  const lockKey = `study:lock:bookmark:${bookmarkKey}`
+
+  return withDistributedLock(
+    lockKey,
+    async (lease) => {
+      const nowIso = input.nowIso || new Date().toISOString()
+      const existing = await bookmarksRepo.findByUserAndExam(input.userId, cleanExamId)
+      const currentIds = existing ? [...existing.questionIds] : []
+
+      const removeSet = new Set(input.removeIds)
+      const nextIds: string[] = []
+      const seen = new Set<string>()
+
+      for (const qId of currentIds) {
+        if (removeSet.has(qId) || seen.has(qId)) continue
+        seen.add(qId)
+        nextIds.push(qId)
+      }
+
+      let addedCount = 0
+      for (const qId of input.addIds) {
+        if (nextIds.length >= MAX_BOOKMARKS_PER_EXAM) break
+        if (!removeSet.has(qId) && !seen.has(qId)) {
+          seen.add(qId)
+          nextIds.push(qId)
+          addedCount += 1
+        }
+      }
+
+      const changed =
+        nextIds.length !== currentIds.length ||
+        nextIds.some((id, idx) => currentIds[idx] !== id)
+
+      // Idempotent no-op avoids unnecessary Notion writes
+      if (!changed) {
+        return {
+          examId: cleanExamId,
+          questionIds: currentIds,
+          addedCount: 0,
+          changed: false,
+          updatedAt: existing?.updatedAt || nowIso,
+        }
+      }
+
+      // Verify distributed lock ownership is still valid right before committing to Notion
+      lease.assertValid()
+
+      const saved = await bookmarksRepo.save(
+        {
+          bookmarkKey,
+          userId: input.userId,
+          examId: cleanExamId,
+          questionIds: nextIds,
+          updatedAt: nowIso,
+        },
+        { skipExistenceCheck: !existing }
+      )
+
+      return {
+        examId: cleanExamId,
+        questionIds: saved.questionIds,
+        addedCount,
+        changed: true,
+        updatedAt: saved.updatedAt,
+      }
+    },
+    input.lockOptions
+  )
+}
+
 export async function mutateUserBookmark(
   input: {
     userId: string
@@ -233,10 +234,11 @@ export async function mutateUserBookmark(
     questionId: string
     action: BookmarkAction
     nowIso?: string
+    lockOptions?: DistributedLockOptions
   },
   repos: StudyRepositories
 ): Promise<BookmarkMutationResult> {
-  const bookmarksRepo = requireBookmarksRepo(repos)
+  requireBookmarksRepo(repos)
   const cleanExamId = input.examId.trim()
   const cleanQuestionId = input.questionId.trim()
 
@@ -260,51 +262,24 @@ export async function mutateUserBookmark(
     )
   }
 
-  const bookmarkKey = buildBookmarkKey(input.userId, cleanExamId)
-  return withBookmarkLock(bookmarkKey, async () => {
-    const nowIso = input.nowIso || new Date().toISOString()
-    const existing = await bookmarksRepo.findByUserAndExam(input.userId, cleanExamId)
-    const currentIds = existing ? [...existing.questionIds] : []
-    const alreadyPresent = currentIds.includes(cleanQuestionId)
-
-    // Idempotent no-op avoids unnecessary Notion writes
-    if (input.action === 'add' && alreadyPresent) {
-      return {
-        examId: cleanExamId,
-        questionIds: currentIds,
-        changed: false,
-        updatedAt: existing?.updatedAt || nowIso,
-      }
-    }
-    if (input.action === 'remove' && !alreadyPresent) {
-      return {
-        examId: cleanExamId,
-        questionIds: currentIds,
-        changed: false,
-        updatedAt: existing?.updatedAt || nowIso,
-      }
-    }
-
-    const nextIds =
-      input.action === 'add'
-        ? [...currentIds, cleanQuestionId].slice(0, MAX_BOOKMARKS_PER_EXAM)
-        : currentIds.filter((id) => id !== cleanQuestionId)
-
-    const saved = await bookmarksRepo.save({
-      bookmarkKey,
+  const result = await applyBookmarkDelta(
+    {
       userId: input.userId,
       examId: cleanExamId,
-      questionIds: nextIds,
-      updatedAt: nowIso,
-    })
+      addIds: input.action === 'add' ? [cleanQuestionId] : [],
+      removeIds: input.action === 'remove' ? [cleanQuestionId] : [],
+      nowIso: input.nowIso,
+      lockOptions: input.lockOptions,
+    },
+    repos
+  )
 
-    return {
-      examId: cleanExamId,
-      questionIds: saved.questionIds,
-      changed: true,
-      updatedAt: saved.updatedAt,
-    }
-  })
+  return {
+    examId: result.examId,
+    questionIds: result.questionIds,
+    changed: result.changed,
+    updatedAt: result.updatedAt,
+  }
 }
 
 export async function importLegacyBookmarks(
@@ -313,10 +288,11 @@ export async function importLegacyBookmarks(
     examId: string
     questionIds: readonly string[]
     nowIso?: string
+    lockOptions?: DistributedLockOptions
   },
   repos: StudyRepositories
 ): Promise<BookmarkImportResult> {
-  const bookmarksRepo = requireBookmarksRepo(repos)
+  requireBookmarksRepo(repos)
   const cleanExamId = input.examId.trim()
 
   const [exam, examQuestions] = await Promise.all([
@@ -339,47 +315,24 @@ export async function importLegacyBookmarks(
     }
   }
 
-  const bookmarkKey = buildBookmarkKey(input.userId, cleanExamId)
-  return withBookmarkLock(bookmarkKey, async () => {
-    const nowIso = input.nowIso || new Date().toISOString()
-    const existing = await bookmarksRepo.findByUserAndExam(input.userId, cleanExamId)
-    const merged = existing ? [...existing.questionIds] : []
-    const existingSet = new Set(merged)
-    let importedCount = 0
-
-    for (const qId of sanitizedIncoming) {
-      if (merged.length >= MAX_BOOKMARKS_PER_EXAM) break
-      if (!existingSet.has(qId)) {
-        existingSet.add(qId)
-        merged.push(qId)
-        importedCount += 1
-      }
-    }
-
-    if (importedCount === 0) {
-      return {
-        examId: cleanExamId,
-        questionIds: merged,
-        importedCount: 0,
-        updatedAt: existing?.updatedAt || nowIso,
-      }
-    }
-
-    const saved = await bookmarksRepo.save({
-      bookmarkKey,
+  const result = await applyBookmarkDelta(
+    {
       userId: input.userId,
       examId: cleanExamId,
-      questionIds: merged,
-      updatedAt: nowIso,
-    })
+      addIds: sanitizedIncoming,
+      removeIds: [],
+      nowIso: input.nowIso,
+      lockOptions: input.lockOptions,
+    },
+    repos
+  )
 
-    return {
-      examId: cleanExamId,
-      questionIds: saved.questionIds,
-      importedCount,
-      updatedAt: saved.updatedAt,
-    }
-  })
+  return {
+    examId: result.examId,
+    questionIds: result.questionIds,
+    importedCount: result.addedCount,
+    updatedAt: result.updatedAt,
+  }
 }
 
 /**
@@ -394,21 +347,27 @@ export async function syncUserBookmarks(
     add: readonly string[]
     remove: readonly string[]
     nowIso?: string
+    lockOptions?: DistributedLockOptions
   },
   repos: StudyRepositories
-): Promise<BookmarkBatchSyncResult> {
-  const bookmarksRepo = requireBookmarksRepo(repos)
+): Promise<BookmarkMutationResult> {
+  requireBookmarksRepo(repos)
   const cleanExamId = input.examId.trim()
 
-  const addSet = new Set<string>()
   const removeSet = new Set<string>()
   for (const rawId of input.remove) {
     const id = typeof rawId === 'string' ? rawId.trim() : ''
     if (id) removeSet.add(id)
   }
+
+  const addIds: string[] = []
+  const seenAdd = new Set<string>()
   for (const rawId of input.add) {
     const id = typeof rawId === 'string' ? rawId.trim() : ''
-    if (id && !removeSet.has(id)) addSet.add(id)
+    if (id && !removeSet.has(id) && !seenAdd.has(id)) {
+      seenAdd.add(id)
+      addIds.push(id)
+    }
   }
 
   const exam = await repos.exams.findByExamId(cleanExamId)
@@ -417,10 +376,10 @@ export async function syncUserBookmarks(
   }
 
   // Validate every added question exists, is published, and belongs to this exam (hits warm cache)
-  if (addSet.size > 0) {
+  if (addIds.length > 0) {
     const examQuestions = await repos.questions.listByExamId(cleanExamId, { status: 'published' })
     const validIds = new Set(examQuestions.map((q) => q.questionId))
-    for (const qId of addSet) {
+    for (const qId of addIds) {
       if (!validIds.has(qId)) {
         throw new BookmarkServiceError(
           'One or more bookmarked questions do not belong to this published exam collection.',
@@ -431,54 +390,22 @@ export async function syncUserBookmarks(
     }
   }
 
-  const bookmarkKey = buildBookmarkKey(input.userId, cleanExamId)
-  return withBookmarkLock(bookmarkKey, async () => {
-    const nowIso = input.nowIso || new Date().toISOString()
-    const existing = await bookmarksRepo.findByUserAndExam(input.userId, cleanExamId)
-    const currentIds = existing ? [...existing.questionIds] : []
-
-    const nextIds: string[] = []
-    const seen = new Set<string>()
-
-    for (const qId of currentIds) {
-      if (removeSet.has(qId) || seen.has(qId)) continue
-      seen.add(qId)
-      nextIds.push(qId)
-    }
-    for (const qId of addSet) {
-      if (nextIds.length >= MAX_BOOKMARKS_PER_EXAM) break
-      if (!seen.has(qId)) {
-        seen.add(qId)
-        nextIds.push(qId)
-      }
-    }
-
-    const changed =
-      nextIds.length !== currentIds.length ||
-      nextIds.some((id, idx) => currentIds[idx] !== id)
-
-    if (!changed) {
-      return {
-        examId: cleanExamId,
-        questionIds: currentIds,
-        changed: false,
-        updatedAt: existing?.updatedAt || nowIso,
-      }
-    }
-
-    const saved = await bookmarksRepo.save({
-      bookmarkKey,
+  const result = await applyBookmarkDelta(
+    {
       userId: input.userId,
       examId: cleanExamId,
-      questionIds: nextIds,
-      updatedAt: nowIso,
-    })
+      addIds,
+      removeIds: Array.from(removeSet),
+      nowIso: input.nowIso,
+      lockOptions: input.lockOptions,
+    },
+    repos
+  )
 
-    return {
-      examId: cleanExamId,
-      questionIds: saved.questionIds,
-      changed: true,
-      updatedAt: saved.updatedAt,
-    }
-  })
+  return {
+    examId: result.examId,
+    questionIds: result.questionIds,
+    changed: result.changed,
+    updatedAt: result.updatedAt,
+  }
 }

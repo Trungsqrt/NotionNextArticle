@@ -44,6 +44,8 @@ export interface StoredBookmarksV1 {
 export interface PendingBookmarkOp {
   action: 'add' | 'remove'
   updatedAt: string
+  /** Optional unique operation ID used to avoid clobbering newer pending ops across controller instances */
+  opId?: string
 }
 
 export interface StoredPendingBookmarkOpsV1 {
@@ -113,7 +115,6 @@ export interface ExamDashboardMetrics {
     accuracyPercent: number | null
     hasOngoingAttempt: boolean
     hasCompletedSummary: boolean
-    bookmarkedCount: number
     actionLabel: 'Start Practice' | 'Continue Practice' | 'Review Practice'
   }
   mockExam: {
@@ -413,9 +414,11 @@ export function readPendingBookmarkOps(
     if (!qId || !rawOp || typeof rawOp !== 'object') continue
     const op = rawOp as Partial<PendingBookmarkOp>
     if (op.action !== 'add' && op.action !== 'remove') continue
+    const cleanOpId = normalizeId(op.opId)
     result[qId] = {
       action: op.action,
       updatedAt: isValidIso(op.updatedAt) ? op.updatedAt : new Date(0).toISOString(),
+      ...(cleanOpId ? { opId: cleanOpId } : {}),
     }
     count += 1
   }
@@ -441,9 +444,11 @@ export function writePendingBookmarkOps(
     if (count >= MAX_BOOKMARKS_PER_EXAM) break
     const qId = normalizeId(rawId)
     if (!qId || (op.action !== 'add' && op.action !== 'remove')) continue
+    const cleanOpId = normalizeId(op.opId)
     sanitized[qId] = {
       action: op.action,
       updatedAt: isValidIso(op.updatedAt) ? op.updatedAt : nowIso,
+      ...(cleanOpId ? { opId: cleanOpId } : {}),
     }
     count += 1
   }
@@ -460,17 +465,6 @@ export function writePendingBookmarkOps(
     updatedAt: nowIso,
   }
   return safeWriteJson(key, payload, storage)
-}
-
-export function clearPendingBookmarkOps(
-  userId: string,
-  examId: string,
-  storage: StorageLike | null = getDefaultStorage()
-): void {
-  const cleanUser = normalizeId(userId)
-  const cleanExam = normalizeId(examId)
-  if (!cleanUser || !cleanExam) return
-  safeRemove(getPendingBookmarkOpsStorageKey(cleanUser, cleanExam), storage)
 }
 
 // ── Practice Attempt (Ongoing) ───────────────────────────────────────────────
@@ -767,10 +761,8 @@ export function computeDashboardOverview(
   const examMetrics: ExamDashboardMetrics[] = exams.map((exam) => {
     const attempt = readPracticeAttempt(userId, exam.examId, storage)
     const completedSummary = readPracticeSummary(userId, exam.examId, storage)
-    const bookmarks = readUserBookmarks(userId, exam.examId, storage)
     const examSummary = readMockExamSummary(userId, exam.examId, storage)
 
-    const bookmarkedCount = Object.keys(bookmarks).length
     const totalQuestions = exam.questionCount
 
     // Derive Practice status: ongoing attempt takes precedence when actively in progress,
@@ -848,7 +840,6 @@ export function computeDashboardOverview(
         accuracyPercent,
         hasOngoingAttempt: Boolean(attempt && attemptCheckedCount > 0 && !attemptAllGraded),
         hasCompletedSummary: Boolean(completedSummary),
-        bookmarkedCount,
         actionLabel,
       },
       mockExam: {
