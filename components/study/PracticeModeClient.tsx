@@ -1055,6 +1055,7 @@ export default function PracticeModeClient({
               <button
                 key={tab.key}
                 type="button"
+                {...({ autoComplete: 'off' } as Record<string, string>)}
                 disabled={isInitialLoading || isSwitching}
                 onClick={() => {
                   setIsCompleted(false)
