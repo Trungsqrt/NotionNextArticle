@@ -18,6 +18,7 @@ import type {
   FsrsCardSnapshot,
   FsrsCardState,
   ReviewEvent,
+  StudyBookmarkRecord,
 } from './types'
 
 const STABLE_ID_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{1,127}$/
@@ -224,6 +225,36 @@ export const reviewEventSchema = z.object({
   parametersVersion: z.string().trim().min(1).max(64),
 })
 
+export function buildBookmarkKey(userId: string, examId: string): string {
+  return `${userId.trim()}::${examId.trim()}`
+}
+
+export const studyBookmarkRecordSchema = z
+  .object({
+    bookmarkKey: z.string().trim().min(5).max(260),
+    userId: stableIdSchema,
+    examId: stableIdSchema,
+    questionIds: z.array(stableIdSchema).max(500),
+    updatedAt: isoDateTimeSchema,
+  })
+  .superRefine((data, ctx) => {
+    const expectedKey = buildBookmarkKey(data.userId, data.examId)
+    if (data.bookmarkKey !== expectedKey) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['bookmarkKey'],
+        message: `bookmarkKey must equal "${expectedKey}"`,
+      })
+    }
+    if (new Set(data.questionIds).size !== data.questionIds.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['questionIds'],
+        message: 'questionIds must not contain duplicates',
+      })
+    }
+  })
+
 /** Projects a StudyUser into a secret-free user object */
 export function toSafeStudyUser(user: StudyUser): SafeStudyUser {
   const { accessKeyHash: _h, hashVersion: _v, ...safe } = user
@@ -254,6 +285,7 @@ type ParsedStudyQuestion = z.infer<typeof studyQuestionSchema>
 type ParsedFsrsCardSnapshot = z.infer<typeof fsrsCardSnapshotSchema>
 type ParsedFsrsCardState = z.infer<typeof fsrsCardStateSchema>
 type ParsedReviewEvent = z.infer<typeof reviewEventSchema>
+type ParsedStudyBookmarkRecord = z.infer<typeof studyBookmarkRecordSchema>
 
 // Compile-time structural alignment checks between Zod schemas and domain types
 const _assertUser: (u: ParsedStudyUser) => StudyUser = (u) => u
@@ -262,4 +294,5 @@ const _assertQuestion: (q: ParsedStudyQuestion) => StudyQuestion = (q) => q
 const _assertSnapshot: (s: ParsedFsrsCardSnapshot) => FsrsCardSnapshot = (s) => s
 const _assertCardState: (c: ParsedFsrsCardState) => FsrsCardState = (c) => c
 const _assertReviewEvent: (r: ParsedReviewEvent) => ReviewEvent = (r) => r
-void [_assertUser, _assertExam, _assertQuestion, _assertSnapshot, _assertCardState, _assertReviewEvent]
+const _assertBookmark: (b: ParsedStudyBookmarkRecord) => StudyBookmarkRecord = (b) => b
+void [_assertUser, _assertExam, _assertQuestion, _assertSnapshot, _assertCardState, _assertReviewEvent, _assertBookmark]

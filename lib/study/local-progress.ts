@@ -203,6 +203,71 @@ function isValidIso(value: unknown): value is string {
  * Checks whether an unscoped legacy `study-bookmarks:<examId>` key exists.
  * Legacy bookmarks are intentionally never auto-imported to prevent cross-account leakage.
  */
+/**
+ * Reads any browser-local bookmarks (both unscoped legacy `study-bookmarks:<examId>`
+ * and earlier local-only `study-v1:u:<userId>:bookmarks:<examId>`) so the UI can
+ * present an explicit one-time import confirmation without ever silently adopting
+ * another account's bookmarks.
+ */
+export function readLegacyLocalBookmarksForImport(
+  userId: string,
+  examId: string,
+  storage: StorageLike | null = getDefaultStorage()
+): string[] {
+  const cleanUser = normalizeId(userId)
+  const cleanExam = normalizeId(examId)
+  if (!cleanUser || !cleanExam || !storage) return []
+
+  const seen = new Set<string>()
+  const ids: string[] = []
+
+  const pushId = (raw: unknown) => {
+    if (ids.length >= MAX_BOOKMARKS_PER_EXAM) return
+    const qId = normalizeId(raw)
+    if (qId && !seen.has(qId)) {
+      seen.add(qId)
+      ids.push(qId)
+    }
+  }
+
+  // 1. User-scoped browser-local v1 bookmarks
+  const userScoped = readUserBookmarks(cleanUser, cleanExam, storage)
+  for (const qId of Object.keys(userScoped)) {
+    pushId(qId)
+  }
+
+  // 2. Unscoped legacy `study-bookmarks:<examId>` map
+  try {
+    const raw = storage.getItem(`study-bookmarks:${cleanExam}`)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') {
+        for (const [qId, enabled] of Object.entries(parsed as Record<string, unknown>)) {
+          if (enabled) pushId(qId)
+        }
+      }
+    }
+  } catch {
+    // Ignore malformed legacy storage
+  }
+
+  return ids
+}
+
+export function clearLegacyLocalBookmarks(
+  userId: string,
+  examId: string,
+  storage: StorageLike | null = getDefaultStorage()
+): void {
+  const cleanUser = normalizeId(userId)
+  const cleanExam = normalizeId(examId)
+  if (!cleanExam || !storage) return
+  if (cleanUser) {
+    safeRemove(getBookmarksStorageKey(cleanUser, cleanExam), storage)
+  }
+  safeRemove(`study-bookmarks:${cleanExam}`, storage)
+}
+
 export function hasLegacyBookmarks(
   examId: string,
   storage: StorageLike | null = getDefaultStorage()

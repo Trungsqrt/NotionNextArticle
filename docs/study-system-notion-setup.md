@@ -26,6 +26,7 @@ This guide documents the private Notion databases that back the **Private Study 
      3. `Question Bank`
      4. `FSRS Card State`
      5. `Review Events`
+     6. `Study Bookmarks`
 4. **Connect the Integration**:
    - Open the parent **`Study System`** page → top-right `•••` menu → **Connections** → select **`Study System Private`** (connecting the parent page grants access to all 5 child databases).
    - Double-check that your public Knowledge Hub integration is **not** listed under Connections.
@@ -39,6 +40,7 @@ This guide documents the private Notion databases that back the **Private Study 
      STUDY_NOTION_QUESTIONS_DB_ID=...
      STUDY_NOTION_CARD_STATES_DB_ID=...
      STUDY_NOTION_REVIEW_EVENTS_DB_ID=...
+     STUDY_NOTION_BOOKMARKS_DB_ID=...
      ```
 
 ---
@@ -99,6 +101,16 @@ This guide documents the private Notion databases that back the **Private Study 
 | `Revision` | `number` | Monotonic integer `>= 1` used for optimistic concurrency checks |
 | `Scheduler Version` | `rich_text` | e.g. `ts-fsrs-5` |
 | `Parameters Version` | `rich_text` | e.g. `fsrs-default-v1` |
+
+### 2.6 `Study Bookmarks` (`STUDY_NOTION_BOOKMARKS_DB_ID`)
+
+| Property Name | Notion Type | Notes |
+|---|---|---|
+| `Bookmark Key` | `title` | Composite key `${userId}::${examId}` (one record per user & exam collection) |
+| `User ID` | `rich_text` | References `Study Users.User ID` |
+| `Exam ID` | `rich_text` | References `Exam Collections.Exam ID` |
+| `Bookmarked Questions JSON` | `rich_text` | JSON array of bookmarked question IDs (`["csa-exam-01-q-001", ...]`); never stores question content or answers |
+| `Updated At` | `date` | ISO-8601 timestamp |
 | `Updated At` | `date` | ISO-8601 timestamp |
 
 ### 2.5 `Review Events` (`STUDY_NOTION_REVIEW_EVENTS_DB_ID`)
@@ -114,6 +126,16 @@ This guide documents the private Notion databases that back the **Private Study 
 | `Resulting State JSON` | `rich_text` | `FsrsCardSnapshot` after review |
 | `Scheduler Version` | `rich_text` | e.g. `ts-fsrs-5` |
 | `Parameters Version` | `rich_text` | e.g. `fsrs-default-v1` |
+
+### 2.6 `Study Bookmarks` (`STUDY_NOTION_BOOKMARKS_DB_ID`)
+
+| Property Name | Notion Type | Notes |
+|---|---|---|
+| `Bookmark Key` | `title` | Composite key `${userId}::${examId}` (one record per user & exam collection) |
+| `User ID` | `rich_text` | References `Study Users.User ID` |
+| `Exam ID` | `rich_text` | References `Exam Collections.Exam ID` |
+| `Bookmarked Questions JSON` | `rich_text` | JSON array of bookmarked question IDs (`["csa-exam-01-q-001", ...]`); never stores question content or answers |
+| `Updated At` | `date` | ISO-8601 timestamp |
 
 ---
 

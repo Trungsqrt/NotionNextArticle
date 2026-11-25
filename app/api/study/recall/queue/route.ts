@@ -14,7 +14,6 @@ export const dynamic = 'force-dynamic'
 const recallQueuePostSchema = z.object({
   examId: z.string().trim().max(128).optional(),
   limit: z.number().int().min(1).max(100).optional(),
-  questionIds: z.array(z.string().trim().min(1).max(128)).max(500).default([]),
 })
 
 export async function GET(request: Request) {
@@ -33,21 +32,19 @@ export async function GET(request: Request) {
   const examId = searchParams.get('examId')?.trim() || undefined
   const rawLimit = Number.parseInt(searchParams.get('limit') || '20', 10)
   const limit = Number.isFinite(rawLimit) ? rawLimit : 20
-  const rawIds = searchParams.get('questionIds') || ''
-  const bookmarkedQuestionIds = rawIds
-    ? rawIds
-        .split(',')
-        .map((id) => id.trim())
-        .filter(Boolean)
-        .slice(0, 500)
-    : []
 
   try {
     const repos = createNotionStudyRepositories()
+    if (!repos.bookmarks) {
+      return NextResponse.json(
+        { error: 'Study Bookmarks database is not configured.' },
+        { status: 503, headers: NO_STORE_PRIVATE_HEADERS }
+      )
+    }
+    // Authoritative server-side bookmarks are loaded inside getRecallQueue for guard.user.userId
     const queue = await getRecallQueue(guard.user.userId, repos, {
       examId,
       limit,
-      bookmarkedQuestionIds,
     })
     return NextResponse.json(queue, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
   } catch {
@@ -90,10 +87,16 @@ export async function POST(request: Request) {
 
   try {
     const repos = createNotionStudyRepositories()
+    if (!repos.bookmarks) {
+      return NextResponse.json(
+        { error: 'Study Bookmarks database is not configured.' },
+        { status: 503, headers: NO_STORE_PRIVATE_HEADERS }
+      )
+    }
+    // Authoritative server-side bookmarks are loaded inside getRecallQueue for guard.user.userId
     const queue = await getRecallQueue(guard.user.userId, repos, {
       examId: parsed.data.examId || undefined,
       limit: parsed.data.limit ?? 20,
-      bookmarkedQuestionIds: parsed.data.questionIds,
     })
     return NextResponse.json(queue, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
   } catch {

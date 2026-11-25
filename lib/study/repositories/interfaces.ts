@@ -14,6 +14,7 @@ import type {
   QuestionStatus,
   FsrsCardState,
   ReviewEvent,
+  StudyBookmarkRecord,
 } from '../types'
 
 export class ConcurrencyConflictError extends Error {
@@ -102,4 +103,10 @@ export interface ReviewEventRepository {
     event: ReviewEvent,
     options?: { skipExistenceCheck?: boolean }
   ): Promise<AppendReviewEventResult>
+}
+
+export interface StudyBookmarkRepository {
+  findByUserAndExam(userId: string, examId: string): Promise<StudyBookmarkRecord | null>
+  listByUser(userId: string): Promise<StudyBookmarkRecord[]>
+  save(record: StudyBookmarkRecord): Promise<StudyBookmarkRecord>
 }

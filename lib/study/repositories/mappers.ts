@@ -12,6 +12,7 @@ import type {
   StudyQuestion,
   FsrsCardState,
   ReviewEvent,
+  StudyBookmarkRecord,
 } from '../types'
 import {
   studyUserSchema,
@@ -19,7 +20,9 @@ import {
   studyQuestionSchema,
   fsrsCardStateSchema,
   reviewEventSchema,
+  studyBookmarkRecordSchema,
   buildCardStateKey,
+  buildBookmarkKey,
 } from '../schemas'
 import type { NotionPageRecord } from '../notion-client'
 import { DataIntegrityError } from './interfaces'
@@ -88,6 +91,14 @@ export const REVIEW_EVENT_PROPS = {
   resultingStateJson: 'Resulting State JSON',
   schedulerVersion: 'Scheduler Version',
   parametersVersion: 'Parameters Version',
+} as const
+
+export const BOOKMARK_PROPS = {
+  bookmarkKey: 'Bookmark Key',
+  userId: 'User ID',
+  examId: 'Exam ID',
+  bookmarkedQuestionsJson: 'Bookmarked Questions JSON',
+  updatedAt: 'Updated At',
 } as const
 
 // ── Notion rich_text 2,000-character chunking helpers ───────────────────────
@@ -441,5 +452,58 @@ export function mapReviewEventToNotionProperties(
     ),
     [REVIEW_EVENT_PROPS.schedulerVersion]: richTextProp(valid.schedulerVersion),
     [REVIEW_EVENT_PROPS.parametersVersion]: richTextProp(valid.parametersVersion),
+  }
+}
+
+// ── 6. StudyBookmarkRecord mappers ──────────────────────────────────────────
+
+export function mapNotionPageToStudyBookmarkRecord(
+  page: NotionPageRecord
+): StudyBookmarkRecord {
+  const props = page.properties || {}
+  const userId = fromChunkedRichText(props[BOOKMARK_PROPS.userId]).trim()
+  const examId = fromChunkedRichText(props[BOOKMARK_PROPS.examId]).trim()
+  const bookmarkKey =
+    fromChunkedRichText(props[BOOKMARK_PROPS.bookmarkKey]).trim() ||
+    (userId && examId ? buildBookmarkKey(userId, examId) : '')
+
+  const rawJson = fromChunkedRichText(props[BOOKMARK_PROPS.bookmarkedQuestionsJson])
+  const parsedIds = rawJson.trim()
+    ? parseJsonProperty(rawJson, BOOKMARK_PROPS.bookmarkedQuestionsJson, page.id)
+    : []
+
+  const questionIds = Array.isArray(parsedIds)
+    ? [...new Set(parsedIds.map((id) => (typeof id === 'string' ? id.trim() : '')).filter(Boolean))]
+    : parsedIds
+
+  const candidate = {
+    bookmarkKey,
+    userId,
+    examId,
+    questionIds,
+    updatedAt: readDate(props[BOOKMARK_PROPS.updatedAt]) || page.last_edited_time || '',
+  }
+
+  const parsed = studyBookmarkRecordSchema.safeParse(candidate)
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]
+    const fieldPath = issue?.path?.length ? `${issue.path.join('.')}: ` : ''
+    throw new DataIntegrityError(
+      `Invalid StudyBookmarkRecord (${page.id}): ${fieldPath}${issue?.message || 'schema mismatch'}`
+    )
+  }
+  return parsed.data
+}
+
+export function mapStudyBookmarkRecordToNotionProperties(
+  record: StudyBookmarkRecord
+): Record<string, unknown> {
+  const valid = studyBookmarkRecordSchema.parse(record)
+  return {
+    [BOOKMARK_PROPS.bookmarkKey]: titleProp(valid.bookmarkKey),
+    [BOOKMARK_PROPS.userId]: richTextProp(valid.userId),
+    [BOOKMARK_PROPS.examId]: richTextProp(valid.examId),
+    [BOOKMARK_PROPS.bookmarkedQuestionsJson]: richTextProp(JSON.stringify(valid.questionIds)),
+    [BOOKMARK_PROPS.updatedAt]: dateProp(valid.updatedAt),
   }
 }

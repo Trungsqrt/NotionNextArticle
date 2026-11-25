@@ -44,6 +44,7 @@ import {
   type RatingPreviewMap,
 } from '../fsrs/scheduler'
 import type { OptionFeedbackItem } from './grading'
+import { listAllUserBookmarks } from './bookmark-service'
 
 export class EventIdConflictError extends Error {
   readonly code = 'EVENT_ID_CONFLICT'
@@ -305,7 +306,14 @@ export async function getRecallQueue(
   }
 
   // Bookmark-only Active Recall: never auto-include unbookmarked published questions.
-  const bookmarkedSet = normalizeBookmarkedIds(options?.bookmarkedQuestionIds)
+  // Use server-side Study Bookmarks by default when `bookmarkedQuestionIds` is not explicitly supplied.
+  let rawBookmarkedIds: readonly string[] | undefined = options?.bookmarkedQuestionIds
+  if (rawBookmarkedIds === undefined && repos.bookmarks) {
+    const loaded = await listAllUserBookmarks(userId, repos, { examId: options?.examId })
+    rawBookmarkedIds = loaded.questionIds
+  }
+
+  const bookmarkedSet = normalizeBookmarkedIds(rawBookmarkedIds)
   if (bookmarkedSet.size === 0) {
     return {
       items: [],
