@@ -25,13 +25,20 @@ import {
   getUserBookmarksForExam,
   importLegacyBookmarks,
   mutateUserBookmark,
+  syncUserBookmarks,
 } from '../../lib/study/services/bookmark-service'
 import { getRecallQueue, submitRecallReview } from '../../lib/study/services/recall-service'
 import {
   clearLegacyLocalBookmarks,
   readLegacyLocalBookmarksForImport,
+  readPendingBookmarkOps,
   type StorageLike,
 } from '../../lib/study/local-progress'
+import {
+  createBookmarkSyncController,
+  parseRetryAfterHeaderMs,
+  type BookmarkSyncSnapshot,
+} from '../../lib/study/bookmark-sync'
 import { proxy } from '../../proxy'
 import {
   SYNTHETIC_EXAM,
@@ -514,5 +521,289 @@ describe('Synchronized Bookmarks & Personalized Active Recall', () => {
     assert.equal(res.status, 401)
     assert.ok(res.headers.get('x-robots-tag')?.includes('noindex'))
     assert.ok(res.headers.get('cache-control')?.includes('no-store'))
+  })
+})
+
+describe('Non-blocking Bookmark Synchronization', () => {
+  it('coalesces rapid toggles, cancels no-ops, and guarantees latest intention across in-flight requests', async () => {
+    const storage = createMemoryStorage()
+    const snapshots: BookmarkSyncSnapshot[] = []
+    let serverSet = new Set<string>(['q-1'])
+    const postPayloads: Array<{ add: string[]; remove: string[] }> = []
+    let inFlightCount = 0
+    let maxConcurrentPosts = 0
+    let releaseFirstPost: (() => void) | null = null
+    let firstPostStarted: (() => void) | null = null
+    const firstPostStartedPromise = new Promise<void>((resolve) => {
+      firstPostStarted = resolve
+    })
+
+    const mockFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      const method = (init?.method || 'GET').toUpperCase()
+      if (method === 'GET' && url.includes('/api/study/bookmarks')) {
+        return new Response(JSON.stringify({ examId: 'exam-1', questionIds: [...serverSet] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (method === 'POST' && url.includes('/api/study/bookmarks')) {
+        inFlightCount += 1
+        maxConcurrentPosts = Math.max(maxConcurrentPosts, inFlightCount)
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          action: string
+          add: string[]
+          remove: string[]
+        }
+        assert.equal(body.action, 'sync')
+        postPayloads.push({ add: [...body.add], remove: [...body.remove] })
+
+        if (postPayloads.length === 1) {
+          firstPostStarted?.()
+          await new Promise<void>((resolve) => {
+            releaseFirstPost = resolve
+          })
+        }
+
+        for (const id of body.remove) serverSet.delete(id)
+        for (const id of body.add) serverSet.add(id)
+        inFlightCount -= 1
+
+        return new Response(JSON.stringify({ examId: 'exam-1', questionIds: [...serverSet] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`)
+    }
+
+    const ctrl = createBookmarkSyncController({
+      userId: SYNTHETIC_USER.userId,
+      examId: 'exam-1',
+      validQuestionIds: new Set(['q-1', 'q-2', 'q-3']),
+      onStateChange: (s) => snapshots.push(s),
+      fetchImpl: mockFetch,
+      storage,
+      debounceMs: 25,
+      savedIndicatorMs: 0,
+    })
+
+    await ctrl.loadFromServer()
+    assert.deepEqual(ctrl.getSnapshot().bookmarks, { 'q-1': true })
+
+    // 1. Rapid toggle on -> off back to server-confirmed state cancels with 0 network requests
+    ctrl.toggle('q-2') // add
+    assert.equal(ctrl.getSnapshot().bookmarks['q-2'], true)
+    ctrl.toggle('q-2') // remove (back to server state)
+    assert.equal(ctrl.getSnapshot().bookmarks['q-2'], undefined)
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(postPayloads.length, 0)
+
+    // 2. Rapid burst across q-2 (add->remove->add) and q-3 (add) coalesces into 1 POST
+    ctrl.toggle('q-2') // add
+    ctrl.toggle('q-2') // remove
+    ctrl.toggle('q-2') // add
+    ctrl.toggle('q-3') // add
+    assert.equal(ctrl.getSnapshot().status, 'saving')
+    assert.deepEqual(ctrl.getSnapshot().bookmarks, { 'q-1': true, 'q-2': true, 'q-3': true })
+
+    // Wait for first coalesced POST to start
+    await firstPostStartedPromise
+    assert.equal(postPayloads.length, 1)
+    assert.deepEqual(postPayloads[0].add.sort(), ['q-2', 'q-3'])
+    assert.deepEqual(postPayloads[0].remove, [])
+
+    // 3. While first POST is in flight, user immediately unbookmarks q-2 and q-1
+    ctrl.toggle('q-2') // remove q-2 (latest intention overrides in-flight add!)
+    ctrl.toggle('q-1') // remove q-1
+    assert.deepEqual(ctrl.getSnapshot().bookmarks, { 'q-3': true })
+
+    // Release first POST; controller must keep latest intention and send 1 follow-up sync
+    releaseFirstPost!()
+    await new Promise((r) => setTimeout(r, 80))
+
+    assert.equal(maxConcurrentPosts, 1, 'Never sends concurrent duplicate POSTs for the same exam')
+    assert.equal(postPayloads.length, 2)
+    assert.deepEqual(postPayloads[1].remove.sort(), ['q-1', 'q-2'])
+    assert.deepEqual([...serverSet].sort(), ['q-3'])
+    assert.deepEqual(ctrl.getSnapshot().bookmarks, { 'q-3': true })
+    assert.equal(ctrl.getSnapshot().status, 'saved')
+    assert.equal(ctrl.getSnapshot().pendingCount, 0)
+    assert.deepEqual(readPendingBookmarkOps(SYNTHETIC_USER.userId, 'exam-1', storage), {})
+
+    ctrl.destroy()
+  })
+
+  it('respects Retry-After, bounded retries & timeouts, persists failed ops in user-scoped LocalStorage, and recovers on manual retry', async () => {
+    const storage = createMemoryStorage()
+    const sleepDelays: number[] = []
+    let postAttempts = 0
+    let shouldFail = true
+
+    assert.equal(parseRetryAfterHeaderMs('3', 30_000), 3000)
+    assert.equal(parseRetryAfterHeaderMs('120', 30_000), 30_000)
+    assert.equal(
+      parseRetryAfterHeaderMs(new Date(Date.now() + 4000).toUTCString(), 30_000, Date.now()) !== null,
+      true
+    )
+
+    const mockFetch: typeof fetch = async (input, init) => {
+      const method = (init?.method || 'GET').toUpperCase()
+      if (method === 'GET') {
+        return new Response(JSON.stringify({ examId: 'exam-1', questionIds: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      postAttempts += 1
+      if (shouldFail) {
+        if (postAttempts === 1) {
+          return new Response(JSON.stringify({ error: 'Rate limited' }), {
+            status: 429,
+            headers: { 'Retry-After': '2' },
+          })
+        }
+        // Simulate request timeout via AbortSignal
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('AbortError')))
+        })
+      }
+      return new Response(JSON.stringify({ examId: 'exam-1', questionIds: ['q-1'] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    const ctrl = createBookmarkSyncController({
+      userId: SYNTHETIC_USER.userId,
+      examId: 'exam-1',
+      validQuestionIds: new Set(['q-1', 'q-2']),
+      onStateChange: () => {},
+      fetchImpl: mockFetch,
+      storage,
+      debounceMs: 0,
+      timeoutMs: 25,
+      maxRetries: 2,
+      retryBaseDelayMs: 50,
+      savedIndicatorMs: 0,
+      sleepFn: async (ms) => {
+        sleepDelays.push(ms)
+      },
+    })
+
+    await ctrl.loadFromServer()
+    ctrl.toggle('q-1')
+    // Wait for initial attempt + 2 bounded retries to settle
+    await new Promise((r) => setTimeout(r, 120))
+
+    // 1 initial attempt + 2 retries = 3 total attempts (bounded, no aggressive polling)
+    assert.equal(postAttempts, 3)
+    assert.equal(sleepDelays[0], 2000, 'Honored Retry-After: 2 header on 429')
+    assert.equal(ctrl.getSnapshot().status, 'not_synced')
+    // Optimistic state is preserved so user can keep studying uninterrupted
+    assert.equal(ctrl.getSnapshot().bookmarks['q-1'], true)
+    assert.equal(ctrl.getSnapshot().pendingCount, 1)
+
+    // Persisted in user-scoped LocalStorage (strictly isolated from other accounts)
+    const pendingUserA = readPendingBookmarkOps(SYNTHETIC_USER.userId, 'exam-1', storage)
+    assert.equal(pendingUserA['q-1']?.action, 'add')
+    const pendingUserB = readPendingBookmarkOps('usr-other-002', 'exam-1', storage)
+    assert.deepEqual(pendingUserB, {})
+
+    // Simulate manual Retry after Notion recovers (without refreshing the page)
+    shouldFail = false
+    await ctrl.retry()
+    assert.equal(ctrl.getSnapshot().status, 'saved')
+    assert.equal(ctrl.getSnapshot().pendingCount, 0)
+    assert.deepEqual(ctrl.getSnapshot().bookmarks, { 'q-1': true })
+    assert.deepEqual(readPendingBookmarkOps(SYNTHETIC_USER.userId, 'exam-1', storage), {})
+
+    ctrl.destroy()
+  })
+
+  it('loads bookmarks independently without clobbering optimistic toggles made while load is slow', async () => {
+    const storage = createMemoryStorage()
+    let releaseGet: (() => void) | null = null
+    let serverIds = ['q-1']
+
+    const mockFetch: typeof fetch = async (_input, init) => {
+      const method = (init?.method || 'GET').toUpperCase()
+      if (method === 'GET') {
+        await new Promise<void>((resolve) => {
+          releaseGet = resolve
+        })
+        return new Response(JSON.stringify({ examId: 'exam-1', questionIds: serverIds }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      const body = JSON.parse(String(init?.body || '{}')) as { add: string[]; remove: string[] }
+      const set = new Set(serverIds)
+      for (const id of body.remove) set.delete(id)
+      for (const id of body.add) set.add(id)
+      serverIds = [...set]
+      return new Response(JSON.stringify({ examId: 'exam-1', questionIds: serverIds }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    const ctrl = createBookmarkSyncController({
+      userId: SYNTHETIC_USER.userId,
+      examId: 'exam-1',
+      validQuestionIds: new Set(['q-1', 'q-2']),
+      onStateChange: () => {},
+      fetchImpl: mockFetch,
+      storage,
+      debounceMs: 40,
+      savedIndicatorMs: 0,
+    })
+
+    // Start independent GET (still slow/pending)
+    const loadPromise = ctrl.loadFromServer()
+    assert.equal(ctrl.getSnapshot().isInitialLoadPending, true)
+
+    // User immediately bookmarks q-2 while GET has not even returned yet
+    ctrl.toggle('q-2')
+    assert.equal(ctrl.getSnapshot().bookmarks['q-2'], true)
+
+    // Now slow GET returns ['q-1']; q-2 must remain overlaid and flush cleanly
+    releaseGet!()
+    await loadPromise
+    await new Promise((r) => setTimeout(r, 80))
+
+    assert.deepEqual(ctrl.getSnapshot().bookmarks, { 'q-1': true, 'q-2': true })
+    assert.equal(ctrl.getSnapshot().status, 'saved')
+    assert.deepEqual(serverIds.sort(), ['q-1', 'q-2'])
+    ctrl.destroy()
+  })
+
+  it('syncUserBookmarks applies coalesced add/remove server-side and awaits real persistence', async () => {
+    const { repos, counters } = createSyncedBookmarkTestRepos({ delayBookmarkSaveMs: 10 })
+
+    const first = await syncUserBookmarks(
+      { userId: SYNTHETIC_USER.userId, examId: 'exam-1', add: ['q-1', 'q-2'], remove: [] },
+      repos
+    )
+    assert.equal(first.changed, true)
+    assert.deepEqual(first.questionIds, ['q-1', 'q-2'])
+    assert.equal(counters.bookmarkSaves, 1)
+
+    // No-op batch skips Notion write
+    const noop = await syncUserBookmarks(
+      { userId: SYNTHETIC_USER.userId, examId: 'exam-1', add: ['q-1'], remove: ['q-3'] },
+      repos
+    )
+    assert.equal(noop.changed, false)
+    assert.equal(counters.bookmarkSaves, 1)
+
+    // Mixed add + remove persists atomically in 1 save
+    const mixed = await syncUserBookmarks(
+      { userId: SYNTHETIC_USER.userId, examId: 'exam-1', add: ['q-3'], remove: ['q-1'] },
+      repos
+    )
+    assert.equal(mixed.changed, true)
+    assert.deepEqual(mixed.questionIds, ['q-2', 'q-3'])
+    assert.equal(counters.bookmarkSaves, 2)
   })
 })

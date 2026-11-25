@@ -17,6 +17,7 @@ import {
   importLegacyBookmarks,
   listAllUserBookmarks,
   mutateUserBookmark,
+  syncUserBookmarks,
 } from '../../../../lib/study/services/bookmark-service'
 
 export const dynamic = 'force-dynamic'
@@ -28,11 +29,36 @@ const bookmarkMutationSchema = z.discriminatedUnion('action', [
     questionId: stableIdSchema,
   }),
   z.object({
+    action: z.literal('sync'),
+    examId: stableIdSchema,
+    add: z.array(stableIdSchema).max(500).default([]),
+    remove: z.array(stableIdSchema).max(500).default([]),
+  }),
+  z.object({
     action: z.literal('import'),
     examId: stableIdSchema,
     questionIds: z.array(stableIdSchema).max(500),
   }),
 ])
+
+function buildRateLimitedResponse(err: unknown): NextResponse | null {
+  if (!err || typeof err !== 'object') return null
+  const e = err as { status?: number; notionCode?: string; retryAfterSec?: number }
+  if (e.status === 429 || e.notionCode === 'rate_limited') {
+    const retryAfterSec =
+      typeof e.retryAfterSec === 'number' && Number.isFinite(e.retryAfterSec) && e.retryAfterSec > 0
+        ? Math.min(Math.ceil(e.retryAfterSec), 60)
+        : 2
+    return NextResponse.json(
+      { error: 'Bookmark storage is busy. Please retry shortly.', code: 'RATE_LIMITED' },
+      {
+        status: 429,
+        headers: { ...NO_STORE_PRIVATE_HEADERS, 'Retry-After': String(retryAfterSec) },
+      }
+    )
+  }
+  return null
+}
 
 export async function GET(request: Request) {
   const rate = await checkApiRateLimitAsync(
@@ -80,6 +106,8 @@ export async function GET(request: Request) {
         { status: err.status, headers: NO_STORE_PRIVATE_HEADERS }
       )
     }
+    const rateLimited = buildRateLimitedResponse(err)
+    if (rateLimited) return rateLimited
     return NextResponse.json(
       { error: 'Unable to load bookmarks right now.' },
       { status: 503, headers: NO_STORE_PRIVATE_HEADERS }
@@ -139,6 +167,19 @@ export async function POST(request: Request) {
       return NextResponse.json(result, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
     }
 
+    if (parsed.data.action === 'sync') {
+      const result = await syncUserBookmarks(
+        {
+          userId: guard.user.userId,
+          examId: parsed.data.examId,
+          add: parsed.data.add,
+          remove: parsed.data.remove,
+        },
+        repos
+      )
+      return NextResponse.json(result, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
+    }
+
     const result = await mutateUserBookmark(
       {
         userId: guard.user.userId,
@@ -165,6 +206,8 @@ export async function POST(request: Request) {
         { status: 409, headers: NO_STORE_PRIVATE_HEADERS }
       )
     }
+    const rateLimited = buildRateLimitedResponse(err)
+    if (rateLimited) return rateLimited
     return NextResponse.json(
       { error: 'Unable to synchronize bookmark right now.' },
       { status: 503, headers: NO_STORE_PRIVATE_HEADERS }

@@ -46,6 +46,13 @@ export interface BookmarkImportResult {
   updatedAt: string
 }
 
+export interface BookmarkBatchSyncResult {
+  examId: string
+  questionIds: string[]
+  changed: boolean
+  updatedAt: string
+}
+
 const MAX_BOOKMARKS_PER_EXAM = 500
 const bookmarkLocks = new Map<string, Promise<unknown>>()
 
@@ -370,6 +377,107 @@ export async function importLegacyBookmarks(
       examId: cleanExamId,
       questionIds: saved.questionIds,
       importedCount,
+      updatedAt: saved.updatedAt,
+    }
+  })
+}
+
+/**
+ * Applies a coalesced batch of bookmark additions and removals for one `(userId, examId)`
+ * inside a single serialized lock & Notion update, awaiting actual Notion persistence
+ * before returning the authoritative persisted question ID list.
+ */
+export async function syncUserBookmarks(
+  input: {
+    userId: string
+    examId: string
+    add: readonly string[]
+    remove: readonly string[]
+    nowIso?: string
+  },
+  repos: StudyRepositories
+): Promise<BookmarkBatchSyncResult> {
+  const bookmarksRepo = requireBookmarksRepo(repos)
+  const cleanExamId = input.examId.trim()
+
+  const addSet = new Set<string>()
+  const removeSet = new Set<string>()
+  for (const rawId of input.remove) {
+    const id = typeof rawId === 'string' ? rawId.trim() : ''
+    if (id) removeSet.add(id)
+  }
+  for (const rawId of input.add) {
+    const id = typeof rawId === 'string' ? rawId.trim() : ''
+    if (id && !removeSet.has(id)) addSet.add(id)
+  }
+
+  const exam = await repos.exams.findByExamId(cleanExamId)
+  if (!exam || exam.status !== 'published') {
+    throw new BookmarkServiceError('Exam collection not found.', 404, 'EXAM_NOT_FOUND')
+  }
+
+  // Validate every added question exists, is published, and belongs to this exam (hits warm cache)
+  if (addSet.size > 0) {
+    const examQuestions = await repos.questions.listByExamId(cleanExamId, { status: 'published' })
+    const validIds = new Set(examQuestions.map((q) => q.questionId))
+    for (const qId of addSet) {
+      if (!validIds.has(qId)) {
+        throw new BookmarkServiceError(
+          'One or more bookmarked questions do not belong to this published exam collection.',
+          400,
+          'EXAM_QUESTION_MISMATCH'
+        )
+      }
+    }
+  }
+
+  const bookmarkKey = buildBookmarkKey(input.userId, cleanExamId)
+  return withBookmarkLock(bookmarkKey, async () => {
+    const nowIso = input.nowIso || new Date().toISOString()
+    const existing = await bookmarksRepo.findByUserAndExam(input.userId, cleanExamId)
+    const currentIds = existing ? [...existing.questionIds] : []
+
+    const nextIds: string[] = []
+    const seen = new Set<string>()
+
+    for (const qId of currentIds) {
+      if (removeSet.has(qId) || seen.has(qId)) continue
+      seen.add(qId)
+      nextIds.push(qId)
+    }
+    for (const qId of addSet) {
+      if (nextIds.length >= MAX_BOOKMARKS_PER_EXAM) break
+      if (!seen.has(qId)) {
+        seen.add(qId)
+        nextIds.push(qId)
+      }
+    }
+
+    const changed =
+      nextIds.length !== currentIds.length ||
+      nextIds.some((id, idx) => currentIds[idx] !== id)
+
+    if (!changed) {
+      return {
+        examId: cleanExamId,
+        questionIds: currentIds,
+        changed: false,
+        updatedAt: existing?.updatedAt || nowIso,
+      }
+    }
+
+    const saved = await bookmarksRepo.save({
+      bookmarkKey,
+      userId: input.userId,
+      examId: cleanExamId,
+      questionIds: nextIds,
+      updatedAt: nowIso,
+    })
+
+    return {
+      examId: cleanExamId,
+      questionIds: saved.questionIds,
+      changed: true,
       updatedAt: saved.updatedAt,
     }
   })

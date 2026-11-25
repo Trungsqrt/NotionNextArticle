@@ -41,6 +41,18 @@ export interface StoredBookmarksV1 {
   updatedAt: string
 }
 
+export interface PendingBookmarkOp {
+  action: 'add' | 'remove'
+  updatedAt: string
+}
+
+export interface StoredPendingBookmarkOpsV1 {
+  version: 1
+  examId: string
+  ops: Record<string, PendingBookmarkOp>
+  updatedAt: string
+}
+
 export interface StoredPracticeAttemptV1 {
   version: 1
   examId: string
@@ -144,6 +156,10 @@ function buildKey(userId: string, kind: string, examId: string): string {
 
 export function getBookmarksStorageKey(userId: string, examId: string): string {
   return buildKey(userId, 'bookmarks', examId)
+}
+
+export function getPendingBookmarkOpsStorageKey(userId: string, examId: string): string {
+  return buildKey(userId, 'bookmark-pending', examId)
 }
 
 export function getPracticeAttemptStorageKey(userId: string, examId: string): string {
@@ -364,6 +380,97 @@ export function listAllBookmarkedQuestionIds(
     }
   }
   return result
+}
+
+// ── Pending / Failed Bookmark Sync Operations (User-Scoped Recovery) ─────────
+
+export function readPendingBookmarkOps(
+  userId: string,
+  examId: string,
+  storage: StorageLike | null = getDefaultStorage()
+): Record<string, PendingBookmarkOp> {
+  const cleanUser = normalizeId(userId)
+  const cleanExam = normalizeId(examId)
+  if (!cleanUser || !cleanExam) return {}
+
+  const parsed = safeReadJson(getPendingBookmarkOpsStorageKey(cleanUser, cleanExam), storage)
+  if (!parsed || typeof parsed !== 'object') return {}
+  const record = parsed as Partial<StoredPendingBookmarkOpsV1>
+  if (
+    record.version !== STUDY_STORAGE_VERSION ||
+    record.examId !== cleanExam ||
+    !record.ops ||
+    typeof record.ops !== 'object'
+  ) {
+    return {}
+  }
+
+  const result: Record<string, PendingBookmarkOp> = {}
+  let count = 0
+  for (const [rawId, rawOp] of Object.entries(record.ops)) {
+    if (count >= MAX_BOOKMARKS_PER_EXAM) break
+    const qId = normalizeId(rawId)
+    if (!qId || !rawOp || typeof rawOp !== 'object') continue
+    const op = rawOp as Partial<PendingBookmarkOp>
+    if (op.action !== 'add' && op.action !== 'remove') continue
+    result[qId] = {
+      action: op.action,
+      updatedAt: isValidIso(op.updatedAt) ? op.updatedAt : new Date(0).toISOString(),
+    }
+    count += 1
+  }
+  return result
+}
+
+export function writePendingBookmarkOps(
+  userId: string,
+  examId: string,
+  ops: Readonly<Record<string, PendingBookmarkOp>>,
+  storage: StorageLike | null = getDefaultStorage(),
+  nowIso: string = new Date().toISOString()
+): boolean {
+  const cleanUser = normalizeId(userId)
+  const cleanExam = normalizeId(examId)
+  if (!cleanUser || !cleanExam) return false
+
+  const key = getPendingBookmarkOpsStorageKey(cleanUser, cleanExam)
+  const sanitized: Record<string, PendingBookmarkOp> = {}
+  let count = 0
+
+  for (const [rawId, op] of Object.entries(ops)) {
+    if (count >= MAX_BOOKMARKS_PER_EXAM) break
+    const qId = normalizeId(rawId)
+    if (!qId || (op.action !== 'add' && op.action !== 'remove')) continue
+    sanitized[qId] = {
+      action: op.action,
+      updatedAt: isValidIso(op.updatedAt) ? op.updatedAt : nowIso,
+    }
+    count += 1
+  }
+
+  if (count === 0) {
+    safeRemove(key, storage)
+    return true
+  }
+
+  const payload: StoredPendingBookmarkOpsV1 = {
+    version: STUDY_STORAGE_VERSION,
+    examId: cleanExam,
+    ops: sanitized,
+    updatedAt: nowIso,
+  }
+  return safeWriteJson(key, payload, storage)
+}
+
+export function clearPendingBookmarkOps(
+  userId: string,
+  examId: string,
+  storage: StorageLike | null = getDefaultStorage()
+): void {
+  const cleanUser = normalizeId(userId)
+  const cleanExam = normalizeId(examId)
+  if (!cleanUser || !cleanExam) return
+  safeRemove(getPendingBookmarkOpsStorageKey(cleanUser, cleanExam), storage)
 }
 
 // ── Practice Attempt (Ongoing) ───────────────────────────────────────────────

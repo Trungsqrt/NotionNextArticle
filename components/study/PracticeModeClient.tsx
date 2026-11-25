@@ -30,27 +30,28 @@ import {
   writePracticeAttempt,
   writePracticeSummary,
 } from '../../lib/study/local-progress'
+import {
+  createBookmarkSyncController,
+  type BookmarkSyncController,
+  type BookmarkSyncSnapshot,
+} from '../../lib/study/bookmark-sync'
 
 type PracticeFilter = 'all' | 'incorrect' | 'bookmarked'
 type PracticeFetchStatus = 'idle' | 'loading' | 'switching' | 'error' | 'loaded'
-type BookmarkSyncError = {
-  examId: string
-  questionId?: string
-  action: 'load' | 'add' | 'remove' | 'import'
-  importIds?: string[]
-  message: string
-}
 type PracticeResultEntry = GradedQuestionResult & {
   /** True when restored from localStorage (verdict + user selection only; no stored answer key/explanation) */
   restored?: boolean
 }
 
-function questionIdsToBookmarkMap(ids: readonly string[]): Record<string, boolean> {
-  const map: Record<string, boolean> = {}
-  for (const id of ids) {
-    if (id) map[id] = true
-  }
-  return map
+const INITIAL_BOOKMARK_SYNC_SNAPSHOT: BookmarkSyncSnapshot = {
+  bookmarks: {},
+  serverBookmarks: {},
+  loadedFromServer: false,
+  isInitialLoadPending: false,
+  status: 'idle',
+  pendingCount: 0,
+  loadFailed: false,
+  errorMessage: null,
 }
 
 function FeedbackCheckIcon({ className = 'w-4 h-4' }: { className?: string }) {
@@ -112,14 +113,15 @@ export default function PracticeModeClient({
   const [currentIndex, setCurrentIndex] = useState(0)
   const [selections, setSelections] = useState<Record<string, string[]>>({})
   const [results, setResults] = useState<Record<string, PracticeResultEntry>>({})
-  const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({})
-  const [syncingBookmarkIds, setSyncingBookmarkIds] = useState<Record<string, boolean>>({})
-  const [bookmarkSyncError, setBookmarkSyncError] = useState<BookmarkSyncError | null>(null)
+  const [bookmarkSync, setBookmarkSync] = useState<BookmarkSyncSnapshot>(
+    INITIAL_BOOKMARK_SYNC_SNAPSHOT
+  )
   const [legacyImportCandidate, setLegacyImportCandidate] = useState<{
     examId: string
     questionIds: string[]
   } | null>(null)
   const [importingLegacy, setImportingLegacy] = useState(false)
+  const [legacyImportError, setLegacyImportError] = useState<string | null>(null)
   const [checkingId, setCheckingId] = useState<string | null>(null)
   const [isCompleted, setIsCompleted] = useState(false)
   const [examMenuOpen, setExamMenuOpen] = useState(false)
@@ -133,18 +135,16 @@ export default function PracticeModeClient({
   const lastHandledParamExamIdRef = useRef(paramExamId.trim())
   const payloadRef = useRef<PracticeExamPayload | null>(null)
   const hydratedExamIdRef = useRef<string>('')
-  const syncedBookmarksRef = useRef<Record<string, boolean>>({})
-  const pendingBookmarkMutationsRef = useRef<
-    Array<{ id: number; examId: string; questionId: string; action: 'add' | 'remove' }>
-  >([])
-  const bookmarkOpSeqRef = useRef(0)
-  const bookmarkSyncChainRef = useRef<Promise<void>>(Promise.resolve())
+  const bookmarkSyncRef = useRef<BookmarkSyncController | null>(null)
+  const checkedLegacyImportExamRef = useRef<string>('')
   const examAbortRef = useRef<AbortController | null>(null)
   const examLoadSeqRef = useRef(0)
   const sessionVersionRef = useRef(0)
   const checkAbortRef = useRef<AbortController | null>(null)
   const checkSeqRef = useRef(0)
   const checkLockRef = useRef(false)
+
+  const bookmarks = bookmarkSync.bookmarks
 
   const loadExam = useCallback(
     async (examId: string, options?: { syncUrlOnSuccess?: boolean }) => {
@@ -172,45 +172,50 @@ export default function PracticeModeClient({
       setPracticeError(null)
 
       try {
-        const [practiceRes, bookmarksOutcome] = await Promise.all([
-          fetch(`/api/study/practice/${encodeURIComponent(examId)}`, {
-            cache: 'no-store',
-            signal: controller.signal,
-          }),
-          fetch(`/api/study/bookmarks?examId=${encodeURIComponent(examId)}`, {
-            cache: 'no-store',
-            signal: controller.signal,
-          })
-            .then(async (res) => {
-              if (!res.ok) return { ok: false as const, questionIds: [] as string[] }
-              const json = (await res.json()) as { questionIds?: string[] }
-              return {
-                ok: true as const,
-                questionIds: Array.isArray(json.questionIds) ? json.questionIds : [],
-              }
-            })
-            .catch(() => ({ ok: false as const, questionIds: [] as string[] })),
-        ])
+        // Load Practice questions independently — bookmarks sync asynchronously
+        // so slow or temporarily unavailable bookmark storage never delays studying.
+        const practiceRes = await fetch(`/api/study/practice/${encodeURIComponent(examId)}`, {
+          cache: 'no-store',
+          signal: controller.signal,
+        })
 
         if (!practiceRes.ok) throw new Error('Unable to load practice questions.')
         const data = (await practiceRes.json()) as PracticeExamPayload
         if (seq !== examLoadSeqRef.current) return
 
-        // Commit the new exam atomically and hydrate server-synced bookmarks + ongoing local attempt
+        // Commit the new exam atomically and initialize non-blocking bookmark sync
         checkAbortRef.current?.abort()
         checkLockRef.current = false
         setCheckingId(null)
         sessionVersionRef.current += 1
 
-        const questionById = new Map(data.questions.map((q) => [q.questionId, q]))
-        const validSyncedIds = bookmarksOutcome.questionIds.filter((qId) => questionById.has(qId))
-        const savedBookmarks = questionIdsToBookmarkMap(validSyncedIds)
-        const savedAttempt = readPracticeAttempt(userId, examId)
+        // Tear down any previous exam's sync controller (flushes pending debounced ops in background)
+        bookmarkSyncRef.current?.destroy()
 
-        // Check for legacy browser-local bookmarks to offer an explicit one-time import
-        const legacyLocalIds = readLegacyLocalBookmarksForImport(userId, examId).filter(
-          (qId) => questionById.has(qId) && !savedBookmarks[qId]
-        )
+        const questionById = new Map(data.questions.map((q) => [q.questionId, q]))
+        const validQuestionIds = new Set(questionById.keys())
+        const controllerSession = sessionVersionRef.current
+
+        const syncController = createBookmarkSyncController({
+          userId,
+          examId,
+          validQuestionIds,
+          onStateChange: (snapshot) => {
+            if (
+              sessionVersionRef.current !== controllerSession ||
+              activeExamIdRef.current !== examId
+            ) {
+              return
+            }
+            setBookmarkSync(snapshot)
+          },
+        })
+        bookmarkSyncRef.current = syncController
+        checkedLegacyImportExamRef.current = ''
+
+        const initialBookmarkSnapshot = syncController.getSnapshot()
+        const initialBookmarks = initialBookmarkSnapshot.bookmarks
+        const savedAttempt = readPracticeAttempt(userId, examId)
 
         const restoredSelections: Record<string, string[]> = {}
         const restoredResults: Record<string, PracticeResultEntry> = {}
@@ -241,7 +246,7 @@ export default function PracticeModeClient({
         const restoredFilter: PracticeFilter = savedAttempt?.filter || 'all'
         const restoredFilteredLen = data.questions.filter((q) => {
           if (restoredFilter === 'incorrect') return restoredResults[q.questionId]?.isCorrect === false
-          if (restoredFilter === 'bookmarked') return Boolean(savedBookmarks[q.questionId])
+          if (restoredFilter === 'bookmarked') return Boolean(initialBookmarks[q.questionId])
           return true
         }).length
         const restoredIndex = savedAttempt
@@ -250,7 +255,7 @@ export default function PracticeModeClient({
         const restoredSummary = computePracticeCompletionSummary(
           data.questions,
           restoredResults,
-          savedBookmarks
+          initialBookmarks
         )
         const restoredCompleted = Boolean(savedAttempt?.completed && restoredSummary.allGraded)
 
@@ -258,28 +263,13 @@ export default function PracticeModeClient({
         pendingExamIdRef.current = null
         payloadRef.current = data
         hydratedExamIdRef.current = examId
-        syncedBookmarksRef.current = savedBookmarks
-        pendingBookmarkMutationsRef.current = []
 
         setActiveExamId(examId)
         setPendingExamId(null)
         setPayload(data)
-        setBookmarks(savedBookmarks)
-        setSyncingBookmarkIds({})
-        setBookmarkSyncError(
-          bookmarksOutcome.ok
-            ? null
-            : {
-                examId,
-                action: 'load',
-                message: 'Could not load synced bookmarks. Retry to sync with your account.',
-              }
-        )
-        setLegacyImportCandidate(
-          bookmarksOutcome.ok && legacyLocalIds.length > 0
-            ? { examId, questionIds: legacyLocalIds }
-            : null
-        )
+        setBookmarkSync(initialBookmarkSnapshot)
+        setLegacyImportCandidate(null)
+        setLegacyImportError(null)
         setSelections(restoredSelections)
         setResults(restoredResults)
         setFilter(restoredFilter)
@@ -287,6 +277,9 @@ export default function PracticeModeClient({
         setIsCompleted(restoredCompleted)
         setPracticeError(null)
         setFetchStatus('loaded')
+
+        // Independently hydrate server bookmarks (and replay any locally persisted pending ops)
+        void syncController.loadFromServer()
 
         if (options?.syncUrlOnSuccess && typeof window !== 'undefined') {
           lastHandledParamExamIdRef.current = examId
@@ -333,11 +326,55 @@ export default function PracticeModeClient({
     return () => {
       examAbortRef.current?.abort()
       checkAbortRef.current?.abort()
+      bookmarkSyncRef.current?.destroy()
+      bookmarkSyncRef.current = null
       examLoadSeqRef.current += 1
       checkSeqRef.current += 1
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Passive online recovery (no polling): retry unsynced bookmarks once connectivity returns
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    function handleOnline() {
+      const ctrl = bookmarkSyncRef.current
+      if (!ctrl) return
+      const snap = ctrl.getSnapshot()
+      if (snap.status === 'not_synced' || snap.pendingCount > 0 || snap.loadFailed) {
+        void ctrl.retry()
+      }
+    }
+    window.addEventListener('online', handleOnline)
+    return () => window.removeEventListener('online', handleOnline)
+  }, [])
+
+  // Offer explicit one-time import of legacy browser-local bookmarks once server state loads
+  useEffect(() => {
+    if (
+      !payload ||
+      !bookmarkSync.loadedFromServer ||
+      payload.exam.examId !== activeExamId ||
+      checkedLegacyImportExamRef.current === activeExamId
+    ) {
+      return
+    }
+    checkedLegacyImportExamRef.current = activeExamId
+    const validIds = new Set(payload.questions.map((q) => q.questionId))
+    const legacyIds = readLegacyLocalBookmarksForImport(userId, activeExamId).filter(
+      (qId) => validIds.has(qId) && !bookmarkSync.serverBookmarks[qId] && !bookmarkSync.bookmarks[qId]
+    )
+    if (legacyIds.length > 0) {
+      setLegacyImportCandidate({ examId: activeExamId, questionIds: legacyIds })
+    }
+  }, [
+    payload,
+    activeExamId,
+    userId,
+    bookmarkSync.loadedFromServer,
+    bookmarkSync.serverBookmarks,
+    bookmarkSync.bookmarks,
+  ])
 
   // Persist ongoing Practice attempt locally (without answer keys or explanations)
   useEffect(() => {
@@ -409,94 +446,8 @@ export default function PracticeModeClient({
     [exams, loadExam]
   )
 
-  const applyPendingBookmarkOverlay = useCallback((ownerExamId: string) => {
-    const next: Record<string, boolean> = { ...syncedBookmarksRef.current }
-    const syncing: Record<string, boolean> = {}
-    for (const op of pendingBookmarkMutationsRef.current) {
-      if (op.examId !== ownerExamId) continue
-      if (op.action === 'add') next[op.questionId] = true
-      else delete next[op.questionId]
-      syncing[op.questionId] = true
-    }
-    setBookmarks(next)
-    setSyncingBookmarkIds(syncing)
-  }, [])
-
-  const syncBookmarkMutation = useCallback(
-    (ownerExamId: string, questionId: string, action: 'add' | 'remove') => {
-      const sessionAtStart = sessionVersionRef.current
-      const opId = ++bookmarkOpSeqRef.current
-
-      // Optimistic UI update — never claims synced until server confirms persistence
-      pendingBookmarkMutationsRef.current = [
-        ...pendingBookmarkMutationsRef.current,
-        { id: opId, examId: ownerExamId, questionId, action },
-      ]
-      applyPendingBookmarkOverlay(ownerExamId)
-      setBookmarkSyncError((prev) =>
-        prev?.questionId === questionId || prev?.action === 'load' ? null : prev
-      )
-
-      const run = async () => {
-        try {
-          const res = await fetch('/api/study/bookmarks', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action, examId: ownerExamId, questionId }),
-            cache: 'no-store',
-          })
-          if (!res.ok) {
-            throw new Error('Could not sync bookmark to your account.')
-          }
-          const data = (await res.json()) as { questionIds?: string[] }
-          pendingBookmarkMutationsRef.current = pendingBookmarkMutationsRef.current.filter(
-            (op) => op.id !== opId
-          )
-          if (
-            sessionAtStart !== sessionVersionRef.current ||
-            activeExamIdRef.current !== ownerExamId
-          ) {
-            return
-          }
-          const confirmedMap = questionIdsToBookmarkMap(
-            Array.isArray(data.questionIds) ? data.questionIds : []
-          )
-          syncedBookmarksRef.current = confirmedMap
-          applyPendingBookmarkOverlay(ownerExamId)
-        } catch (err) {
-          pendingBookmarkMutationsRef.current = pendingBookmarkMutationsRef.current.filter(
-            (op) => op.id !== opId
-          )
-          if (
-            sessionAtStart !== sessionVersionRef.current ||
-            activeExamIdRef.current !== ownerExamId
-          ) {
-            return
-          }
-          // Roll back to last server-confirmed state (replaying any other still-pending ops) and offer subtle retry
-          applyPendingBookmarkOverlay(ownerExamId)
-          setBookmarkSyncError({
-            examId: ownerExamId,
-            questionId,
-            action,
-            message:
-              err instanceof Error
-                ? err.message
-                : 'Bookmark change could not be saved.',
-          })
-        }
-      }
-
-      bookmarkSyncChainRef.current = bookmarkSyncChainRef.current.then(run, run)
-    },
-    [applyPendingBookmarkOverlay]
-  )
-
   function toggleBookmark(questionId: string) {
-    const ownerExamId = activeExamIdRef.current
-    if (!ownerExamId) return
-    const nextAction: 'add' | 'remove' = bookmarks[questionId] ? 'remove' : 'add'
-    syncBookmarkMutation(ownerExamId, questionId, nextAction)
+    bookmarkSyncRef.current?.toggle(questionId)
   }
 
   const handleImportLegacyBookmarks = useCallback(
@@ -504,7 +455,7 @@ export default function PracticeModeClient({
       if (importingLegacy || questionIds.length === 0) return
       const sessionAtStart = sessionVersionRef.current
       setImportingLegacy(true)
-      setBookmarkSyncError(null)
+      setLegacyImportError(null)
       try {
         const res = await fetch('/api/study/bookmarks', {
           method: 'POST',
@@ -520,24 +471,19 @@ export default function PracticeModeClient({
         ) {
           return
         }
-        const confirmedMap = questionIdsToBookmarkMap(
+        bookmarkSyncRef.current?.applyServerSnapshot(
           Array.isArray(data.questionIds) ? data.questionIds : []
         )
-        syncedBookmarksRef.current = confirmedMap
-        setBookmarks(confirmedMap)
         clearLegacyLocalBookmarks(userId, examId)
         setLegacyImportCandidate(null)
+        setLegacyImportError(null)
       } catch (err) {
         if (sessionAtStart !== sessionVersionRef.current) return
-        setBookmarkSyncError({
-          examId,
-          action: 'import',
-          importIds: questionIds,
-          message:
-            err instanceof Error
-              ? err.message
-              : 'Unable to import local bookmarks right now.',
-        })
+        setLegacyImportError(
+          err instanceof Error
+            ? err.message
+            : 'Unable to import local bookmarks right now.'
+        )
       } finally {
         setImportingLegacy(false)
       }
@@ -549,56 +495,12 @@ export default function PracticeModeClient({
     if (!legacyImportCandidate) return
     clearLegacyLocalBookmarks(userId, legacyImportCandidate.examId)
     setLegacyImportCandidate(null)
+    setLegacyImportError(null)
   }, [legacyImportCandidate, userId])
 
-  const handleRetryBookmarkSync = useCallback(async () => {
-    if (!bookmarkSyncError) return
-    if (bookmarkSyncError.action === 'load') {
-      const targetExamId = bookmarkSyncError.examId
-      const sessionAtStart = sessionVersionRef.current
-      setBookmarkSyncError(null)
-      try {
-        const res = await fetch(`/api/study/bookmarks?examId=${encodeURIComponent(targetExamId)}`, {
-          cache: 'no-store',
-        })
-        if (!res.ok) throw new Error('Could not load synced bookmarks.')
-        const data = (await res.json()) as { questionIds?: string[] }
-        if (
-          sessionAtStart !== sessionVersionRef.current ||
-          activeExamIdRef.current !== targetExamId
-        ) {
-          return
-        }
-        const confirmedMap = questionIdsToBookmarkMap(
-          Array.isArray(data.questionIds) ? data.questionIds : []
-        )
-        syncedBookmarksRef.current = confirmedMap
-        setBookmarks(confirmedMap)
-      } catch {
-        if (sessionAtStart !== sessionVersionRef.current) return
-        setBookmarkSyncError({
-          examId: targetExamId,
-          action: 'load',
-          message: 'Could not load synced bookmarks. Retry to sync with your account.',
-        })
-      }
-      return
-    }
-    if (bookmarkSyncError.action === 'import' && bookmarkSyncError.importIds) {
-      await handleImportLegacyBookmarks(bookmarkSyncError.examId, bookmarkSyncError.importIds)
-      return
-    }
-    if (
-      (bookmarkSyncError.action === 'add' || bookmarkSyncError.action === 'remove') &&
-      bookmarkSyncError.questionId
-    ) {
-      syncBookmarkMutation(
-        bookmarkSyncError.examId,
-        bookmarkSyncError.questionId,
-        bookmarkSyncError.action
-      )
-    }
-  }, [bookmarkSyncError, handleImportLegacyBookmarks, syncBookmarkMutation])
+  const handleRetryBookmarkSync = useCallback(() => {
+    void bookmarkSyncRef.current?.retry()
+  }, [])
 
   function toggleOption(questionId: string, optionId: string, isMulti: boolean) {
     if (results[questionId] || checkingId === questionId || fetchStatus === 'switching') return
@@ -1165,11 +1067,18 @@ export default function PracticeModeClient({
           aria-label="Import local bookmarks"
           className="rounded-zen px-4 py-3 bg-rice-paper-200/80 dark:bg-tea-slate-200/80 border border-matcha-400/50 dark:border-matcha-700/50 text-xs text-ink-600 dark:text-sage-200 flex flex-wrap items-center justify-between gap-3 animate-study-feedback"
         >
-          <span>
-            Found {legacyImportCandidate.questionIds.length} local{' '}
-            {legacyImportCandidate.questionIds.length === 1 ? 'bookmark' : 'bookmarks'} in this
-            browser for this exam. Import to your synced account?
-          </span>
+          <div className="space-y-0.5">
+            <div>
+              Found {legacyImportCandidate.questionIds.length} local{' '}
+              {legacyImportCandidate.questionIds.length === 1 ? 'bookmark' : 'bookmarks'} in this
+              browser for this exam. Import to your synced account?
+            </div>
+            {legacyImportError && (
+              <div className="text-[0.72rem] text-[#7A4932] dark:text-[#E2BBA2]">
+                {legacyImportError}
+              </div>
+            )}
+          </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
@@ -1183,7 +1092,13 @@ export default function PracticeModeClient({
               className="inline-flex items-center gap-1.5 px-3 py-1 rounded-zen font-medium bg-matcha-500 hover:bg-matcha-600 text-white transition-colors duration-150 motion-reduce:transition-none disabled:opacity-60"
             >
               {importingLegacy && <ZenPendingDot />}
-              <span>{importingLegacy ? 'Importing…' : 'Import to Account'}</span>
+              <span>
+                {importingLegacy
+                  ? 'Importing…'
+                  : legacyImportError
+                    ? 'Retry Import'
+                    : 'Import to Account'}
+              </span>
             </button>
             <button
               type="button"
@@ -1197,29 +1112,21 @@ export default function PracticeModeClient({
         </div>
       )}
 
-      {bookmarkSyncError && (
+      {isCompleted && bookmarkSync.status === 'not_synced' && (
         <div
           role="status"
           aria-live="polite"
-          className="rounded-zen px-3.5 py-2 bg-earth-rust/[0.08] dark:bg-earth-rust/[0.16] border border-earth-rust/40 dark:border-earth-rust/50 text-xs text-[#7A4932] dark:text-[#E2BBA2] flex flex-wrap items-center justify-between gap-2.5 animate-study-feedback"
+          className="flex items-center justify-end gap-2 text-xs text-[#7A4932] dark:text-[#E2BBA2] animate-study-feedback"
         >
-          <span>{bookmarkSyncError.message}</span>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={handleRetryBookmarkSync}
-              className="px-2.5 py-0.5 rounded-zen font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none"
-            >
-              Retry
-            </button>
-            <button
-              type="button"
-              onClick={() => setBookmarkSyncError(null)}
-              className="px-1.5 py-0.5 font-medium opacity-80 hover:underline"
-            >
-              Dismiss
-            </button>
-          </div>
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-earth-rust" aria-hidden="true" />
+          <span>Bookmarks not synced</span>
+          <button
+            type="button"
+            onClick={handleRetryBookmarkSync}
+            className="px-2 py-0.5 rounded-zen font-medium bg-rice-paper-50 dark:bg-tea-slate-200 text-ink-700 dark:text-sage-100 border border-earth-rust/40 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none"
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -1308,20 +1215,50 @@ export default function PracticeModeClient({
               <span>{currentQ.questionType === 'multi_select' ? 'Multi-select' : 'Single-choice'}</span>
             </div>
             <div className="flex items-center gap-2">
-              {syncingBookmarkIds[currentQ.questionId] && (
+              {bookmarkSync.status === 'saving' && (
                 <span
                   role="status"
                   aria-live="polite"
-                  className="inline-flex items-center gap-1 text-[0.7rem] text-ink-400 dark:text-sage-400"
+                  className="inline-flex items-center gap-1 text-[0.7rem] text-ink-400 dark:text-sage-400 animate-study-feedback"
                 >
                   <ZenPendingDot />
-                  <span>Syncing…</span>
+                  <span>Saving…</span>
+                </span>
+              )}
+              {bookmarkSync.status === 'saved' && (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="inline-flex items-center gap-1 text-[0.7rem] text-matcha-600 dark:text-matcha-400 animate-study-feedback"
+                >
+                  <FeedbackCheckIcon className="w-3 h-3" />
+                  <span>Saved</span>
+                </span>
+              )}
+              {bookmarkSync.status === 'not_synced' && (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  title={bookmarkSync.errorMessage || 'Bookmarks not synced'}
+                  className="inline-flex items-center gap-1.5 text-[0.7rem] text-[#7A4932] dark:text-[#E2BBA2] animate-study-feedback"
+                >
+                  <span
+                    className="inline-block w-1.5 h-1.5 rounded-full bg-earth-rust shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>Not synced</span>
+                  <button
+                    type="button"
+                    onClick={handleRetryBookmarkSync}
+                    className="px-1.5 py-0.5 rounded-[4px] font-medium bg-rice-paper-100 dark:bg-tea-slate-300/70 text-ink-700 dark:text-sage-100 border border-earth-rust/40 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none"
+                  >
+                    Retry
+                  </button>
                 </span>
               )}
               <button
                 type="button"
                 disabled={isSwitching}
-                aria-busy={Boolean(syncingBookmarkIds[currentQ.questionId]) || undefined}
                 onClick={() => toggleBookmark(currentQ.questionId)}
                 aria-pressed={Boolean(bookmarks[currentQ.questionId])}
                 className={[
