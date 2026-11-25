@@ -162,3 +162,13 @@ export interface ReviewEvent {
   schedulerVersion: string
   parametersVersion: string
 }
+
+export interface StudyBookmarkRecord {
+  /** Composite key "${userId}::${examId}" for deterministic 1-record-per-user-and-exam lookup */
+  bookmarkKey: string
+  userId: string
+  examId: string
+  /** Deduplicated bookmarked question IDs (never stores question content or answers) */
+  questionIds: string[]
+  updatedAt: string
+}

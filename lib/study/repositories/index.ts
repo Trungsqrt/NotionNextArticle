@@ -10,12 +10,14 @@ import type {
   QuestionBankRepository,
   FsrsCardStateRepository,
   ReviewEventRepository,
+  StudyBookmarkRepository,
 } from './interfaces'
 import { createNotionStudyUserRepository } from './user-repo'
 import { createNotionExamCollectionRepository } from './exam-repo'
 import { createNotionQuestionBankRepository } from './question-repo'
 import { createNotionFsrsCardStateRepository } from './card-state-repo'
 import { createNotionReviewEventRepository } from './review-event-repo'
+import { createNotionStudyBookmarkRepository } from './bookmark-repo'
 
 export interface StudyRepositories {
   users: StudyUserRepository
@@ -23,6 +25,7 @@ export interface StudyRepositories {
   questions: QuestionBankRepository
   cardStates: FsrsCardStateRepository
   reviewEvents: ReviewEventRepository
+  bookmarks?: StudyBookmarkRepository
 }
 
 export function createNotionStudyRepositories(
@@ -37,6 +40,9 @@ export function createNotionStudyRepositories(
     questions: createNotionQuestionBankRepository(client, config.questionsDbId, { useContentCache }),
     cardStates: createNotionFsrsCardStateRepository(client, config.cardStatesDbId),
     reviewEvents: createNotionReviewEventRepository(client, config.reviewEventsDbId),
+    ...(config.bookmarksDbId
+      ? { bookmarks: createNotionStudyBookmarkRepository(client, config.bookmarksDbId) }
+      : {}),
   }
 }
 

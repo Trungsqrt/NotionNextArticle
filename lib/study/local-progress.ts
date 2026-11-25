@@ -41,6 +41,20 @@ export interface StoredBookmarksV1 {
   updatedAt: string
 }
 
+export interface PendingBookmarkOp {
+  action: 'add' | 'remove'
+  updatedAt: string
+  /** Optional unique operation ID used to avoid clobbering newer pending ops across controller instances */
+  opId?: string
+}
+
+export interface StoredPendingBookmarkOpsV1 {
+  version: 1
+  examId: string
+  ops: Record<string, PendingBookmarkOp>
+  updatedAt: string
+}
+
 export interface StoredPracticeAttemptV1 {
   version: 1
   examId: string
@@ -101,7 +115,6 @@ export interface ExamDashboardMetrics {
     accuracyPercent: number | null
     hasOngoingAttempt: boolean
     hasCompletedSummary: boolean
-    bookmarkedCount: number
     actionLabel: 'Start Practice' | 'Continue Practice' | 'Review Practice'
   }
   mockExam: {
@@ -144,6 +157,10 @@ function buildKey(userId: string, kind: string, examId: string): string {
 
 export function getBookmarksStorageKey(userId: string, examId: string): string {
   return buildKey(userId, 'bookmarks', examId)
+}
+
+export function getPendingBookmarkOpsStorageKey(userId: string, examId: string): string {
+  return buildKey(userId, 'bookmark-pending', examId)
 }
 
 export function getPracticeAttemptStorageKey(userId: string, examId: string): string {
@@ -203,6 +220,71 @@ function isValidIso(value: unknown): value is string {
  * Checks whether an unscoped legacy `study-bookmarks:<examId>` key exists.
  * Legacy bookmarks are intentionally never auto-imported to prevent cross-account leakage.
  */
+/**
+ * Reads any browser-local bookmarks (both unscoped legacy `study-bookmarks:<examId>`
+ * and earlier local-only `study-v1:u:<userId>:bookmarks:<examId>`) so the UI can
+ * present an explicit one-time import confirmation without ever silently adopting
+ * another account's bookmarks.
+ */
+export function readLegacyLocalBookmarksForImport(
+  userId: string,
+  examId: string,
+  storage: StorageLike | null = getDefaultStorage()
+): string[] {
+  const cleanUser = normalizeId(userId)
+  const cleanExam = normalizeId(examId)
+  if (!cleanUser || !cleanExam || !storage) return []
+
+  const seen = new Set<string>()
+  const ids: string[] = []
+
+  const pushId = (raw: unknown) => {
+    if (ids.length >= MAX_BOOKMARKS_PER_EXAM) return
+    const qId = normalizeId(raw)
+    if (qId && !seen.has(qId)) {
+      seen.add(qId)
+      ids.push(qId)
+    }
+  }
+
+  // 1. User-scoped browser-local v1 bookmarks
+  const userScoped = readUserBookmarks(cleanUser, cleanExam, storage)
+  for (const qId of Object.keys(userScoped)) {
+    pushId(qId)
+  }
+
+  // 2. Unscoped legacy `study-bookmarks:<examId>` map
+  try {
+    const raw = storage.getItem(`study-bookmarks:${cleanExam}`)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') {
+        for (const [qId, enabled] of Object.entries(parsed as Record<string, unknown>)) {
+          if (enabled) pushId(qId)
+        }
+      }
+    }
+  } catch {
+    // Ignore malformed legacy storage
+  }
+
+  return ids
+}
+
+export function clearLegacyLocalBookmarks(
+  userId: string,
+  examId: string,
+  storage: StorageLike | null = getDefaultStorage()
+): void {
+  const cleanUser = normalizeId(userId)
+  const cleanExam = normalizeId(examId)
+  if (!cleanExam || !storage) return
+  if (cleanUser) {
+    safeRemove(getBookmarksStorageKey(cleanUser, cleanExam), storage)
+  }
+  safeRemove(`study-bookmarks:${cleanExam}`, storage)
+}
+
 export function hasLegacyBookmarks(
   examId: string,
   storage: StorageLike | null = getDefaultStorage()
@@ -299,6 +381,90 @@ export function listAllBookmarkedQuestionIds(
     }
   }
   return result
+}
+
+// ── Pending / Failed Bookmark Sync Operations (User-Scoped Recovery) ─────────
+
+export function readPendingBookmarkOps(
+  userId: string,
+  examId: string,
+  storage: StorageLike | null = getDefaultStorage()
+): Record<string, PendingBookmarkOp> {
+  const cleanUser = normalizeId(userId)
+  const cleanExam = normalizeId(examId)
+  if (!cleanUser || !cleanExam) return {}
+
+  const parsed = safeReadJson(getPendingBookmarkOpsStorageKey(cleanUser, cleanExam), storage)
+  if (!parsed || typeof parsed !== 'object') return {}
+  const record = parsed as Partial<StoredPendingBookmarkOpsV1>
+  if (
+    record.version !== STUDY_STORAGE_VERSION ||
+    record.examId !== cleanExam ||
+    !record.ops ||
+    typeof record.ops !== 'object'
+  ) {
+    return {}
+  }
+
+  const result: Record<string, PendingBookmarkOp> = {}
+  let count = 0
+  for (const [rawId, rawOp] of Object.entries(record.ops)) {
+    if (count >= MAX_BOOKMARKS_PER_EXAM) break
+    const qId = normalizeId(rawId)
+    if (!qId || !rawOp || typeof rawOp !== 'object') continue
+    const op = rawOp as Partial<PendingBookmarkOp>
+    if (op.action !== 'add' && op.action !== 'remove') continue
+    const cleanOpId = normalizeId(op.opId)
+    result[qId] = {
+      action: op.action,
+      updatedAt: isValidIso(op.updatedAt) ? op.updatedAt : new Date(0).toISOString(),
+      ...(cleanOpId ? { opId: cleanOpId } : {}),
+    }
+    count += 1
+  }
+  return result
+}
+
+export function writePendingBookmarkOps(
+  userId: string,
+  examId: string,
+  ops: Readonly<Record<string, PendingBookmarkOp>>,
+  storage: StorageLike | null = getDefaultStorage(),
+  nowIso: string = new Date().toISOString()
+): boolean {
+  const cleanUser = normalizeId(userId)
+  const cleanExam = normalizeId(examId)
+  if (!cleanUser || !cleanExam) return false
+
+  const key = getPendingBookmarkOpsStorageKey(cleanUser, cleanExam)
+  const sanitized: Record<string, PendingBookmarkOp> = {}
+  let count = 0
+
+  for (const [rawId, op] of Object.entries(ops)) {
+    if (count >= MAX_BOOKMARKS_PER_EXAM) break
+    const qId = normalizeId(rawId)
+    if (!qId || (op.action !== 'add' && op.action !== 'remove')) continue
+    const cleanOpId = normalizeId(op.opId)
+    sanitized[qId] = {
+      action: op.action,
+      updatedAt: isValidIso(op.updatedAt) ? op.updatedAt : nowIso,
+      ...(cleanOpId ? { opId: cleanOpId } : {}),
+    }
+    count += 1
+  }
+
+  if (count === 0) {
+    safeRemove(key, storage)
+    return true
+  }
+
+  const payload: StoredPendingBookmarkOpsV1 = {
+    version: STUDY_STORAGE_VERSION,
+    examId: cleanExam,
+    ops: sanitized,
+    updatedAt: nowIso,
+  }
+  return safeWriteJson(key, payload, storage)
 }
 
 // ── Practice Attempt (Ongoing) ───────────────────────────────────────────────
@@ -595,10 +761,8 @@ export function computeDashboardOverview(
   const examMetrics: ExamDashboardMetrics[] = exams.map((exam) => {
     const attempt = readPracticeAttempt(userId, exam.examId, storage)
     const completedSummary = readPracticeSummary(userId, exam.examId, storage)
-    const bookmarks = readUserBookmarks(userId, exam.examId, storage)
     const examSummary = readMockExamSummary(userId, exam.examId, storage)
 
-    const bookmarkedCount = Object.keys(bookmarks).length
     const totalQuestions = exam.questionCount
 
     // Derive Practice status: ongoing attempt takes precedence when actively in progress,
@@ -676,7 +840,6 @@ export function computeDashboardOverview(
         accuracyPercent,
         hasOngoingAttempt: Boolean(attempt && attemptCheckedCount > 0 && !attemptAllGraded),
         hasCompletedSummary: Boolean(completedSummary),
-        bookmarkedCount,
         actionLabel,
       },
       mockExam: {

@@ -13,6 +13,8 @@ export interface StudyNotionConfig {
   questionsDbId: string
   cardStatesDbId: string
   reviewEventsDbId: string
+  /** Optional dedicated Study Bookmarks database ID (STUDY_NOTION_BOOKMARKS_DB_ID) */
+  bookmarksDbId?: string
   timeoutMs: number
   maxRetries: number
   minIntervalMs: number
@@ -83,10 +85,18 @@ export function isStudyAuthConfigured(
   )
 }
 
+export function isStudyBookmarksConfigured(
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  return Boolean(isStudyNotionConfigured(env) && env.STUDY_NOTION_BOOKMARKS_DB_ID?.trim())
+}
+
 export function getStudyNotionConfig(
   env: Record<string, string | undefined> = process.env
 ): StudyNotionConfig {
   assertServerOnly('lib/study/config')
+
+  const bookmarksDbId = (env.STUDY_NOTION_BOOKMARKS_DB_ID || '').trim() || undefined
 
   return {
     token: readRequiredEnv(env, 'STUDY_NOTION_TOKEN'),
@@ -95,6 +105,7 @@ export function getStudyNotionConfig(
     questionsDbId: readRequiredEnv(env, 'STUDY_NOTION_QUESTIONS_DB_ID'),
     cardStatesDbId: readRequiredEnv(env, 'STUDY_NOTION_CARD_STATES_DB_ID'),
     reviewEventsDbId: readRequiredEnv(env, 'STUDY_NOTION_REVIEW_EVENTS_DB_ID'),
+    ...(bookmarksDbId ? { bookmarksDbId } : {}),
     timeoutMs: parsePositiveInt(env.STUDY_NOTION_TIMEOUT_MS, 15000, 1000, 60000),
     maxRetries: parsePositiveInt(env.STUDY_NOTION_MAX_RETRIES, 3, 0, 6),
     minIntervalMs: parsePositiveInt(env.STUDY_NOTION_MIN_INTERVAL_MS, 350, 0, 5000),

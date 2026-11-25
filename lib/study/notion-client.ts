@@ -106,12 +106,26 @@ function sleep(ms: number): Promise<void> {
 
 function getRetryAfterMs(err: unknown): number | null {
   if (!err || typeof err !== 'object') return null
-  const headers = (err as { headers?: Record<string, string> }).headers
-  const raw = headers?.['retry-after'] || headers?.['Retry-After']
+  const headers = (err as { headers?: Record<string, string> | Headers }).headers
+  let raw: string | null | undefined
+  if (headers && typeof (headers as Headers).get === 'function') {
+    raw = (headers as Headers).get('retry-after')
+  } else if (headers && typeof headers === 'object') {
+    const rec = headers as Record<string, string>
+    raw = rec['retry-after'] || rec['Retry-After']
+  }
   if (!raw) return null
-  const seconds = Number.parseFloat(raw)
+  const trimmed = raw.trim()
+  const seconds = Number.parseFloat(trimmed)
   if (Number.isFinite(seconds) && seconds > 0) {
     return Math.min(seconds * 1000, 30000)
+  }
+  const parsedDateMs = Date.parse(trimmed)
+  if (!Number.isNaN(parsedDateMs)) {
+    const deltaMs = parsedDateMs - Date.now()
+    if (deltaMs > 0) {
+      return Math.min(deltaMs, 30000)
+    }
   }
   return null
 }
@@ -295,16 +309,23 @@ export function createStudyNotionClient(
         const canRetry = isIdempotent
           ? info.category === 'transient'
           : info.status === 429 || info.code === 'rate_limited'
+        const retryAfterMs = getRetryAfterMs(err)
         if (attempt > config.maxRetries || !canRetry) {
           const safeMsg = info.status
             ? `Study Notion API error (${label}, HTTP ${info.status}${info.code ? `, ${info.code}` : ''})`
             : `Study Notion API error (${label}${info.code ? `, ${info.code}` : ''})`
-          const wrapped = new Error(safeMsg) as Error & { status?: number; notionCode?: string }
+          const wrapped = new Error(safeMsg) as Error & {
+            status?: number
+            notionCode?: string
+            retryAfterSec?: number
+          }
           wrapped.status = info.status ?? undefined
           wrapped.notionCode = info.code ?? undefined
+          if (retryAfterMs !== null) {
+            wrapped.retryAfterSec = Math.max(1, Math.ceil(retryAfterMs / 1000))
+          }
           throw wrapped
         }
-        const retryAfterMs = getRetryAfterMs(err)
         const backoffMs = retryAfterMs ?? Math.min(500 * Math.pow(2, attempt - 1), 10000)
         await sleep(backoffMs)
       }

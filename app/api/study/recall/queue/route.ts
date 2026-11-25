@@ -14,8 +14,23 @@ export const dynamic = 'force-dynamic'
 const recallQueuePostSchema = z.object({
   examId: z.string().trim().max(128).optional(),
   limit: z.number().int().min(1).max(100).optional(),
-  questionIds: z.array(z.string().trim().min(1).max(128)).max(500).default([]),
 })
+
+function logUnexpectedRecallQueueError(method: 'GET' | 'POST', err: unknown): void {
+  const e = (err && typeof err === 'object' ? err : {}) as {
+    name?: string
+    code?: string
+    status?: number
+    notionCode?: string
+  }
+  console.error('[study-recall-queue] unexpected_error', {
+    route: '/api/study/recall/queue',
+    method,
+    errorName: typeof e.name === 'string' ? e.name : 'UnknownError',
+    code: typeof e.code === 'string' ? e.code : typeof e.notionCode === 'string' ? e.notionCode : undefined,
+    status: typeof e.status === 'number' ? e.status : undefined,
+  })
+}
 
 export async function GET(request: Request) {
   const rate = checkApiRateLimit(getClientIp(request), 'study-recall-queue', 60, 60 * 1000)
@@ -33,24 +48,23 @@ export async function GET(request: Request) {
   const examId = searchParams.get('examId')?.trim() || undefined
   const rawLimit = Number.parseInt(searchParams.get('limit') || '20', 10)
   const limit = Number.isFinite(rawLimit) ? rawLimit : 20
-  const rawIds = searchParams.get('questionIds') || ''
-  const bookmarkedQuestionIds = rawIds
-    ? rawIds
-        .split(',')
-        .map((id) => id.trim())
-        .filter(Boolean)
-        .slice(0, 500)
-    : []
 
   try {
     const repos = createNotionStudyRepositories()
+    if (!repos.bookmarks) {
+      return NextResponse.json(
+        { error: 'Study Bookmarks database is not configured.' },
+        { status: 503, headers: NO_STORE_PRIVATE_HEADERS }
+      )
+    }
+    // Authoritative server-side bookmarks are loaded inside getRecallQueue for guard.user.userId
     const queue = await getRecallQueue(guard.user.userId, repos, {
       examId,
       limit,
-      bookmarkedQuestionIds,
     })
     return NextResponse.json(queue, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
-  } catch {
+  } catch (err) {
+    logUnexpectedRecallQueueError('GET', err)
     return NextResponse.json(
       { error: 'Unable to load recall queue right now.' },
       { status: 503, headers: NO_STORE_PRIVATE_HEADERS }
@@ -90,13 +104,20 @@ export async function POST(request: Request) {
 
   try {
     const repos = createNotionStudyRepositories()
+    if (!repos.bookmarks) {
+      return NextResponse.json(
+        { error: 'Study Bookmarks database is not configured.' },
+        { status: 503, headers: NO_STORE_PRIVATE_HEADERS }
+      )
+    }
+    // Authoritative server-side bookmarks are loaded inside getRecallQueue for guard.user.userId
     const queue = await getRecallQueue(guard.user.userId, repos, {
       examId: parsed.data.examId || undefined,
       limit: parsed.data.limit ?? 20,
-      bookmarkedQuestionIds: parsed.data.questionIds,
     })
     return NextResponse.json(queue, { status: 200, headers: NO_STORE_PRIVATE_HEADERS })
-  } catch {
+  } catch (err) {
+    logUnexpectedRecallQueueError('POST', err)
     return NextResponse.json(
       { error: 'Unable to load recall queue right now.' },
       { status: 503, headers: NO_STORE_PRIVATE_HEADERS }

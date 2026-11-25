@@ -13,7 +13,6 @@ import StudyRichText from './StudyRichText'
 import { StudyLink } from './StudyNavigationContext'
 import { RecallSessionSkeleton, ZenPendingDot } from './StudySkeletons'
 import { shouldIgnoreStudyShortcut } from '../../lib/study/keyboard'
-import { listAllBookmarkedQuestionIds } from '../../lib/study/local-progress'
 
 type QueueStatus = 'loading' | 'refreshing' | 'error' | 'loaded'
 
@@ -123,13 +122,7 @@ function UpcomingReviewsSummary({
   )
 }
 
-export default function RecallSessionClient({
-  userId,
-  publishedExamIds,
-}: {
-  userId: string
-  publishedExamIds: string[]
-}) {
+export default function RecallSessionClient() {
   const searchParams = useSearchParams()
   const examIdFilter = searchParams?.get('examId') || ''
 
@@ -168,35 +161,14 @@ export default function RecallSessionClient({
     queueAbortRef.current = controller
     const seq = ++queueSeqRef.current
 
-    const scopedExamIds = examIdFilter ? [examIdFilter] : publishedExamIds
-    const bookmarkedIds = listAllBookmarkedQuestionIds(userId, scopedExamIds)
-
-    // When no local bookmarks exist for this user/scope, skip the API call cleanly
-    if (bookmarkedIds.length === 0) {
-      hasLoadedOnceRef.current = true
-      setQueue([])
-      setCounts({ due: 0, newCards: 0, bookmarked: 0 })
-      setUpcomingReviews(EMPTY_UPCOMING)
-      setCurrentIdx(0)
-      setShowChoices(false)
-      setRevealed(null)
-      setError('')
-      setQueueStatus('loaded')
-      return
-    }
-
     setQueueStatus(hasLoadedOnceRef.current ? 'refreshing' : 'loading')
     setError('')
 
     try {
-      const res = await fetch('/api/study/recall/queue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          examId: examIdFilter || undefined,
-          limit: 25,
-          questionIds: bookmarkedIds,
-        }),
+      const params = new URLSearchParams({ limit: '25' })
+      if (examIdFilter) params.set('examId', examIdFilter)
+      const res = await fetch(`/api/study/recall/queue?${params.toString()}`, {
+        method: 'GET',
         cache: 'no-store',
         signal: controller.signal,
       })
@@ -222,7 +194,7 @@ export default function RecallSessionClient({
       setError(err instanceof Error ? err.message : 'Failed to load recall queue.')
       setQueueStatus(hasLoadedOnceRef.current ? 'loaded' : 'error')
     }
-  }, [examIdFilter, publishedExamIds, userId])
+  }, [examIdFilter])
 
   useEffect(() => {
     hasLoadedOnceRef.current = false
@@ -458,7 +430,7 @@ export default function RecallSessionClient({
           </div>
 
           <p className="text-[0.74rem] text-ink-400 dark:text-sage-500 m-0 pt-2">
-            Bookmarks are stored locally in this browser for your account and are not synchronized across devices.
+            Your bookmarks are synchronized across devices for your account.
           </p>
         </div>
       </div>
