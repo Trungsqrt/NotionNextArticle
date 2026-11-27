@@ -733,7 +733,7 @@ export default function PracticeModeClient({
     if (isSwitching) return
     checkAbortRef.current?.abort()
     checkLockRef.current = false
-    sessionVersionRef.current += 1
+    checkSeqRef.current += 1
     if (activeExamIdRef.current) {
       // Resets ongoing attempt only; preserves bookmarks and previous completed summary
       clearPracticeAttempt(userId, activeExamIdRef.current)
