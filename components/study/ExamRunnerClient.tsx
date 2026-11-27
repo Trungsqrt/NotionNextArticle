@@ -10,6 +10,10 @@ import { StudyLink } from './StudyNavigationContext'
 import { ExamRunnerSkeleton, ZenPendingDot } from './StudySkeletons'
 import { shouldIgnoreStudyShortcut } from '../../lib/study/keyboard'
 import { recordMockExamResult } from '../../lib/study/local-progress'
+import {
+  formatOptionDisplayLabels,
+  getOptionDisplayLabel,
+} from '../../lib/study/exam-shuffle'
 
 function formatTimer(seconds: number): string {
   const safe = Math.max(0, seconds)
@@ -311,50 +315,120 @@ export default function ExamRunnerClient({
           <h2 className="font-serif text-lg font-medium text-ink-700 dark:text-sage-100 m-0">
             Detailed Review
           </h2>
-          {result.reviewItems.map((item, idx) => (
-            <article
-              key={item.questionId}
-              className="rounded-card p-5 sm:p-6 bg-rice-paper-50/90 dark:bg-tea-slate-200/60 border border-rice-paper-400/70 dark:border-tea-slate-50/50 space-y-3"
-            >
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-mono text-ink-400 dark:text-sage-500">
-                  Q{idx + 1} · {item.prompt.topic}
-                </span>
-                <span
-                  className={`font-medium ${
-                    item.isCorrect
-                      ? 'text-matcha-600 dark:text-matcha-300'
-                      : item.isSkipped
-                        ? 'text-ink-400 dark:text-sage-500'
-                        : 'text-earth-rust dark:text-rose-300'
-                  }`}
-                >
-                  {item.isCorrect ? 'Correct' : item.isSkipped ? 'Skipped' : 'Incorrect'}
-                </span>
-              </div>
-              <StudyRichText
-                text={item.prompt.questionText}
-                imageRefs={item.prompt.imageRefs}
-                placement="question"
-                className="font-serif text-base text-ink-700 dark:text-sage-100"
-              />
-              <div className="text-xs font-mono text-ink-500 dark:text-sage-400">
-                Your answer: {item.selectedOptionIds.join(', ') || 'None'} · Correct:{' '}
-                <strong className="text-matcha-700 dark:text-matcha-300">
-                  {item.correctOptionIds.join(', ')}
-                </strong>
-              </div>
-              {item.explanation && (
-                <div className="rounded-zen p-3.5 bg-rice-paper-200/60 dark:bg-tea-slate-300/60 text-[0.85rem] leading-relaxed text-ink-600 dark:text-sage-300">
-                  <StudyRichText
-                    text={item.explanation}
-                    imageRefs={item.prompt.imageRefs}
-                    placement="explanation"
-                  />
+          {result.reviewItems.map((item, idx) => {
+            const selectedSet = new Set(item.selectedOptionIds)
+            const correctSet = new Set(item.correctOptionIds)
+            const selectedLabels = formatOptionDisplayLabels(
+              item.prompt.options,
+              item.selectedOptionIds
+            )
+            const correctLabels = formatOptionDisplayLabels(
+              item.prompt.options,
+              item.correctOptionIds
+            )
+            const feedbackByOptionId = new Map<string, string>(
+              item.optionFeedback.map((fb) => [fb.optionId, fb.feedback])
+            )
+
+            return (
+              <article
+                key={item.questionId}
+                className="rounded-card p-5 sm:p-6 bg-rice-paper-50/90 dark:bg-tea-slate-200/60 border border-rice-paper-400/70 dark:border-tea-slate-50/50 space-y-3.5"
+              >
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-mono text-ink-400 dark:text-sage-500">
+                    Q{idx + 1} · {item.prompt.topic}
+                  </span>
+                  <span
+                    className={`font-medium ${
+                      item.isCorrect
+                        ? 'text-matcha-600 dark:text-matcha-300'
+                        : item.isSkipped
+                          ? 'text-ink-400 dark:text-sage-500'
+                          : 'text-earth-rust dark:text-rose-300'
+                    }`}
+                  >
+                    {item.isCorrect ? 'Correct' : item.isSkipped ? 'Skipped' : 'Incorrect'}
+                  </span>
                 </div>
-              )}
-            </article>
-          ))}
+                <StudyRichText
+                  text={item.prompt.questionText}
+                  imageRefs={item.prompt.imageRefs}
+                  placement="question"
+                  className="font-serif text-base text-ink-700 dark:text-sage-100"
+                />
+                <ul className="space-y-2 list-none p-0 m-0">
+                  {item.prompt.options.map((opt, optIdx) => {
+                    const displayLabel = getOptionDisplayLabel(optIdx)
+                    const isSelected = selectedSet.has(opt.id)
+                    const isCorrectOpt = correctSet.has(opt.id)
+                    const isWrongSelection = isSelected && !isCorrectOpt
+                    const fbText = feedbackByOptionId.get(opt.id)
+
+                    const optionTone = isCorrectOpt
+                      ? 'bg-matcha-50/85 dark:bg-matcha-900/35 border-matcha-400/80 dark:border-matcha-600/70 text-ink-700 dark:text-sage-100'
+                      : isWrongSelection
+                        ? 'bg-earth-rust/[0.09] dark:bg-earth-rust/[0.18] border-earth-rust/70 dark:border-earth-rust/75 text-ink-700 dark:text-sage-100'
+                        : 'bg-rice-paper-100/60 dark:bg-tea-slate-300/45 border-rice-paper-400/50 dark:border-tea-slate-50/35 text-ink-500 dark:text-sage-400'
+
+                    const badgeTone = isCorrectOpt
+                      ? 'bg-matcha-600 dark:bg-matcha-500 text-white'
+                      : isWrongSelection
+                        ? 'bg-earth-rust text-white'
+                        : 'bg-rice-paper-200 dark:bg-tea-slate-100 text-ink-600 dark:text-sage-300'
+
+                    return (
+                      <li
+                        key={opt.id}
+                        className={`rounded-zen px-3.5 py-2.5 border text-[0.86rem] ${optionTone}`}
+                      >
+                        <div className="flex items-start gap-2.5">
+                          <span
+                            className={`font-mono text-xs font-semibold px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${badgeTone}`}
+                          >
+                            {displayLabel}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <StudyRichText
+                              text={opt.text}
+                              imageRefs={item.prompt.imageRefs}
+                              placement="option"
+                              optionId={opt.id}
+                            />
+                            {fbText && (
+                              <div className="mt-2 pt-2 border-t border-rice-paper-400/50 dark:border-tea-slate-50/30 text-xs text-ink-500 dark:text-sage-400">
+                                <StudyRichText
+                                  text={fbText}
+                                  imageRefs={item.prompt.imageRefs}
+                                  placement="feedback"
+                                  optionId={opt.id}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+                <div className="text-xs font-mono text-ink-500 dark:text-sage-400">
+                  Your answer: {selectedLabels.join(', ') || 'None'} · Correct:{' '}
+                  <strong className="text-matcha-700 dark:text-matcha-300">
+                    {correctLabels.join(', ')}
+                  </strong>
+                </div>
+                {item.explanation && (
+                  <div className="rounded-zen p-3.5 bg-rice-paper-200/60 dark:bg-tea-slate-300/60 text-[0.85rem] leading-relaxed text-ink-600 dark:text-sage-300">
+                    <StudyRichText
+                      text={item.explanation}
+                      imageRefs={item.prompt.imageRefs}
+                      placement="explanation"
+                    />
+                  </div>
+                )}
+              </article>
+            )
+          })}
         </section>
       </div>
     )
@@ -449,7 +523,8 @@ export default function ExamRunnerClient({
           />
 
           <div className="space-y-2.5">
-            {currentQ.options.map((opt) => {
+            {currentQ.options.map((opt, optIdx) => {
+              const displayLabel = getOptionDisplayLabel(optIdx)
               const selected = (answers[currentQ.questionId] || []).includes(opt.id)
               return (
                 <button
@@ -473,7 +548,7 @@ export default function ExamRunnerClient({
                 >
                   <div className="flex items-start gap-2.5">
                     <span className="font-mono text-xs font-semibold px-1.5 py-0.5 rounded bg-rice-paper-200 dark:bg-tea-slate-100 text-ink-600 dark:text-sage-300 shrink-0 mt-0.5">
-                      {opt.id}
+                      {displayLabel}
                     </span>
                     <div className="flex-1 min-w-0">
                       <StudyRichText
