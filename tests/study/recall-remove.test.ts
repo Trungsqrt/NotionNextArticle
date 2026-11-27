@@ -22,11 +22,15 @@ import {
   type BookmarkSyncSnapshot,
 } from '../../lib/study/bookmark-sync'
 import {
+  listPendingBookmarkExams,
   readPendingBookmarkOps,
+  writePendingBookmarkOps,
   type StorageLike,
 } from '../../lib/study/local-progress'
 import {
   applyOptimisticRecallRemoval,
+  computeRecallQueueFetchLimit,
+  createRecallRemovalTracker,
   filterPendingRemovedRecallQueue,
   summarizeRecallBookmarkSync,
 } from '../../lib/study/recall-removal'
@@ -39,6 +43,10 @@ import {
 function createMemoryStorage(): StorageLike {
   const map = new Map<string, string>()
   return {
+    get length() {
+      return map.size
+    },
+    key: (index: number) => Array.from(map.keys())[index] ?? null,
     getItem: (k) => (map.has(k) ? map.get(k)! : null),
     setItem: (k, v) => {
       map.set(k, v)
@@ -505,5 +513,241 @@ describe('Active Recall — FSRS preservation & re-bookmarking guarantees', () =
     )
     const storedBookmarks = await repos.bookmarks!.findByUserAndExam(userId, exam.examId)
     assert.ok(storedBookmarks?.questionIds.includes('q-1'))
+  })
+})
+
+describe('Active Recall — final edge case protections', () => {
+  it('discovers pending bookmark operations across all relevant exams for the authenticated user only', () => {
+    const storage = createMemoryStorage()
+
+    // User A has pending ops in two exams (neither needs to appear in the 25-card recall queue)
+    writePendingBookmarkOps(
+      'usr-a',
+      'exam-outside-batch',
+      { 'q-99': { action: 'remove', updatedAt: '2026-06-01T10:00:00.000Z', opId: 'op-1' } },
+      storage
+    )
+    writePendingBookmarkOps(
+      'usr-a',
+      'exam-second',
+      { 'q-201': { action: 'add', updatedAt: '2026-06-01T10:01:00.000Z', opId: 'op-2' } },
+      storage
+    )
+    // Another user's pending ops must never be exposed
+    writePendingBookmarkOps(
+      'usr-b',
+      'exam-other-user',
+      { 'q-500': { action: 'remove', updatedAt: '2026-06-01T10:02:00.000Z', opId: 'op-3' } },
+      storage
+    )
+
+    const allForUserA = listPendingBookmarkExams('usr-a', storage)
+    assert.deepEqual(
+      allForUserA.map((e) => e.examId).sort(),
+      ['exam-outside-batch', 'exam-second']
+    )
+    assert.equal(allForUserA.find((e) => e.examId === 'exam-outside-batch')?.ops['q-99']?.action, 'remove')
+    assert.equal(allForUserA.find((e) => e.examId === 'exam-second')?.ops['q-201']?.action, 'add')
+
+    // Scoped filter restricts discovery to the requested exam
+    const scopedForUserA = listPendingBookmarkExams('usr-a', storage, {
+      examIdFilter: 'exam-outside-batch',
+    })
+    assert.deepEqual(
+      scopedForUserA.map((e) => e.examId),
+      ['exam-outside-batch']
+    )
+  })
+
+  it('prevents stale recall queue responses from reintroducing a removed card even after sync completes first', async () => {
+    const storage = createMemoryStorage()
+    const tracker = createRecallRemovalTracker()
+
+    const fakeFetch: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          examId: 'exam-1',
+          userId: 'usr-1',
+          questionIds: ['q-2'],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+
+    const ctrl = createBookmarkSyncController({
+      userId: 'usr-1',
+      examId: 'exam-1',
+      storage,
+      fetchImpl: fakeFetch,
+      debounceMs: 0,
+      maxRetries: 0,
+      sleepFn: async () => {},
+      onStateChange: (snap) => {
+        tracker.reconcileSyncSnapshot('exam-1', snap)
+      },
+    })
+
+    // 1. A recall queue GET starts BEFORE removal completes
+    const staleRequestSeq = tracker.beginQueueRequest()
+
+    // 2. User removes q-1 and its bookmark sync completes BEFORE the GET resolves
+    tracker.recordRemoval('exam-1', 'q-1', { bucket: 'due', fromCurrentSession: true })
+    ctrl.enqueue('q-1', 'remove')
+    await new Promise((r) => setTimeout(r, 15))
+
+    // Confirm pending op is already cleared from localStorage & controller
+    assert.equal(ctrl.getSnapshot().status, 'saved')
+    assert.deepEqual(readPendingBookmarkOps('usr-1', 'exam-1', storage), {})
+
+    // 3. The earlier stale GET now resolves with a snapshot that still contains q-1
+    const staleServerResponse: RecallQueueResponse = {
+      items: [
+        makeQueueItem('q-1', 'exam-1', 'due'),
+        makeQueueItem('q-2', 'exam-1', 'new'),
+      ],
+      dueCount: 1,
+      newCount: 1,
+      totalAvailable: 2,
+      bookmarkedCount: 2,
+      upcomingReviews: { laterToday: 0, tomorrow: 0, next3Days: 0, next7Days: 0, later: 0 },
+    }
+    const excludedForStale = tracker.getExcludedEntriesForRequest(staleRequestSeq)
+    const filteredStale = filterPendingRemovedRecallQueue(staleServerResponse, excludedForStale)
+
+    assert.deepEqual(
+      filteredStale.items.map((item) => item.prompt.questionId),
+      ['q-2']
+    )
+    assert.equal(filteredStale.dueCount, 0)
+    assert.equal(filteredStale.newCount, 1)
+    assert.equal(filteredStale.bookmarkedCount, 1)
+
+    // 4. A fresh GET started AFTER sync confirmed does not suppress q-1 if later re-bookmarked
+    const freshRequestSeq = tracker.beginQueueRequest()
+    const excludedForFresh = tracker.getExcludedEntriesForRequest(freshRequestSeq)
+    assert.equal(excludedForFresh.length, 0)
+
+    ctrl.destroy()
+  })
+
+  it('sizes queue fetch limit past pending removals and avoids incorrect counts or premature completion outside the 25-card batch', () => {
+    // 25 pending removals -> request limit expands to 50 (capped at 100)
+    assert.equal(computeRecallQueueFetchLimit(0), 25)
+    assert.equal(computeRecallQueueFetchLimit(25), 50)
+    assert.equal(computeRecallQueueFetchLimit(90), 100)
+
+    // Simulate 26 due cards on server while first 25 are pending removal locally
+    const all26Items = Array.from({ length: 26 }, (_, i) =>
+      makeQueueItem(`q-${i + 1}`, 'exam-1', 'due')
+    )
+    const serverResponseWithExpandedLimit: RecallQueueResponse = {
+      items: all26Items,
+      dueCount: 26,
+      newCount: 0,
+      totalAvailable: 26,
+      bookmarkedCount: 26,
+      upcomingReviews: { laterToday: 0, tomorrow: 0, next3Days: 0, next7Days: 0, later: 0 },
+    }
+    const tracker = createRecallRemovalTracker()
+    for (let i = 1; i <= 25; i++) {
+      tracker.recordRemoval('exam-1', `q-${i}`, { bucket: 'due', fromCurrentSession: true })
+    }
+    const reqSeq = tracker.beginQueueRequest()
+    const filtered = filterPendingRemovedRecallQueue(
+      serverResponseWithExpandedLimit,
+      tracker.getExcludedEntriesForRequest(reqSeq)
+    )
+
+    // q-26 is preserved cleanly — no premature session completion
+    assert.deepEqual(
+      filtered.items.map((item) => item.prompt.questionId),
+      ['q-26']
+    )
+    assert.equal(filtered.dueCount, 1)
+    assert.equal(filtered.totalAvailable, 1)
+    assert.equal(filtered.bookmarkedCount, 1)
+
+    // Truncated batch where an in-session unconfirmed removal lies outside returned items
+    const truncatedResponse: RecallQueueResponse = {
+      items: [makeQueueItem('q-1', 'exam-1', 'due')],
+      dueCount: 2,
+      newCount: 1,
+      totalAvailable: 3,
+      bookmarkedCount: 4,
+      upcomingReviews: { laterToday: 1, tomorrow: 0, next3Days: 0, next7Days: 0, later: 0 },
+    }
+    const truncatedTracker = createRecallRemovalTracker()
+    truncatedTracker.recordRemoval('exam-1', 'q-outside', {
+      bucket: 'new',
+      fromCurrentSession: true,
+    })
+    const truncReq = truncatedTracker.beginQueueRequest()
+    const filteredTruncated = filterPendingRemovedRecallQueue(
+      truncatedResponse,
+      truncatedTracker.getExcludedEntriesForRequest(truncReq)
+    )
+    assert.equal(filteredTruncated.dueCount, 2)
+    assert.equal(filteredTruncated.newCount, 0)
+    assert.equal(filteredTruncated.totalAvailable, 2)
+    assert.equal(filteredTruncated.bookmarkedCount, 3)
+
+    // Non-truncated batch where server already applied removal must NOT double-decrement
+    const alreadySyncedResponse: RecallQueueResponse = {
+      items: [makeQueueItem('q-1', 'exam-1', 'due')],
+      dueCount: 1,
+      newCount: 0,
+      totalAvailable: 1,
+      bookmarkedCount: 1,
+      upcomingReviews: { laterToday: 0, tomorrow: 0, next3Days: 0, next7Days: 0, later: 0 },
+    }
+    const filteredAlreadySynced = filterPendingRemovedRecallQueue(
+      alreadySyncedResponse,
+      truncatedTracker.getExcludedEntriesForRequest(truncReq)
+    )
+    assert.equal(filteredAlreadySynced.dueCount, 1)
+    assert.equal(filteredAlreadySynced.newCount, 0)
+    assert.equal(filteredAlreadySynced.bookmarkedCount, 1)
+  })
+
+  it('tracks subtle pending sync state separately from sync failures and clears cleanly once confirmed', () => {
+    const baseSnapshot: BookmarkSyncSnapshot = {
+      bookmarks: {},
+      serverBookmarks: {},
+      loadedFromServer: false,
+      isInitialLoadPending: false,
+      status: 'saving',
+      pendingCount: 1,
+      savingQuestionIds: ['q-1'],
+      lastConfirmedEvent: null,
+      loadFailed: false,
+      errorMessage: null,
+    }
+
+    const pendingSummary = summarizeRecallBookmarkSync([baseSnapshot])
+    assert.equal(pendingSummary.hasPendingSync, true)
+    assert.equal(pendingSummary.hasUnsyncedError, false)
+
+    const failedSummary = summarizeRecallBookmarkSync([
+      {
+        ...baseSnapshot,
+        status: 'not_synced',
+        errorMessage: 'Offline — saved locally.',
+      },
+    ])
+    assert.equal(failedSummary.hasPendingSync, false)
+    assert.equal(failedSummary.hasUnsyncedError, true)
+    assert.equal(failedSummary.errorMessage, 'Offline — saved locally.')
+
+    const confirmedSummary = summarizeRecallBookmarkSync([
+      {
+        ...baseSnapshot,
+        loadedFromServer: true,
+        status: 'saved',
+        pendingCount: 0,
+        savingQuestionIds: [],
+      },
+    ])
+    assert.equal(confirmedSummary.hasPendingSync, false)
+    assert.equal(confirmedSummary.hasUnsyncedError, false)
+    assert.equal(confirmedSummary.pendingCount, 0)
   })
 })
