@@ -6,11 +6,18 @@
  * submission, returning score, counts, topic breakdown, and post-exam review.
  */
 
-import { createHmac, timingSafeEqual } from 'node:crypto'
+import { createHmac, randomInt, timingSafeEqual } from 'node:crypto'
 import type { StudyRepositories } from '../repositories'
 import type { ExamCollection, StudyQuestionPrompt } from '../types'
 import { toQuestionPrompt } from '../schemas'
 import { gradeQuestionAnswer, type GradedQuestionResult } from './grading'
+import {
+  fisherYatesShuffle,
+  reorderOptionFeedbackByOptionIds,
+  reorderOptionsByIds,
+  shouldPreserveOptionOrder,
+  type RandomFn,
+} from '../exam-shuffle'
 
 export const DEFAULT_EXAM_DURATION_MINUTES = 90
 export const EXAM_PASS_THRESHOLD_PERCENT = 70
@@ -19,8 +26,14 @@ interface ExamTokenPayload {
   sub: string
   examId: string
   questionIds: string[]
+  /** Per-question option ID order (parallel to `questionIds`) for consistent post-exam review */
+  optionOrders?: string[][]
   iat: number
   exp: number
+}
+
+function defaultCryptoRandom(): number {
+  return randomInt(0, 0x1_0000_0000) / 0x1_0000_0000
 }
 
 export interface StartedExamSession {
@@ -93,10 +106,23 @@ function verifyExamToken(
       typeof parsed.sub !== 'string' ||
       typeof parsed.examId !== 'string' ||
       !Array.isArray(parsed.questionIds) ||
+      !parsed.questionIds.every((id) => typeof id === 'string') ||
       typeof parsed.iat !== 'number' ||
       typeof parsed.exp !== 'number'
     ) {
       return { ok: false, reason: 'malformed' }
+    }
+    if (parsed.optionOrders !== undefined) {
+      const validOptionOrders =
+        Array.isArray(parsed.optionOrders) &&
+        parsed.optionOrders.length === parsed.questionIds.length &&
+        parsed.optionOrders.every(
+          (order) =>
+            Array.isArray(order) && order.every((optId) => typeof optId === 'string')
+        )
+      if (!validOptionOrders) {
+        return { ok: false, reason: 'malformed' }
+      }
     }
     return { ok: true, payload: parsed }
   } catch {
@@ -111,6 +137,8 @@ export async function startExamSession(
     durationMinutes?: number
     sessionSecret: string
     nowSec?: number
+    /** Optional PRNG hook for deterministic unit tests; defaults to crypto randomness */
+    random?: RandomFn
   },
   repos: StudyRepositories
 ): Promise<StartedExamSession | null> {
@@ -119,6 +147,21 @@ export async function startExamSession(
 
   const questions = await repos.questions.listByExamId(exam.examId, { status: 'published' })
   if (questions.length === 0) return null
+
+  const rng = input.random ?? defaultCryptoRandom
+  const shuffledQuestions = fisherYatesShuffle(questions, rng)
+  const optionOrders: string[][] = []
+  const shuffledPrompts: StudyQuestionPrompt[] = shuffledQuestions.map((question) => {
+    const prompt = toQuestionPrompt(question)
+    const orderedOptions = shouldPreserveOptionOrder(question)
+      ? [...prompt.options]
+      : fisherYatesShuffle(prompt.options, rng)
+    optionOrders.push(orderedOptions.map((opt) => opt.id))
+    return {
+      ...prompt,
+      options: orderedOptions,
+    }
+  })
 
   const durationMinutes = Math.min(
     Math.max(input.durationMinutes ?? DEFAULT_EXAM_DURATION_MINUTES, 5),
@@ -132,7 +175,8 @@ export async function startExamSession(
     {
       sub: input.userId,
       examId: exam.examId,
-      questionIds: questions.map((q) => q.questionId),
+      questionIds: shuffledQuestions.map((q) => q.questionId),
+      optionOrders,
       iat: nowSec,
       exp: expSec,
     },
@@ -145,7 +189,7 @@ export async function startExamSession(
     startedAt: new Date(nowSec * 1000).toISOString(),
     expiresAt: new Date((nowSec + durationMinutes * 60) * 1000).toISOString(),
     durationMinutes,
-    questions: questions.map(toQuestionPrompt),
+    questions: shuffledPrompts,
   }
 }
 
@@ -183,12 +227,19 @@ export async function submitExamSession(
   const topicStats = new Map<string, { total: number; correct: number; incorrect: number; skipped: number }>()
   const reviewItems: ExamQuestionReviewItem[] = []
 
-  for (const qId of payload.questionIds) {
+  for (let i = 0; i < payload.questionIds.length; i++) {
+    const qId = payload.questionIds[i]
     const q = byId.get(qId)
     if (!q) continue
 
     const selected = Array.isArray(input.answers?.[qId]) ? input.answers[qId] : []
     const graded = gradeQuestionAnswer(q, selected)
+    const sessionOptionOrder = payload.optionOrders?.[i]
+    const basePrompt = toQuestionPrompt(q)
+    const reviewPrompt: StudyQuestionPrompt = {
+      ...basePrompt,
+      options: reorderOptionsByIds(basePrompt.options, sessionOptionOrder),
+    }
 
     const t = topicStats.get(q.topic) || { total: 0, correct: 0, incorrect: 0, skipped: 0 }
     t.total += 1
@@ -207,7 +258,8 @@ export async function submitExamSession(
     topicStats.set(q.topic, t)
     reviewItems.push({
       ...graded,
-      prompt: toQuestionPrompt(q),
+      optionFeedback: reorderOptionFeedbackByOptionIds(graded.optionFeedback, sessionOptionOrder),
+      prompt: reviewPrompt,
     })
   }
 
