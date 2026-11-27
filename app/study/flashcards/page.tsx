@@ -6,11 +6,11 @@ import { RecallSessionSkeleton } from '../../../components/study/StudySkeletons'
 export const dynamic = 'force-dynamic'
 
 export default async function StudyFlashcardsPage() {
-  await requireStudyPageSession({ returnTo: '/study/flashcards' })
+  const user = await requireStudyPageSession({ returnTo: '/study/flashcards' })
 
   return (
     <Suspense fallback={<RecallSessionSkeleton />}>
-      <RecallSessionClient />
+      <RecallSessionClient userId={user.userId} />
     </Suspense>
   )
 }
