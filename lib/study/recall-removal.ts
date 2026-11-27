@@ -230,8 +230,10 @@ export function createRecallRemovalTracker(): RecallRemovalTracker {
 
 /**
  * Filters cards with pending or stale-unseen removals out of a loaded server
- * recall queue and adjusts remaining counts accurately (including accounting for
- * in-session unconfirmed removals when the server response is truncated by `limit`).
+ * recall queue and adjusts remaining counts strictly for cards actually present
+ * in `response.items`. Never assumes an excluded card missing from a truncated
+ * response is still counted in server totals (avoiding double-decrementing when
+ * the server already reflects a completed removal).
  */
 export function filterPendingRemovedRecallQueue(
   response: RecallQueueResponse,
@@ -240,34 +242,28 @@ export function filterPendingRemovedRecallQueue(
     | readonly RecallRemovalEntry[],
   options?: { examIdFilter?: string }
 ): RecallQueueResponse {
+  if (response.items.length === 0) {
+    return response
+  }
+
   const cleanFilter = options?.examIdFilter?.trim() || ''
-  const excludedByExam = new Map<string, Map<string, RecallRemovalEntry>>()
+  const excludedByExam = new Map<string, Set<string>>()
 
   if (!Array.isArray(excludedRemovals)) {
     for (const [examId, qIds] of (excludedRemovals as ReadonlyMap<string, ReadonlySet<string>>).entries()) {
       if (cleanFilter && examId !== cleanFilter) continue
       if (qIds.size === 0) continue
-      const inner = new Map<string, RecallRemovalEntry>()
-      for (const qId of qIds) {
-        inner.set(qId, { examId, questionId: qId })
-      }
-      excludedByExam.set(examId, inner)
+      excludedByExam.set(examId, new Set(qIds))
     }
   } else {
     for (const entry of excludedRemovals as readonly RecallRemovalEntry[]) {
       if (cleanFilter && entry.examId !== cleanFilter) continue
       let inner = excludedByExam.get(entry.examId)
       if (!inner) {
-        inner = new Map<string, RecallRemovalEntry>()
+        inner = new Set<string>()
         excludedByExam.set(entry.examId, inner)
       }
-      const prev = inner.get(entry.questionId)
-      inner.set(entry.questionId, {
-        examId: entry.examId,
-        questionId: entry.questionId,
-        bucket: entry.bucket ?? prev?.bucket,
-        fromCurrentSession: Boolean(entry.fromCurrentSession || prev?.fromCurrentSession),
-      })
+      inner.add(entry.questionId)
     }
   }
 
@@ -276,34 +272,16 @@ export function filterPendingRemovedRecallQueue(
   }
 
   const keptItems: RecallQueueItem[] = []
-  const matchedKeys = new Set<string>()
   let removedDue = 0
   let removedNew = 0
 
   for (const item of response.items) {
-    const entry = excludedByExam.get(item.prompt.examId)?.get(item.prompt.questionId)
-    if (entry) {
-      matchedKeys.add(buildCardKey(item.prompt.examId, item.prompt.questionId))
+    if (excludedByExam.get(item.prompt.examId)?.has(item.prompt.questionId)) {
       if (item.bucket === 'due') removedDue += 1
       else removedNew += 1
       continue
     }
     keptItems.push(item)
-  }
-
-  // If the server response was truncated by `limit` (more due/new cards exist beyond `items`),
-  // also subtract any in-session unconfirmed/stale removals whose bucket we know and that
-  // fell outside the returned `items` window.
-  const isTruncatedBatch = response.items.length < response.totalAvailable
-  if (isTruncatedBatch) {
-    for (const inner of excludedByExam.values()) {
-      for (const entry of inner.values()) {
-        if (!entry.fromCurrentSession || !entry.bucket) continue
-        if (matchedKeys.has(buildCardKey(entry.examId, entry.questionId))) continue
-        if (entry.bucket === 'due') removedDue += 1
-        else removedNew += 1
-      }
-    }
   }
 
   const totalRemoved = removedDue + removedNew

@@ -665,47 +665,58 @@ describe('Active Recall — final edge case protections', () => {
     assert.equal(filtered.dueCount, 1)
     assert.equal(filtered.totalAvailable, 1)
     assert.equal(filtered.bookmarkedCount, 1)
+  })
 
-    // Truncated batch where an in-session unconfirmed removal lies outside returned items
+  it('does not double-decrement counts when a truncated server queue already reflects a completed removal', () => {
+    // User originally had 30 due cards and removed q-1 (and q-2 is still stale-present).
+    // Server already applied q-1's removal before serving this truncated 25-card batch
+    // (totalAvailable = 29 > items.length = 25), so q-1 is absent from items and already
+    // excluded from dueCount/totalAvailable/bookmarkedCount.
+    const truncatedAlreadySyncedItems = Array.from({ length: 25 }, (_, i) =>
+      makeQueueItem(`q-${i + 2}`, 'exam-1', 'due')
+    )
     const truncatedResponse: RecallQueueResponse = {
-      items: [makeQueueItem('q-1', 'exam-1', 'due')],
-      dueCount: 2,
-      newCount: 1,
-      totalAvailable: 3,
-      bookmarkedCount: 4,
-      upcomingReviews: { laterToday: 1, tomorrow: 0, next3Days: 0, next7Days: 0, later: 0 },
+      items: truncatedAlreadySyncedItems,
+      dueCount: 29,
+      newCount: 0,
+      totalAvailable: 29,
+      bookmarkedCount: 31,
+      upcomingReviews: { laterToday: 2, tomorrow: 0, next3Days: 0, next7Days: 0, later: 0 },
     }
-    const truncatedTracker = createRecallRemovalTracker()
-    truncatedTracker.recordRemoval('exam-1', 'q-outside', {
-      bucket: 'new',
+
+    const tracker = createRecallRemovalTracker()
+    const reqSeq = tracker.beginQueueRequest()
+    // q-1 was removed in this session and already persisted on the server before GET read Notion
+    tracker.recordRemoval('exam-1', 'q-1', {
+      bucket: 'due',
       fromCurrentSession: true,
     })
-    const truncReq = truncatedTracker.beginQueueRequest()
-    const filteredTruncated = filterPendingRemovedRecallQueue(
-      truncatedResponse,
-      truncatedTracker.getExcludedEntriesForRequest(truncReq)
-    )
-    assert.equal(filteredTruncated.dueCount, 2)
-    assert.equal(filteredTruncated.newCount, 0)
-    assert.equal(filteredTruncated.totalAvailable, 2)
-    assert.equal(filteredTruncated.bookmarkedCount, 3)
 
-    // Non-truncated batch where server already applied removal must NOT double-decrement
-    const alreadySyncedResponse: RecallQueueResponse = {
-      items: [makeQueueItem('q-1', 'exam-1', 'due')],
-      dueCount: 1,
-      newCount: 0,
-      totalAvailable: 1,
-      bookmarkedCount: 1,
-      upcomingReviews: { laterToday: 0, tomorrow: 0, next3Days: 0, next7Days: 0, later: 0 },
-    }
-    const filteredAlreadySynced = filterPendingRemovedRecallQueue(
-      alreadySyncedResponse,
-      truncatedTracker.getExcludedEntriesForRequest(truncReq)
+    const filteredOnlyAlreadySynced = filterPendingRemovedRecallQueue(
+      truncatedResponse,
+      tracker.getExcludedEntriesForRequest(reqSeq)
     )
-    assert.equal(filteredAlreadySynced.dueCount, 1)
-    assert.equal(filteredAlreadySynced.newCount, 0)
-    assert.equal(filteredAlreadySynced.bookmarkedCount, 1)
+    // Counts must remain exact (29 due / 31 bookmarked) — never double-decremented to 28 / 30
+    assert.equal(filteredOnlyAlreadySynced.items.length, 25)
+    assert.equal(filteredOnlyAlreadySynced.dueCount, 29)
+    assert.equal(filteredOnlyAlreadySynced.newCount, 0)
+    assert.equal(filteredOnlyAlreadySynced.totalAvailable, 29)
+    assert.equal(filteredOnlyAlreadySynced.bookmarkedCount, 31)
+
+    // When another excluded card (q-2) IS still present in the truncated batch, ONLY q-2 is decremented
+    tracker.recordRemoval('exam-1', 'q-2', {
+      bucket: 'due',
+      fromCurrentSession: true,
+    })
+    const filteredMixed = filterPendingRemovedRecallQueue(
+      truncatedResponse,
+      tracker.getExcludedEntriesForRequest(reqSeq)
+    )
+    assert.equal(filteredMixed.items.length, 24)
+    assert.equal(filteredMixed.items[0]?.prompt.questionId, 'q-3')
+    assert.equal(filteredMixed.dueCount, 28)
+    assert.equal(filteredMixed.totalAvailable, 28)
+    assert.equal(filteredMixed.bookmarkedCount, 30)
   })
 
   it('tracks subtle pending sync state separately from sync failures and clears cleanly once confirmed', () => {
