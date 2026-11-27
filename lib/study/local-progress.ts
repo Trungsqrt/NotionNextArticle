@@ -31,6 +31,8 @@ export interface StorageLike {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
   removeItem(key: string): void
+  readonly length?: number
+  key?(index: number): string | null
 }
 
 export type StoredPracticeFilter = 'all' | 'incorrect' | 'bookmarked'
@@ -423,6 +425,79 @@ export function readPendingBookmarkOps(
     count += 1
   }
   return result
+}
+
+export interface PendingBookmarkExamEntry {
+  examId: string
+  ops: Record<string, PendingBookmarkOp>
+}
+
+const MAX_SCANNED_STORAGE_KEYS = 2000
+
+/**
+ * Discovers all exams with persisted pending bookmark operations for the
+ * authenticated `userId`, independently of any loaded recall queue batch.
+ * Strictly isolated to `userId`'s key prefix; never inspects other users' keys.
+ */
+export function listPendingBookmarkExams(
+  userId: string,
+  storage: StorageLike | null = getDefaultStorage(),
+  options?: { examIdFilter?: string }
+): PendingBookmarkExamEntry[] {
+  const cleanUser = normalizeId(userId)
+  if (!cleanUser || !storage) return []
+
+  const cleanFilter = normalizeId(options?.examIdFilter)
+  if (cleanFilter) {
+    const ops = readPendingBookmarkOps(cleanUser, cleanFilter, storage)
+    return Object.keys(ops).length > 0 ? [{ examId: cleanFilter, ops }] : []
+  }
+
+  if (typeof storage.length !== 'number' || typeof storage.key !== 'function') {
+    return []
+  }
+
+  const prefix = `study-v1:u:${encodeURIComponent(cleanUser)}:bookmark-pending:`
+  const results: PendingBookmarkExamEntry[] = []
+  const seenExams = new Set<string>()
+
+  let totalKeys = 0
+  try {
+    totalKeys = Math.min(Math.max(0, storage.length), MAX_SCANNED_STORAGE_KEYS)
+  } catch {
+    return []
+  }
+
+  for (let i = 0; i < totalKeys; i++) {
+    let rawKey: string | null = null
+    try {
+      rawKey = storage.key(i)
+    } catch {
+      continue
+    }
+    if (!rawKey || !rawKey.startsWith(prefix)) continue
+
+    const encodedExamId = rawKey.slice(prefix.length)
+    if (!encodedExamId) continue
+
+    let decodedExamId = ''
+    try {
+      decodedExamId = decodeURIComponent(encodedExamId)
+    } catch {
+      continue
+    }
+
+    const cleanExamId = normalizeId(decodedExamId)
+    if (!cleanExamId || seenExams.has(cleanExamId)) continue
+    seenExams.add(cleanExamId)
+
+    const ops = readPendingBookmarkOps(cleanUser, cleanExamId, storage)
+    if (Object.keys(ops).length > 0) {
+      results.push({ examId: cleanExamId, ops })
+    }
+  }
+
+  return results
 }
 
 export function writePendingBookmarkOps(

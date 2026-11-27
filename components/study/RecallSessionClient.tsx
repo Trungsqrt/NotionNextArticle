@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams } from 'next/navigation'
 import type { StudyRating } from '../../lib/study/types'
 import type {
@@ -13,6 +13,21 @@ import StudyRichText from './StudyRichText'
 import { StudyLink } from './StudyNavigationContext'
 import { RecallSessionSkeleton, ZenPendingDot } from './StudySkeletons'
 import { shouldIgnoreStudyShortcut } from '../../lib/study/keyboard'
+import {
+  createBookmarkSyncController,
+  type BookmarkSyncController,
+  type BookmarkSyncSnapshot,
+} from '../../lib/study/bookmark-sync'
+import { listPendingBookmarkExams } from '../../lib/study/local-progress'
+import {
+  applyOptimisticRecallRemoval,
+  computeRecallQueueFetchLimit,
+  createRecallRemovalTracker,
+  filterPendingRemovedRecallQueue,
+  summarizeRecallBookmarkSync,
+  type RecallRemovalEntry,
+  type RecallRemovalTracker,
+} from '../../lib/study/recall-removal'
 
 type QueueStatus = 'loading' | 'refreshing' | 'error' | 'loaded'
 
@@ -122,7 +137,54 @@ function UpcomingReviewsSummary({
   )
 }
 
-export default function RecallSessionClient() {
+function BookmarkSyncPendingNotice() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="inline-flex items-center justify-center gap-2 rounded-zen px-3.5 py-2 bg-rice-paper-50/90 dark:bg-tea-slate-200/70 border border-rice-paper-400/70 dark:border-tea-slate-50/50 text-xs text-ink-500 dark:text-sage-400 animate-study-feedback"
+    >
+      <ZenPendingDot />
+      <span>Syncing bookmark changes…</span>
+    </div>
+  )
+}
+
+function BookmarkSyncNotice({
+  errorMessage,
+  isSaving,
+  onRetry,
+}: {
+  errorMessage: string | null
+  isSaving: boolean
+  onRetry: () => void
+}) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex flex-wrap items-center justify-between gap-2.5 rounded-zen px-3.5 py-2.5 bg-rice-paper-50/90 dark:bg-tea-slate-200/70 border border-earth-rust/35 dark:border-rose-400/35 text-xs text-[#7A4932] dark:text-[#E2BBA2] text-left animate-study-feedback"
+    >
+      <span className="inline-flex items-center gap-2 min-w-0">
+        <span
+          className="inline-block w-1.5 h-1.5 rounded-full bg-earth-rust shrink-0"
+          aria-hidden="true"
+        />
+        <span>{errorMessage || 'Bookmark removal not synced yet.'}</span>
+      </span>
+      <button
+        type="button"
+        disabled={isSaving}
+        onClick={onRetry}
+        className="px-2.5 py-1 rounded-zen font-medium bg-rice-paper-50 dark:bg-tea-slate-300/70 text-ink-700 dark:text-sage-100 border border-earth-rust/40 hover:border-matcha-500 transition-colors duration-150 motion-reduce:transition-none disabled:opacity-50 shrink-0"
+      >
+        {isSaving ? 'Retrying…' : 'Retry'}
+      </button>
+    </div>
+  )
+}
+
+export default function RecallSessionClient({ userId }: { userId: string }) {
   const searchParams = useSearchParams()
   const examIdFilter = searchParams?.get('examId') || ''
 
@@ -138,6 +200,9 @@ export default function RecallSessionClient() {
   const [loadingReveal, setLoadingReveal] = useState(false)
   const [submittingRating, setSubmittingRating] = useState<StudyRating | null>(null)
   const [error, setError] = useState('')
+  const [bookmarkSyncByExam, setBookmarkSyncByExam] = useState<
+    Record<string, BookmarkSyncSnapshot>
+  >({})
 
   // Stable eventId per card view so accidental double-clicks or retries stay idempotent
   const currentEventIdRef = useRef<string>(generateEventId())
@@ -148,6 +213,61 @@ export default function RecallSessionClient() {
   const actionSeqRef = useRef(0)
   const revealLockRef = useRef(false)
   const rateLockRef = useRef(false)
+  // Per-exam synchronized bookmark controllers (cards in Active Recall may span multiple exams)
+  const bookmarkControllersRef = useRef<Map<string, BookmarkSyncController>>(new Map())
+  const removalTrackerRef = useRef<RecallRemovalTracker>(createRecallRemovalTracker())
+
+  const getOrCreateBookmarkController = useCallback(
+    (examId: string): BookmarkSyncController => {
+      const existing = bookmarkControllersRef.current.get(examId)
+      if (existing) return existing
+
+      const controller = createBookmarkSyncController({
+        userId,
+        examId,
+        onStateChange: (snapshot) => {
+          removalTrackerRef.current.reconcileSyncSnapshot(examId, snapshot)
+          setBookmarkSyncByExam((prev) => ({
+            ...prev,
+            [examId]: snapshot,
+          }))
+        },
+      })
+      bookmarkControllersRef.current.set(examId, controller)
+      const initialSnapshot = controller.getSnapshot()
+      removalTrackerRef.current.reconcileSyncSnapshot(examId, initialSnapshot)
+      setBookmarkSyncByExam((prev) => ({
+        ...prev,
+        [examId]: initialSnapshot,
+      }))
+      return controller
+    },
+    [userId]
+  )
+
+  const recoverPendingBookmarkOps = useCallback((): RecallRemovalEntry[] => {
+    const scopeFilter = examIdFilter || undefined
+    const persistedExams = listPendingBookmarkExams(userId, undefined, {
+      examIdFilter: scopeFilter,
+    })
+    const discoveredRemovals: RecallRemovalEntry[] = []
+
+    for (const { examId, ops } of persistedExams) {
+      for (const [qId, op] of Object.entries(ops)) {
+        if (op.action === 'remove') {
+          removalTrackerRef.current.recordRemoval(examId, qId)
+          discoveredRemovals.push({ examId, questionId: qId })
+        }
+      }
+      const controller = getOrCreateBookmarkController(examId)
+      const snap = controller.getSnapshot()
+      if (snap.status === 'idle' && snap.pendingCount > 0) {
+        void controller.flushNow()
+      }
+    }
+
+    return discoveredRemovals
+  }, [userId, examIdFilter, getOrCreateBookmarkController])
 
   const loadQueue = useCallback(async () => {
     queueAbortRef.current?.abort()
@@ -160,12 +280,23 @@ export default function RecallSessionClient() {
     const controller = new AbortController()
     queueAbortRef.current = controller
     const seq = ++queueSeqRef.current
+    const scopeFilter = examIdFilter || undefined
+
+    // Discover & recover any persisted pending bookmark operations independently of the queue batch
+    recoverPendingBookmarkOps()
+
+    const requestSeq = removalTrackerRef.current.beginQueueRequest()
+    const excludedBeforeFetch = removalTrackerRef.current.getExcludedEntriesForRequest(
+      requestSeq,
+      scopeFilter
+    )
+    const fetchLimit = computeRecallQueueFetchLimit(excludedBeforeFetch.length)
 
     setQueueStatus(hasLoadedOnceRef.current ? 'refreshing' : 'loading')
     setError('')
 
     try {
-      const params = new URLSearchParams({ limit: '25' })
+      const params = new URLSearchParams({ limit: String(fetchLimit) })
       if (examIdFilter) params.set('examId', examIdFilter)
       const res = await fetch(`/api/study/recall/queue?${params.toString()}`, {
         method: 'GET',
@@ -173,8 +304,23 @@ export default function RecallSessionClient() {
         signal: controller.signal,
       })
       if (!res.ok) throw new Error('Unable to load due recall cards.')
-      const data = (await res.json()) as RecallQueueResponse
+      const rawData = (await res.json()) as RecallQueueResponse
       if (seq !== queueSeqRef.current) return
+
+      // Combine tracker exclusions (including removals confirmed after this GET started)
+      // with any pending removals currently stored locally across relevant exams.
+      const trackerExcluded = removalTrackerRef.current.getExcludedEntriesForRequest(
+        requestSeq,
+        scopeFilter
+      )
+      const latestPersistedRemovals = recoverPendingBookmarkOps()
+      const mergedExcluded: RecallRemovalEntry[] = [
+        ...latestPersistedRemovals,
+        ...trackerExcluded,
+      ]
+      const data = filterPendingRemovedRecallQueue(rawData, mergedExcluded, {
+        examIdFilter: scopeFilter,
+      })
 
       hasLoadedOnceRef.current = true
       setQueue(data.items)
@@ -194,7 +340,42 @@ export default function RecallSessionClient() {
       setError(err instanceof Error ? err.message : 'Failed to load recall queue.')
       setQueueStatus(hasLoadedOnceRef.current ? 'loaded' : 'error')
     }
-  }, [examIdFilter])
+  }, [examIdFilter, recoverPendingBookmarkOps])
+
+  // Clean up per-exam bookmark controllers and removal tracker on unmount or user change
+  useEffect(() => {
+    const controllers = bookmarkControllersRef.current
+    const tracker = removalTrackerRef.current
+    return () => {
+      for (const ctrl of controllers.values()) {
+        ctrl.destroy()
+      }
+      controllers.clear()
+      tracker.reset()
+      setBookmarkSyncByExam({})
+    }
+  }, [userId])
+
+  // Recover pending bookmark operations across all relevant exams independently of the recall queue
+  useEffect(() => {
+    recoverPendingBookmarkOps()
+  }, [recoverPendingBookmarkOps])
+
+  // Passive online recovery (no polling): retry unsynced bookmark operations once connectivity returns
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    function handleOnline() {
+      recoverPendingBookmarkOps()
+      for (const ctrl of bookmarkControllersRef.current.values()) {
+        const snap = ctrl.getSnapshot()
+        if (snap.status === 'not_synced' || snap.pendingCount > 0) {
+          void ctrl.retry()
+        }
+      }
+    }
+    window.addEventListener('online', handleOnline)
+    return () => window.removeEventListener('online', handleOnline)
+  }, [recoverPendingBookmarkOps])
 
   useEffect(() => {
     hasLoadedOnceRef.current = false
@@ -329,6 +510,64 @@ export default function RecallSessionClient() {
     [currentItem, currentIdx, queue.length, revealed, submittingRating, queueStatus, loadQueue]
   )
 
+  const handleRemoveFromRecall = useCallback(() => {
+    if (!currentItem || submittingRating || rateLockRef.current || queueStatus === 'refreshing') {
+      return
+    }
+
+    // Cancel any in-flight reveal for the removed card without touching FSRS review state
+    actionAbortRef.current?.abort()
+    actionSeqRef.current += 1
+    revealLockRef.current = false
+    setLoadingReveal(false)
+
+    const result = applyOptimisticRecallRemoval({ queue, currentIdx, counts })
+    if (!result.removedItem) return
+
+    setQueue(result.queue)
+    setCurrentIdx(result.currentIdx)
+    setCounts(result.counts)
+    setShowChoices(false)
+    setRevealed(null)
+    setError('')
+    currentEventIdRef.current = generateEventId()
+
+    const { examId, questionId } = result.removedItem.prompt
+    removalTrackerRef.current.recordRemoval(examId, questionId, {
+      bucket: result.removedItem.bucket,
+      fromCurrentSession: true,
+    })
+    const syncController = getOrCreateBookmarkController(examId)
+    syncController.enqueue(questionId, 'remove')
+
+    if (result.shouldRefreshMoreCards) {
+      void loadQueue()
+    }
+  }, [
+    currentItem,
+    submittingRating,
+    queueStatus,
+    queue,
+    currentIdx,
+    counts,
+    getOrCreateBookmarkController,
+    loadQueue,
+  ])
+
+  const handleRetryBookmarkSync = useCallback(() => {
+    for (const ctrl of bookmarkControllersRef.current.values()) {
+      const snap = ctrl.getSnapshot()
+      if (snap.status === 'not_synced' || snap.pendingCount > 0) {
+        void ctrl.retry()
+      }
+    }
+  }, [])
+
+  const bookmarkSyncSummary = useMemo(
+    () => summarizeRecallBookmarkSync(Object.values(bookmarkSyncByExam)),
+    [bookmarkSyncByExam]
+  )
+
   // Keyboard shortcuts: O = show choices, Enter/Space = reveal answer, 1-4 = Again/Hard/Good/Easy
   useEffect(() => {
     if (!currentItem || queueStatus !== 'loaded') return
@@ -400,7 +639,16 @@ export default function RecallSessionClient() {
   // Empty state 1: No bookmarked questions exist
   if (!currentItem && counts.bookmarked === 0) {
     return (
-      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-14 text-center animate-study-feedback">
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-14 text-center space-y-4 animate-study-feedback">
+        {bookmarkSyncSummary.hasUnsyncedError ? (
+          <BookmarkSyncNotice
+            errorMessage={bookmarkSyncSummary.errorMessage}
+            isSaving={bookmarkSyncSummary.isSaving}
+            onRetry={handleRetryBookmarkSync}
+          />
+        ) : bookmarkSyncSummary.hasPendingSync ? (
+          <BookmarkSyncPendingNotice />
+        ) : null}
         <div className="rounded-card p-8 sm:p-10 bg-rice-paper-50/90 dark:bg-tea-slate-200/65 border border-rice-paper-400/70 dark:border-tea-slate-50/50 shadow-zen-sm space-y-5">
           <div className="space-y-2">
             <p className="text-[0.7rem] uppercase tracking-[0.2em] font-medium text-matcha-600 dark:text-matcha-400 m-0">
@@ -437,22 +685,40 @@ export default function RecallSessionClient() {
     )
   }
 
-  // Empty state 2: Bookmarks exist, but none are currently due or new
+  // Empty state 2: Bookmarks exist, but no cards are currently displayed in the active batch
   if (!currentItem) {
+    const remainingDueOrNew = counts.due + counts.newCards
+    const hasRemainingOutsideBatch = remainingDueOrNew > 0
+
     return (
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-12 text-center space-y-6 animate-study-feedback">
+        {bookmarkSyncSummary.hasUnsyncedError ? (
+          <BookmarkSyncNotice
+            errorMessage={bookmarkSyncSummary.errorMessage}
+            isSaving={bookmarkSyncSummary.isSaving}
+            onRetry={handleRetryBookmarkSync}
+          />
+        ) : bookmarkSyncSummary.hasPendingSync ? (
+          <BookmarkSyncPendingNotice />
+        ) : null}
         <div className="rounded-card p-8 bg-rice-paper-50/90 dark:bg-tea-slate-200/65 border border-rice-paper-400/70 dark:border-tea-slate-50/50 shadow-zen-sm space-y-5">
           <div className="space-y-2">
             <p className="text-[0.7rem] uppercase tracking-[0.2em] font-medium text-matcha-600 dark:text-matcha-400 m-0">
               {counts.bookmarked} Bookmarked {counts.bookmarked === 1 ? 'Card' : 'Cards'}
             </p>
             <h1 className="font-serif text-2xl font-medium text-ink-700 dark:text-sage-100 m-0">
-              {completedCount > 0 ? 'Session Complete' : 'All Caught Up'}
+              {hasRemainingOutsideBatch
+                ? 'More Cards Remaining'
+                : completedCount > 0
+                  ? 'Session Complete'
+                  : 'All Caught Up'}
             </h1>
             <p className="text-[0.9rem] text-ink-500 dark:text-sage-400 m-0">
-              {completedCount > 0
-                ? `You reviewed ${completedCount} bookmarked card${completedCount === 1 ? '' : 's'} with FSRS-6 scheduling. Your next due dates have been saved.`
-                : 'None of your bookmarked cards are due right now. Check back when your next scheduled reviews arrive.'}
+              {hasRemainingOutsideBatch
+                ? `${remainingDueOrNew} additional bookmarked card${remainingDueOrNew === 1 ? ' is' : 's are'} ready outside this batch. Let pending bookmark changes finish syncing, then reload to continue.`
+                : completedCount > 0
+                  ? `You reviewed ${completedCount} bookmarked card${completedCount === 1 ? '' : 's'} with FSRS-6 scheduling. Your next due dates have been saved.`
+                  : 'None of your bookmarked cards are due right now. Check back when your next scheduled reviews arrive.'}
             </p>
           </div>
 
@@ -495,7 +761,13 @@ export default function RecallSessionClient() {
               className="inline-flex items-center gap-2 px-4 py-2 rounded-zen text-[0.84rem] font-medium bg-matcha-500 hover:bg-matcha-600 text-white transition-colors duration-200 motion-reduce:transition-none disabled:opacity-60"
             >
               {isRefreshing && <ZenPendingDot />}
-              <span>{isRefreshing ? 'Checking…' : 'Check for Due Cards'}</span>
+              <span>
+                {isRefreshing
+                  ? 'Checking…'
+                  : hasRemainingOutsideBatch
+                    ? 'Load Remaining Cards'
+                    : 'Check for Due Cards'}
+              </span>
             </button>
             <StudyLink
               href={practiceHref}
@@ -552,6 +824,14 @@ export default function RecallSessionClient() {
         </span>
       </div>
 
+      {bookmarkSyncSummary.hasUnsyncedError && (
+        <BookmarkSyncNotice
+          errorMessage={bookmarkSyncSummary.errorMessage}
+          isSaving={bookmarkSyncSummary.isSaving}
+          onRetry={handleRetryBookmarkSync}
+        />
+      )}
+
       {error && (
         <div
           role="alert"
@@ -577,11 +857,23 @@ export default function RecallSessionClient() {
           isRefreshing ? 'opacity-65' : 'opacity-100',
         ].join(' ')}
       >
-        <div className="flex items-center justify-between text-xs text-ink-400 dark:text-sage-500">
-          <span className="font-mono">{prompt.questionId}</span>
-          <span>
-            {prompt.questionType === 'multi_select' ? 'Multi-select' : 'Single-choice'}
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-400 dark:text-sage-500">
+          <div className="flex items-center gap-2">
+            <span className="font-mono">{prompt.questionId}</span>
+            <span>·</span>
+            <span>
+              {prompt.questionType === 'multi_select' ? 'Multi-select' : 'Single-choice'}
+            </span>
+          </div>
+          <button
+            type="button"
+            disabled={Boolean(submittingRating) || isRefreshing}
+            onClick={handleRemoveFromRecall}
+            title="Remove this question from Active Recall without deleting its review history"
+            className="px-2.5 py-1 rounded-zen border border-rice-paper-400/70 dark:border-tea-slate-50/60 text-xs font-medium text-ink-500 dark:text-sage-400 hover:border-earth-rust/50 hover:text-[#7A4932] dark:hover:border-rose-400/50 dark:hover:text-[#E2BBA2] transition-colors duration-150 motion-reduce:transition-none disabled:opacity-45"
+          >
+            Remove from Recall
+          </button>
         </div>
 
         <StudyRichText
