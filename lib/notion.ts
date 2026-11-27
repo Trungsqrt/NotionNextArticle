@@ -1,0 +1,2928 @@
+import { cache } from 'react'
+import {
+  Client,
+  type ListBlockChildrenResponse,
+  type PageObjectResponse,
+  type RichTextItemResponse,
+} from '@notionhq/client'
+import { NotionRenderer, createBlockRenderer } from '@notion-render/client'
+import type { Block as NotionRenderClientBlock } from '@notion-render/client/dist/types'
+import hljsPlugin from '@notion-render/hljs-plugin'
+import { DEFAULT_LOCALE, SUPPORTED_LOCALES, normalizeLocale } from './locales'
+import {
+  normalizeNotionId,
+  isNotionNotFoundError,
+  parsePublicNotionId,
+  executePublicDataSourceQueryWithRecovery,
+} from './notion-datasource-recovery'
+import type {
+  ArticleTranslationsMap,
+  NotionArticlePage,
+  NotionArticleSummary,
+  NotionIcon,
+  NotionPageParent,
+  NotionRenderBlock,
+  NotionSliderImage,
+  NotionTranslationMeta,
+  RefreshedImageUrl,
+  SiblingNavPage,
+  SiblingPagesResult,
+  TranslationMappingEntry,
+  TranslationMappingsResult,
+} from './notion-types'
+
+// ── Internal Cache & Notion Structural Types ──────────────────────────────────
+
+interface NotionCacheEntry<T = unknown> {
+  timestamp: number
+  data: T
+}
+
+interface ImageRefreshCacheEntry {
+  url: string
+  expiryTime: string | null
+  timestamp: number
+}
+
+declare global {
+  var __notionCache: Map<string, NotionCacheEntry> | undefined
+  var __notionI18nWarnings: Set<string> | undefined
+  var __notionImageRefreshInFlight: Map<string, Promise<RefreshedImageUrl | null>> | undefined
+}
+
+interface RichTextAnnotationsLike {
+  bold?: boolean
+  italic?: boolean
+  strikethrough?: boolean
+  underline?: boolean
+  code?: boolean
+  color?: string
+}
+
+interface RichTextLike {
+  plain_text?: string
+  href?: string | null
+  annotations?: RichTextAnnotationsLike
+}
+
+interface NotionSelectOptionLike {
+  name?: string
+  color?: string
+}
+
+interface NotionDateLike {
+  start?: string
+  end?: string | null
+}
+
+interface NotionFormulaLike {
+  type?: string
+  string?: string | null
+  number?: number | null
+  boolean?: boolean | null
+  date?: NotionDateLike | null
+}
+
+interface NotionRollupItemLike {
+  type?: string
+  title?: RichTextLike[]
+  rich_text?: RichTextLike[]
+  select?: NotionSelectOptionLike | null
+  relation?: Array<{ id?: string }>
+}
+
+interface NotionRollupLike {
+  type?: string
+  array?: NotionRollupItemLike[]
+  title?: RichTextLike[]
+  rich_text?: RichTextLike[]
+}
+
+interface NotionPropertyLike {
+  type?: string
+  title?: RichTextLike[]
+  rich_text?: RichTextLike[]
+  select?: NotionSelectOptionLike | null
+  multi_select?: NotionSelectOptionLike[]
+  status?: NotionSelectOptionLike | null
+  number?: number | null
+  date?: NotionDateLike | null
+  url?: string | null
+  checkbox?: boolean
+  email?: string | null
+  phone_number?: string | null
+  formula?: NotionFormulaLike | null
+  rollup?: NotionRollupLike | null
+  relation?: Array<{ id?: string }>
+  created_time?: string
+  last_edited_time?: string
+  [key: string]: unknown
+}
+
+type NotionPropertiesMap = Record<string, NotionPropertyLike | undefined>
+
+interface NotionFileLike {
+  url?: string
+  expiry_time?: string | null
+}
+
+interface NotionIconLike {
+  type?: string
+  emoji?: string
+  file?: NotionFileLike | null
+  external?: { url?: string } | null
+}
+
+interface NotionCoverLike {
+  type?: string
+  file?: NotionFileLike | null
+  external?: { url?: string } | null
+}
+
+interface NotionParentLike {
+  type?: string
+  database_id?: string
+  data_source_id?: string
+  page_id?: string
+  block_id?: string
+  workspace?: boolean
+}
+
+interface NotionPageLike {
+  id: string
+  archived?: boolean
+  in_trash?: boolean
+  properties?: NotionPropertiesMap
+  cover?: NotionCoverLike | null
+  icon?: NotionIconLike | string | null
+  parent?: NotionParentLike | null
+  created_time?: string
+  last_edited_time?: string
+}
+
+interface NotionDatabaseLike {
+  id?: string
+  archived?: boolean
+  in_trash?: boolean
+  title?: RichTextLike[]
+  data_sources?: Array<{ id?: string }>
+  parent?: NotionParentLike | null
+}
+
+interface NotionDataSourceLike {
+  id?: string
+}
+
+interface NotionQueryResultLike {
+  results?: NotionPageLike[]
+  has_more?: boolean
+  next_cursor?: string | null
+}
+
+interface NotionSearchResultLike {
+  results?: NotionPageLike[]
+  has_more?: boolean
+  next_cursor?: string | null
+}
+
+interface NotionBlockLike {
+  id: string
+  type: string
+  has_children?: boolean
+  archived?: boolean
+  in_trash?: boolean
+  parent?: NotionParentLike | null
+  children?: NotionBlockLike[]
+  database_rows?: NotionPageLike[]
+  page_info?: NotionPageLike
+  images?: NotionSliderImage[]
+  list_index?: number
+  icon?: NotionIconLike | null
+  child_database?: { title?: string }
+  child_page?: { title?: string }
+  link_to_page?: { type?: string; database_id?: string; page_id?: string }
+  callout?: { icon?: NotionIconLike | null; rich_text?: RichTextLike[]; color?: string }
+  heading_1?: { rich_text?: RichTextLike[]; is_toggleable?: boolean; color?: string }
+  heading_2?: { rich_text?: RichTextLike[]; is_toggleable?: boolean; color?: string }
+  heading_3?: { rich_text?: RichTextLike[]; is_toggleable?: boolean; color?: string }
+  heading_4?: { rich_text?: RichTextLike[]; is_toggleable?: boolean; color?: string }
+  heading_5?: { rich_text?: RichTextLike[]; is_toggleable?: boolean; color?: string }
+  heading_6?: { rich_text?: RichTextLike[]; is_toggleable?: boolean; color?: string }
+  image?: { type?: string; file?: NotionFileLike | null; external?: { url?: string } | null; caption?: RichTextLike[] }
+  video?: { type?: string; file?: NotionFileLike | null; external?: { url?: string } | null; caption?: RichTextLike[] }
+  bulleted_list_item?: { rich_text?: RichTextLike[] }
+  numbered_list_item?: { rich_text?: RichTextLike[] }
+  toggle?: { rich_text?: RichTextLike[]; color?: string }
+  paragraph?: { rich_text?: RichTextLike[] }
+  quote?: { rich_text?: RichTextLike[] }
+  code?: { rich_text?: RichTextLike[]; language?: string; caption?: RichTextLike[] }
+  table_row?: { cells?: RichTextLike[][] }
+  table?: { has_column_header?: boolean }
+  [key: string]: unknown
+}
+
+type RendererBlock<T extends string> = NotionRenderClientBlock<T, unknown> & NotionBlockLike
+
+interface QueryDatabaseOptions extends Record<string, unknown> {
+  __ttl?: number
+  __isDataSourceId?: boolean
+  __databaseId?: string
+  page_size?: number
+  start_cursor?: string
+  sorts?: Array<{ property: string; direction: 'ascending' | 'descending' }>
+}
+
+interface LegacyDatabasesWithQuery {
+  query: (args: Record<string, unknown>) => Promise<NotionQueryResultLike>
+}
+
+function hasLegacyDatabaseQuery(databases: unknown): databases is LegacyDatabasesWithQuery {
+  return (
+    typeof databases === 'object' &&
+    databases !== null &&
+    'query' in databases &&
+    typeof (databases as { query?: unknown }).query === 'function'
+  )
+}
+
+function getNotionErrorStatusOrCode(err: unknown): string | number | undefined {
+  if (!err || typeof err !== 'object') return undefined
+  const candidate = err as { status?: unknown; code?: unknown }
+  if (typeof candidate.status === 'number' || typeof candidate.status === 'string') {
+    return candidate.status
+  }
+  if (typeof candidate.code === 'string' || typeof candidate.code === 'number') {
+    return candidate.code
+  }
+  return undefined
+}
+
+const CACHE_TTL = 50 * 60 * 1000 // 50 minutes to safely avoid Notion's 1-hour S3 expiration
+const MAPPINGS_CACHE_TTL = 10 * 60 * 1000 // 10 minutes cache for dynamic translation mappings
+const MAPPINGS_CACHE_KEY = 'translation-mapping-db'
+const DEFAULT_MAPPING_DB_ID = '415ac39b-0efb-8050-9ab4-ecb760e41cc5'
+
+function getCache<T>(key: string, maxAge: number = CACHE_TTL): T | null {
+  if (!globalThis.__notionCache) globalThis.__notionCache = new Map()
+  const cached = globalThis.__notionCache.get(key)
+  if (cached && Date.now() - cached.timestamp < maxAge) {
+    return cached.data as T
+  }
+  return null
+}
+
+function setCache<T>(key: string, data: T): void {
+  if (!globalThis.__notionCache) globalThis.__notionCache = new Map()
+  globalThis.__notionCache.set(key, { timestamp: Date.now(), data })
+}
+
+const notion = new Client({
+  auth: process.env.NOTION_API_SECRET || process.env.NOTION_TOKEN || process.env.NOTION_TOKEN_V2,
+})
+
+const renderer = new NotionRenderer({
+  client: notion,
+})
+renderer.use(hljsPlugin({}))
+
+function escapeHtml(str: unknown): string {
+  if (!str) return ''
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+/**
+ * Formats an ISO date string into a human-readable format, e.g. "06 Aug 2026".
+ */
+function formatDate(isoStr: string | null | undefined): string {
+  if (!isoStr) return ''
+  try {
+    return new Date(isoStr).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    })
+  } catch {
+    return isoStr
+  }
+}
+
+const NOTION_TEXT_COLORS: Record<string, string> = {
+  gray: 'text-neutral-600 dark:text-neutral-400',
+  gray_background: 'text-neutral-600 dark:text-neutral-400',
+  brown: 'text-amber-800 dark:text-amber-300',
+  brown_background: 'text-amber-800 dark:text-amber-300',
+  orange: 'text-orange-700 dark:text-orange-300',
+  orange_background: 'text-orange-700 dark:text-orange-300',
+  yellow: 'text-yellow-700 dark:text-yellow-300',
+  yellow_background: 'text-yellow-700 dark:text-yellow-300',
+  green: 'text-green-700 dark:text-green-300',
+  green_background: 'text-green-700 dark:text-green-300',
+  blue: 'text-blue-700 dark:text-blue-300',
+  blue_background: 'text-blue-700 dark:text-blue-300',
+  purple: 'text-purple-700 dark:text-purple-300',
+  purple_background: 'text-purple-700 dark:text-purple-300',
+  pink: 'text-pink-700 dark:text-pink-300',
+  pink_background: 'text-pink-700 dark:text-pink-300',
+  red: 'text-red-700 dark:text-red-300',
+  red_background: 'text-red-700 dark:text-red-300',
+}
+
+function getNotionTextColorClasses(color: string | null | undefined): string {
+  if (!color || color === 'default') return ''
+  return NOTION_TEXT_COLORS[color] || ''
+}
+
+/**
+ * Renders an array of Notion rich_text objects into styled HTML string with support
+ * for bold, italic, strikethrough, underline, code, and links.
+ */
+function renderRichText(richTextArray: RichTextLike[] | RichTextItemResponse[] | undefined): string {
+  if (!Array.isArray(richTextArray) || richTextArray.length === 0) return ''
+  return richTextArray
+    .map((t) => {
+      let content = escapeHtml(t.plain_text || '')
+      if (!content) return ''
+      content = content.replace(/\r\n|\n/g, '<br />')
+      if (t.href) {
+        content = `<a href="${escapeHtml(t.href)}" target="_blank" rel="noopener noreferrer" class="text-matcha-600 dark:text-matcha-300 hover:underline">${content}</a>`
+      }
+      if (t.annotations?.bold) {
+        content = `<strong class="font-semibold">${content}</strong>`
+      }
+      if (t.annotations?.italic) {
+        content = `<em class="italic">${content}</em>`
+      }
+      if (t.annotations?.strikethrough) {
+        content = `<s class="line-through">${content}</s>`
+      }
+      if (t.annotations?.underline) {
+        content = `<u class="underline">${content}</u>`
+      }
+      if (t.annotations?.color && t.annotations.color !== 'default') {
+        const textColor = getNotionTextColorClasses(t.annotations.color)
+        if (textColor) {
+          content = `<span class="${textColor}">${content}</span>`
+        }
+      }
+      if (t.annotations?.code) {
+        content = `<code class="text-rose-500 bg-rose-50/80 dark:text-matcha-300 dark:bg-tea-slate-50/80 dark:border dark:border-tea-slate-50/50 px-1.5 py-0.5 rounded-md font-mono text-[0.9em]">${content}</code>`
+      }
+      return content
+    })
+    .join('')
+}
+
+/**
+ * Returns a plain-text value for a Notion property.
+ * Used for isEmpty checks and fallback rendering.
+ */
+function getPropertyPlainText(prop: NotionPropertyLike | null | undefined): string {
+  if (!prop) return ''
+  const type = prop.type
+  switch (type) {
+    case 'title':
+      return prop.title?.map((t) => t.plain_text || '').join('') || ''
+    case 'rich_text':
+      return prop.rich_text?.map((t) => t.plain_text || '').join('') || ''
+    case 'select':
+      return prop.select?.name || ''
+    case 'multi_select':
+      return prop.multi_select?.map((item) => item.name || '').join(', ') || ''
+    case 'number':
+      return prop.number !== undefined && prop.number !== null ? String(prop.number) : ''
+    case 'date':
+      if (!prop.date) return ''
+      return prop.date.end ? `${prop.date.start || ''} → ${prop.date.end}` : prop.date.start || ''
+    case 'url':
+      return prop.url || ''
+    case 'checkbox':
+      return prop.checkbox !== undefined ? (prop.checkbox ? '✓' : '✗') : ''
+    case 'status':
+      return prop.status?.name || ''
+    case 'email':
+      return prop.email || ''
+    case 'phone_number':
+      return prop.phone_number || ''
+    case 'formula':
+      if (prop.formula?.type === 'string') return prop.formula.string || ''
+      if (prop.formula?.type === 'number') {
+        return prop.formula.number !== null && prop.formula.number !== undefined
+          ? String(prop.formula.number)
+          : ''
+      }
+      if (prop.formula?.type === 'boolean') return prop.formula.boolean ? '✓' : '✗'
+      if (prop.formula?.type === 'date') return prop.formula.date?.start || ''
+      return ''
+    case 'created_time':
+      return prop.created_time || ''
+    case 'last_edited_time':
+      return prop.last_edited_time || ''
+    default: {
+      if (!type) return ''
+      const rawValue = prop[type]
+      if (Array.isArray(rawValue)) {
+        return rawValue
+          .map((item) => {
+            if (item && typeof item === 'object') {
+              const obj = item as { plain_text?: string; name?: string }
+              return obj.plain_text || obj.name || ''
+            }
+            return ''
+          })
+          .join(', ')
+      }
+      if (typeof rawValue === 'object' && rawValue !== null) {
+        const obj = rawValue as { name?: string; plain_text?: string }
+        return obj.name || obj.plain_text || ''
+      }
+      return rawValue !== undefined && rawValue !== null ? String(rawValue) : ''
+    }
+  }
+}
+
+/**
+ * Notion color name → Tailwind badge colour classes.
+ * Falls back to a neutral stone style if the color is unknown.
+ */
+const NOTION_BADGE_COLORS: Record<string, string> = {
+  default: 'bg-stone-100 text-stone-700 border-stone-200/70 dark:bg-stone-800 dark:text-stone-300 dark:border-stone-700/60',
+  gray: 'bg-neutral-100 text-neutral-600 border-neutral-200/70 dark:bg-neutral-800 dark:text-neutral-400 dark:border-neutral-700/60',
+  brown: 'bg-amber-50 text-amber-800 border-amber-200/70 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-700/50',
+  orange: 'bg-orange-50 text-orange-700 border-orange-200/70 dark:bg-orange-900/30 dark:text-orange-300 dark:border-orange-700/50',
+  yellow: 'bg-yellow-50 text-yellow-700 border-yellow-200/70 dark:bg-yellow-900/30 dark:text-yellow-300 dark:border-yellow-700/50',
+  green: 'bg-green-50 text-green-700 border-green-200/70 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700/50',
+  blue: 'bg-blue-50 text-blue-700 border-blue-200/70 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700/50',
+  purple: 'bg-purple-50 text-purple-700 border-purple-200/70 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-700/50',
+  pink: 'bg-pink-50 text-pink-700 border-pink-200/70 dark:bg-pink-900/30 dark:text-pink-300 dark:border-pink-700/50',
+  red: 'bg-red-50 text-red-700 border-red-200/70 dark:bg-red-900/30 dark:text-red-300 dark:border-red-700/50',
+}
+
+function badgeClasses(color: string | undefined): string {
+  return (color && NOTION_BADGE_COLORS[color]) || NOTION_BADGE_COLORS.default
+}
+
+/**
+ * Renders a single Notion property value as an HTML string.
+ */
+function renderCellContent(prop: NotionPropertyLike | null | undefined, row: NotionPageLike): string {
+  if (!prop) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+
+  const type = prop.type
+
+  // ── Title: interactive link ──────────────────────────────────────────────
+  if (type === 'title') {
+    const titleText = prop.title?.map((t) => t.plain_text || '').join('') || ''
+    if (!titleText) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+
+    // Resolve slug: explicit Slug prop → slugified title → page id
+    const props = row.properties || {}
+    const slugProp = props.Slug || props.slug
+    let slug = slugProp?.rich_text?.map((t) => t.plain_text || '').join('') || ''
+    if (!slug) {
+      slug = titleText.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '') || row.id.replace(/-/g, '')
+    }
+
+    const rowEmoji = typeof row.icon === 'object' && row.icon !== null ? row.icon.emoji : undefined
+    const icon = rowEmoji ? `<span class="mr-1.5" aria-hidden="true">${escapeHtml(rowEmoji)}</span>` : ''
+    const safeTitle = escapeHtml(titleText)
+    const safeSlug = escapeHtml(slug)
+
+    return (
+      `<a href="/${safeSlug}" class="inline-flex items-center gap-0.5 font-medium text-ink-700 dark:text-sage-200 hover:text-matcha-500 dark:hover:text-matcha-300 hover:underline underline-offset-2 transition-colors duration-150">` +
+      `${icon}<span>${safeTitle}</span>` +
+      `</a>`
+    )
+  }
+
+  // ── Multi-select: pill badges ────────────────────────────────────────────
+  if (type === 'multi_select') {
+    const items = prop.multi_select || []
+    if (!items.length) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+    return items
+      .map((item) => {
+        const cls = badgeClasses(item.color)
+        return `<span class="inline-block px-2 py-0.5 text-xs font-medium rounded-md border mr-1 last:mr-0 ${cls}">${escapeHtml(item.name)}</span>`
+      })
+      .join('')
+  }
+
+  // ── Select: single pill badge ────────────────────────────────────────────
+  if (type === 'select') {
+    const item = prop.select
+    if (!item) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+    const cls = badgeClasses(item.color)
+    return `<span class="inline-block px-2 py-0.5 text-xs font-medium rounded-md border ${cls}">${escapeHtml(item.name)}</span>`
+  }
+
+  // ── Status: single pill badge (same treatment as select) ─────────────────
+  if (type === 'status') {
+    const item = prop.status
+    if (!item) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+    const cls = badgeClasses(item.color)
+    return `<span class="inline-block px-2 py-0.5 text-xs font-medium rounded-md border ${cls}">${escapeHtml(item.name)}</span>`
+  }
+
+  // ── Dates: human-friendly ────────────────────────────────────────────────
+  if (type === 'date') {
+    if (!prop.date) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+    const start = formatDate(prop.date.start)
+    const end = prop.date.end ? formatDate(prop.date.end) : null
+    const str = end ? `${start} → ${end}` : start
+    return `<span class="text-sm text-neutral-600 dark:text-neutral-400 tabular-nums">${escapeHtml(str)}</span>`
+  }
+
+  if (type === 'created_time') {
+    if (!prop.created_time) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+    return `<span class="text-sm text-neutral-600 dark:text-neutral-400 tabular-nums">${escapeHtml(formatDate(prop.created_time))}</span>`
+  }
+
+  if (type === 'last_edited_time') {
+    if (!prop.last_edited_time) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+    return `<span class="text-sm text-neutral-600 dark:text-neutral-400 tabular-nums">${escapeHtml(formatDate(prop.last_edited_time))}</span>`
+  }
+
+  // ── URL ─────────────────────────────────────────────────────────────────
+  if (type === 'url') {
+    if (!prop.url) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+    const safe = escapeHtml(prop.url)
+    return `<a href="${safe}" target="_blank" rel="noopener noreferrer" class="text-matcha-500 dark:text-matcha-300 hover:underline underline-offset-2 text-sm transition-colors duration-150">${safe}</a>`
+  }
+
+  // ── Checkbox ────────────────────────────────────────────────────────────
+  if (type === 'checkbox') {
+    if (prop.checkbox === undefined) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+    return prop.checkbox
+      ? `<span class="inline-flex items-center justify-center w-4.5 h-4.5 rounded border-2 border-matcha-400 bg-matcha-400 text-white text-xs" title="Yes">✓</span>`
+      : `<span class="inline-flex items-center justify-center w-4.5 h-4.5 rounded border-2 border-neutral-300 dark:border-neutral-600 text-neutral-300 dark:text-neutral-600 text-xs" title="No">✗</span>`
+  }
+
+  // ── Fallback: plain text ─────────────────────────────────────────────────
+  const plainText = getPropertyPlainText(prop)
+  if (!plainText) return '<span class="text-neutral-300 dark:text-neutral-600 select-none">—</span>'
+  return `<span>${escapeHtml(plainText)}</span>`
+}
+
+void renderCellContent
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'child_database'>>('child_database', async (block) => {
+    const dbTitle = escapeHtml(block.child_database?.title || 'Database')
+    const rawRows = block.database_rows || []
+
+    // Sort child items by the 'Order' property (ascending: 0, 1, 2...)
+    // Items without an 'Order' value will default to a high number to appear last
+    const rows = [...rawRows].sort((a, b) => {
+      const orderA = a.properties?.Order?.number ?? a.properties?.order?.number ?? 999
+      const orderB = b.properties?.Order?.number ?? b.properties?.order?.number ?? 999
+      return orderA - orderB
+    })
+
+    // ── Empty state ──────────────────────────────────────────────────────
+    if (rows.length === 0) {
+      return (
+        `<div class="not-prose my-6 p-5 rounded-card border border-neutral-200/80 dark:border-neutral-800 bg-rice-paper-100 dark:bg-tea-slate-300 shadow-zen-sm">` +
+        `<div class="flex items-center gap-2 mb-1">` +
+        `<svg class="w-4 h-4 inline-block shrink-0 text-neutral-400 dark:text-neutral-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3" stroke-width="2"/><path d="M3 9h18" stroke-width="2"/></svg>` +
+        `<span class="text-sm font-medium text-ink-700 dark:text-sage-200 tracking-tight">${dbTitle}</span>` +
+        `</div>` +
+        `<p class="text-xs text-neutral-400 dark:text-neutral-600 italic pl-6">No entries found.</p>` +
+        `</div>`
+      )
+    }
+
+    // ── Identify property keys by type for card rendering ────────────────
+    const firstRowProps = rows[0]?.properties || {}
+    const titleKey = Object.keys(firstRowProps).find((k) => firstRowProps[k]?.type === 'title')
+
+    // Collect select/multi_select/status keys that have at least one non-empty value
+    const badgeKeys = Object.keys(firstRowProps).filter((k) => {
+      const t = firstRowProps[k]?.type
+      if (t !== 'select' && t !== 'multi_select' && t !== 'status') return false
+      return rows.some((r) => getPropertyPlainText((r.properties || {})[k]).trim() !== '')
+    })
+
+    // Collect date keys that have at least one non-empty value
+    const dateKeys = Object.keys(firstRowProps).filter((k) => {
+      const t = firstRowProps[k]?.type
+      if (t !== 'date' && t !== 'created_time' && t !== 'last_edited_time') return false
+      return rows.some((r) => getPropertyPlainText((r.properties || {})[k]).trim() !== '')
+    })
+
+    // Summary / description rich_text key (named "Summary", "Description", or "Desc")
+    const summaryKey = Object.keys(firstRowProps).find((k) => {
+      const lower = k.toLowerCase()
+      const t = firstRowProps[k]?.type
+      return t === 'rich_text' && (lower === 'summary' || lower === 'description' || lower === 'desc')
+    })
+
+    // ── Build each card — mirrors CourseCard.tsx exactly ─────────────────
+    const cardsHtml = rows
+      .map((row) => {
+        const props = row.properties || {}
+
+        // ── Resolve title + slug ──────────────────────────────────────────
+        let titleText = ''
+        let slug = ''
+        if (titleKey) {
+          const titleProp = props[titleKey]
+          titleText = titleProp?.title?.map((t) => t.plain_text || '').join('') || ''
+          const slugProp = props.Slug || props.slug
+          slug = slugProp?.rich_text?.map((t) => t.plain_text || '').join('') || ''
+          if (!slug && titleText) {
+            slug = titleText.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '')
+          }
+          if (!slug) slug = row.id.replace(/-/g, '')
+        }
+        const safeSlug = escapeHtml(slug)
+        const safeTitle = escapeHtml(titleText) || '—'
+
+        // ── Icon emoji ────────────────────────────────────────────────────
+        const rowEmoji = typeof row.icon === 'object' && row.icon !== null ? row.icon.emoji : undefined
+        const iconEmoji = rowEmoji ? escapeHtml(rowEmoji) : ''
+
+        // ── Cover — mirrors CardCover in CourseCard.tsx ────────────────────
+        const coverUrl = row.cover?.external?.url || row.cover?.file?.url || null
+        const coverIsNotionHosted = row.cover?.type === 'file'
+        let coverHtml: string
+        if (coverUrl) {
+          coverHtml =
+            `<div class="aspect-[16/7] overflow-hidden bg-rice-paper-200 dark:bg-tea-slate-200 flex-shrink-0 relative">` +
+            `<img src="${escapeHtml(coverUrl)}" alt="" loading="lazy" decoding="async" ` +
+            (coverIsNotionHosted && row.id ? `data-notion-cover-page-id="${escapeHtml(row.id)}" ` : '') +
+            `class="object-cover w-full h-full transition-transform duration-500 group-hover:scale-[1.03]" />` +
+            `</div>`
+        } else {
+          const inner = iconEmoji
+            ? `<span class="text-4xl select-none transition-transform duration-300 group-hover:scale-110" aria-hidden="true">${iconEmoji}</span>`
+            : `<svg width="60" height="60" viewBox="0 0 60 60" fill="none" style="opacity:0.3" aria-hidden="true">` +
+              `<path d="M30 8 C40 8 52 16 52 30 C52 44 44 52 30 52 C16 52 8 44 8 30 C8 16 20 8 30 8 Z" fill="rgba(122,139,105,0.5)"/>` +
+              `<path d="M30 16 C36 16 44 22 44 30 C44 38 38 44 30 44 C22 44 16 38 16 30 C16 22 24 16 30 16 Z" fill="rgba(175,201,163,0.6)"/>` +
+              `</svg>`
+          coverHtml =
+            `<div class="aspect-[16/7] overflow-hidden flex-shrink-0 flex items-center justify-center" ` +
+            `style="background:linear-gradient(135deg,rgba(122,139,105,0.12) 0%,rgba(174,201,163,0.18) 60%,rgba(234,230,223,0.10) 100%)" aria-hidden="true">` +
+            inner +
+            `</div>`
+        }
+
+        // ── Tag chips — mirrors TagChip in CourseCard.tsx ──────────────────
+        let tagsHtml = ''
+        if (badgeKeys.length > 0) {
+          const allBadges = badgeKeys
+            .flatMap((k) => {
+              const p = props[k]
+              if (!p) return []
+              if (p.type === 'multi_select') return (p.multi_select || []).map((item) => item.name || '')
+              if (p.type === 'select' && p.select?.name) return [p.select.name]
+              if (p.type === 'status' && p.status?.name) return [p.status.name]
+              return []
+            })
+            .filter(Boolean)
+
+          if (allBadges.length > 0) {
+            const chips = allBadges
+              .slice(0, 3)
+              .map((name) => {
+                return `<span class="inline-block text-[0.68rem] font-medium px-2 py-0.5 rounded-pill bg-matcha-100/70 dark:bg-matcha-700/25 text-matcha-600 dark:text-matcha-300 border border-matcha-200/60 dark:border-matcha-700/40 leading-none">${escapeHtml(name)}</span>`
+              })
+              .join('')
+            tagsHtml = `<div class="flex flex-wrap gap-1.5" aria-label="Categories">${chips}</div>`
+          }
+        }
+
+        // ── Summary snippet ───────────────────────────────────────────────
+        let summaryHtml = ''
+        if (summaryKey) {
+          const raw = getPropertyPlainText(props[summaryKey])
+          if (raw) {
+            summaryHtml =
+              `<p class="text-[0.82rem] leading-relaxed text-ink-400 dark:text-sage-500 line-clamp-2 flex-1">` +
+              escapeHtml(raw) +
+              `</p>`
+          }
+        }
+
+        // ── Date (first date key) ─────────────────────────────────────────
+        let dateHtml = ''
+        if (dateKeys.length > 0) {
+          const plain = getPropertyPlainText(props[dateKeys[0]])
+          if (plain) {
+            const iso = plain.split(' → ')[0]
+            dateHtml = `<time class="text-[0.72rem] text-ink-400 dark:text-sage-600">${escapeHtml(formatDate(iso))}</time>`
+          }
+        }
+
+        // ── Title link ────────────────────────────────────────────────────
+        const titleLinkContent = slug
+          ? `<a href="/${safeSlug}" id="course-card-${safeSlug}" class="block no-underline group/title">` +
+            `<h2 class="font-serif font-medium text-[1rem] leading-snug text-balance text-ink-700 dark:text-sage-100 group-hover/title:text-matcha-600 dark:group-hover/title:text-matcha-300 transition-colors duration-200 line-clamp-2">` +
+            safeTitle +
+            `</h2></a>`
+          : `<h2 class="font-serif font-medium text-[1rem] leading-snug text-balance text-ink-700 dark:text-sage-100 line-clamp-2">${safeTitle}</h2>`
+
+        // ── Read CTA — mirrors CourseCard "Read →" ────────────────────────
+        const readCta = slug
+          ? `<a href="/${safeSlug}" aria-label="Read ${safeTitle}" ` +
+            `class="flex items-center gap-1.5 flex-shrink-0 text-[0.75rem] font-medium text-matcha-500 dark:text-matcha-400 hover:text-matcha-600 dark:hover:text-matcha-300 transition-colors duration-200 no-underline" tabindex="0">` +
+            `<span>Read</span>` +
+            `<span class="transition-transform duration-200 group-hover:translate-x-0.5">` +
+            `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>` +
+            `</span>` +
+            `</a>`
+          : ''
+
+        // ── Assemble card — DOM mirrors CourseCard.tsx ────────────────────
+        return (
+          `<article class="group relative flex flex-col rounded-card ` +
+          `bg-rice-paper-100 dark:bg-tea-slate-300 ` +
+          `border border-rice-paper-400/70 dark:border-tea-slate-50/60 ` +
+          `overflow-hidden shadow-zen-sm ` +
+          `transition-all duration-300 ease-out ` +
+          `hover:-translate-y-[3px] hover:shadow-zen hover:border-matcha-400/60 dark:hover:border-matcha-700/60 animate-fade-in">` +
+          (slug
+            ? `<a href="/${safeSlug}" tabindex="-1" aria-hidden="true" class="relative block">${coverHtml}</a>`
+            : `<div class="relative">${coverHtml}</div>`) +
+          `<div class="flex flex-col flex-1 p-4 gap-2.5">` +
+          tagsHtml +
+          titleLinkContent +
+          summaryHtml +
+          `<div class="flex items-center justify-between gap-2 mt-auto pt-2 border-t border-rice-paper-400/50 dark:border-tea-slate-50/30">` +
+          `<div class="flex items-center gap-2 flex-wrap min-w-0">${dateHtml}</div>` +
+          readCta +
+          `</div>` +
+          `</div>` +
+          `</article>`
+        )
+      })
+      .join('')
+
+    // ── Section header + responsive grid ─────────────────────────────────
+    return (
+      `<div class="not-prose my-8">` +
+      `<div class="flex items-center gap-2 mb-5">` +
+      `<svg class="w-4 h-4 shrink-0 text-matcha-400 dark:text-matcha-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">` +
+      `<rect x="3" y="3" width="18" height="18" rx="3" stroke-width="2"/><path d="M3 9h18" stroke-width="2"/>` +
+      `</svg>` +
+      `<span class="text-sm font-semibold text-ink-700 dark:text-sage-200 tracking-tight">${dbTitle}</span>` +
+      `<span class="ml-auto text-[0.68rem] text-ink-400 dark:text-sage-500 tabular-nums">${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}</span>` +
+      `</div>` +
+      `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">` +
+      cardsHtml +
+      `</div>` +
+      `</div>`
+    )
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'child_page'>>('child_page', async (block) => {
+    const pageInfo = block.page_info ? extractPageProperties(block.page_info) : null
+    const titleText = pageInfo?.title || block.child_page?.title || 'Untitled Page'
+
+    let slug = pageInfo?.slug
+    if (!slug) {
+      slug = titleText.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '') || block.id.replace(/-/g, '')
+    }
+
+    const safeTitle = escapeHtml(titleText)
+    const safeSlug = escapeHtml(slug)
+    const iconEmoji = pageInfo?.icon || block.icon?.emoji || '📄'
+    const summary = pageInfo?.summary ? escapeHtml(pageInfo.summary) : ''
+
+    return (
+      `<div class="not-prose my-4">` +
+      `<a href="/${safeSlug}" class="group flex items-center gap-3.5 p-4 rounded-card ` +
+      `bg-rice-paper-100 dark:bg-tea-slate-300 ` +
+      `border border-rice-paper-400/70 dark:border-tea-slate-50/60 ` +
+      `shadow-zen-sm transition-all duration-300 ease-out ` +
+      `hover:-translate-y-[2px] hover:shadow-zen hover:border-matcha-400/60 dark:hover:border-matcha-700/60 no-underline">` +
+      `<div class="w-10 h-10 rounded-pill bg-matcha-100/70 dark:bg-matcha-700/25 border border-matcha-200/60 dark:border-matcha-700/40 flex items-center justify-center shrink-0 text-xl transition-transform duration-300 group-hover:scale-110">` +
+      `${escapeHtml(iconEmoji)}` +
+      `</div>` +
+      `<div class="flex-1 min-w-0">` +
+      `<h4 class="font-serif font-medium text-[0.98rem] leading-snug text-ink-700 dark:text-sage-100 group-hover:text-matcha-600 dark:group-hover:text-matcha-300 transition-colors duration-200 truncate mb-0.5">` +
+      `${safeTitle}` +
+      `</h4>` +
+      (summary ? `<p class="text-[0.8rem] text-ink-400 dark:text-sage-500 line-clamp-1 m-0">${summary}</p>` : '') +
+      `</div>` +
+      `<div class="flex items-center gap-1.5 text-[0.75rem] font-medium text-matcha-500 dark:text-matcha-400 group-hover:text-matcha-600 dark:group-hover:text-matcha-300 shrink-0">` +
+      `<span>Open</span>` +
+      `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="transition-transform duration-200 group-hover:translate-x-0.5" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>` +
+      `</div>` +
+      `</a>` +
+      `</div>`
+    )
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'callout'>>('callout', async (block) => {
+    const iconEmoji = block.callout?.icon?.emoji || block.callout?.icon?.external?.url || '💡'
+    const textHtml = renderRichText(block.callout?.rich_text)
+    const color = block.callout?.color || 'default'
+    const textColorCls = getNotionTextColorClasses(color) || 'text-ink-700 dark:text-sage-200'
+
+    let childrenHtml = ''
+    if (block.has_children && block.children && block.children.length > 0) {
+      childrenHtml = await renderBlocks(block.children as NotionRenderBlock[])
+    }
+
+    return (
+      `<div class="not-prose my-6 p-4 rounded-r-card border-l-4 border-matcha-500 bg-stone-50/80 dark:bg-stone-800/40 ${textColorCls} flex items-start gap-3.5 shadow-zen-sm">` +
+      `<span class="text-xl shrink-0 leading-none select-none mt-0.5">${escapeHtml(iconEmoji)}</span>` +
+      `<div class="text-[0.93rem] leading-relaxed flex-1">${textHtml}${childrenHtml ? `<div class="mt-3">${childrenHtml}</div>` : ''}</div>` +
+      `</div>`
+    )
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'heading_1'>>('heading_1', async (block) => {
+    const textHtml = renderRichText(block.heading_1?.rich_text)
+    const anchorId = block.id.replace(/-/g, '')
+    if (block.heading_1?.is_toggleable) {
+      const color = block.heading_1?.color || 'default'
+      const colorClass = getNotionTextColorClasses(color)
+      const props = {
+        blockId: block.id,
+        level: 1,
+        titleHtml: textHtml,
+        anchorId,
+        color,
+        colorClass,
+        hasChildren: Boolean(block.has_children),
+      }
+      return `<div data-notion-component="NotionToggleHeading" data-props="${escapeHtml(JSON.stringify(props))}"></div>`
+    }
+    return `<h1 id="${anchorId}" class="text-2xl sm:text-3xl font-semibold text-neutral-800 dark:text-neutral-100 mt-12 mb-6 tracking-tight">${textHtml}</h1>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'heading_2'>>('heading_2', async (block) => {
+    const textHtml = renderRichText(block.heading_2?.rich_text)
+    const anchorId = block.id.replace(/-/g, '')
+    if (block.heading_2?.is_toggleable) {
+      const color = block.heading_2?.color || 'default'
+      const colorClass = getNotionTextColorClasses(color)
+      const props = {
+        blockId: block.id,
+        level: 2,
+        titleHtml: textHtml,
+        anchorId,
+        color,
+        colorClass,
+        hasChildren: Boolean(block.has_children),
+      }
+      return `<div data-notion-component="NotionToggleHeading" data-props="${escapeHtml(JSON.stringify(props))}"></div>`
+    }
+    return `<h2 id="${anchorId}" class="text-xl sm:text-2xl font-medium text-neutral-800 dark:text-neutral-100 mt-10 mb-4">${textHtml}</h2>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'heading_3'>>('heading_3', async (block) => {
+    const textHtml = renderRichText(block.heading_3?.rich_text)
+    const anchorId = block.id.replace(/-/g, '')
+    if (block.heading_3?.is_toggleable) {
+      const color = block.heading_3?.color || 'default'
+      const colorClass = getNotionTextColorClasses(color)
+      const props = {
+        blockId: block.id,
+        level: 3,
+        titleHtml: textHtml,
+        anchorId,
+        color,
+        colorClass,
+        hasChildren: Boolean(block.has_children),
+      }
+      return `<div data-notion-component="NotionToggleHeading" data-props="${escapeHtml(JSON.stringify(props))}"></div>`
+    }
+    return `<h3 id="${anchorId}" class="text-lg sm:text-xl font-medium text-neutral-700 dark:text-neutral-200 mt-8 mb-3">${textHtml}</h3>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'heading_4'>>('heading_4', async (block) => {
+    const textHtml = renderRichText(block.heading_4?.rich_text)
+    const anchorId = block.id.replace(/-/g, '')
+    if (block.heading_4?.is_toggleable) {
+      const color = block.heading_4?.color || 'default'
+      const colorClass = getNotionTextColorClasses(color)
+      const props = {
+        blockId: block.id,
+        level: 4,
+        titleHtml: textHtml,
+        anchorId,
+        color,
+        colorClass,
+        hasChildren: Boolean(block.has_children),
+      }
+      return `<div data-notion-component="NotionToggleHeading" data-props="${escapeHtml(JSON.stringify(props))}"></div>`
+    }
+    return `<h4 id="${anchorId}" class="text-base sm:text-lg font-medium text-neutral-700 dark:text-neutral-200 mt-3 mb-1.5">${textHtml}</h4>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'heading_5'>>('heading_5', async (block) => {
+    const textHtml = renderRichText(block.heading_5?.rich_text)
+    const anchorId = block.id.replace(/-/g, '')
+    return `<h5 id="${anchorId}" class="text-sm sm:text-base font-medium text-neutral-700 dark:text-neutral-200 mt-2 mb-1">${textHtml}</h5>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'heading_6'>>('heading_6', async (block) => {
+    const textHtml = renderRichText(block.heading_6?.rich_text)
+    const anchorId = block.id.replace(/-/g, '')
+    return `<h6 id="${anchorId}" class="text-xs sm:text-sm font-medium text-neutral-600 dark:text-neutral-300 mt-2 mb-1">${textHtml}</h6>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'image'>>('image', async (block) => {
+    const image = block.image
+    const isNotionHosted = image?.type === 'file' || (!image?.type && Boolean(image?.file?.url))
+    const src =
+      image?.type === 'file'
+        ? image.file?.url || ''
+        : image?.type === 'external'
+          ? image.external?.url || ''
+          : image?.file?.url || image?.external?.url || ''
+    if (!src) return ''
+    const captionPlain = image?.caption?.map((t) => t.plain_text || '').join('') || ''
+    const captionHtml = image?.caption && image.caption.length > 0 ? renderRichText(image.caption) : ''
+    const alt = escapeHtml(captionPlain)
+    const imageIdAttr = isNotionHosted && block.id ? ` data-notion-image-id="${escapeHtml(block.id)}"` : ''
+
+    return (
+      `<figure class="not-prose my-10 flex flex-col items-center w-full">` +
+      `<img` +
+      ` src="${escapeHtml(src)}"` +
+      imageIdAttr +
+      ` alt="${alt || 'Image'}"` +
+      ` class="rounded-2xl border border-rice-paper-400/50 dark:border-tea-slate-50/20 max-w-full h-auto shadow-sm block cursor-zoom-in notion-zoomable"` +
+      ` loading="lazy"` +
+      ` decoding="async"` +
+      ` data-notion-zoom` +
+      `/>` +
+      (captionHtml
+        ? `<figcaption class="mt-3 text-sm italic text-neutral-500 dark:text-neutral-400 text-center max-w-2xl">${captionHtml}</figcaption>`
+        : '') +
+      `</figure>`
+    )
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'video'>>('video', async (block) => {
+    const video = block.video
+    if (!video) return ''
+
+    const type = video.type
+    const url = type === 'external' ? video.external?.url : video.file?.url
+    if (!url) return ''
+
+    const captionHtml = video.caption && video.caption.length > 0 ? renderRichText(video.caption) : ''
+
+    const isYouTube = url.includes('youtube.com') || url.includes('youtu.be')
+
+    if (isYouTube) {
+      const videoId = url.split('v=')[1]?.split('&')[0] || url.split('youtu.be/')[1]?.split('?')[0]
+      const embedUrl = escapeHtml(`https://www.youtube.com/embed/${videoId}`)
+      const title = escapeHtml(video.caption?.map((t) => t.plain_text || '').join('') || 'YouTube video player')
+
+      return (
+        `<figure class="not-prose my-6 w-full flex flex-col items-center">` +
+        `<div class="relative w-full" style="padding-bottom:56.25%">` +
+        `<iframe` +
+        ` src="${embedUrl}"` +
+        ` title="${title}"` +
+        ` allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"` +
+        ` allowfullscreen` +
+        ` class="absolute inset-0 w-full h-full rounded-xl border border-neutral-200/60 dark:border-neutral-800/60 shadow-sm"` +
+        `></iframe>` +
+        `</div>` +
+        (captionHtml ? `<figcaption class="mt-2 text-center text-xs text-neutral-400 dark:text-neutral-500 italic">${captionHtml}</figcaption>` : '') +
+        `</figure>`
+      )
+    }
+
+    // Direct Notion file upload
+    const safeSrc = escapeHtml(url)
+    return (
+      `<figure class="not-prose my-6 w-full">` +
+      `<video controls class="w-full rounded-xl border border-neutral-200/60 dark:border-neutral-800/60 shadow-sm">` +
+      `<source src="${safeSrc}" type="video/mp4" />` +
+      `Your browser does not support the video tag.` +
+      `</video>` +
+      (captionHtml ? `<figcaption class="mt-2 text-center text-xs text-neutral-400 dark:text-neutral-500 italic">${captionHtml}</figcaption>` : '') +
+      `</figure>`
+    )
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'bulleted_list_item'>>('bulleted_list_item', async (block) => {
+    const text = renderRichText(block.bulleted_list_item?.rich_text)
+    let childrenHtml = ''
+    if (block.has_children && block.children && block.children.length > 0) {
+      childrenHtml = await renderBlocks(block.children as NotionRenderBlock[])
+    }
+    return `<li class="flex items-start gap-2.5 my-1.5 group">
+    <span class="text-matcha-500/70 dark:text-matcha-400/60 mt-[3px] select-none text-xs shrink-0">
+      •
+    </span>
+    <div class="flex-1 text-ink-700 dark:text-sage-200 leading-relaxed">
+      <span class="whitespace-pre-wrap">${text}</span>
+      ${childrenHtml ? `<div class="mt-2 ml-1 border-l border-rice-paper-400/60 dark:border-tea-slate-50/40 pl-4">${childrenHtml}</div>` : ''}
+    </div>
+  </li>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'numbered_list_item'>>('numbered_list_item', async (block) => {
+    const text = renderRichText(block.numbered_list_item?.rich_text)
+    let childrenHtml = ''
+    if (block.has_children && block.children && block.children.length > 0) {
+      childrenHtml = await renderBlocks(block.children as NotionRenderBlock[])
+    }
+    const num = block.list_index ? `${block.list_index}.` : '1.'
+    return `<li class="flex items-start gap-2.5 my-1.5 group">
+    <span class="text-ink-400 dark:text-sage-500 mt-[2px] select-none text-sm shrink-0 min-w-[1.25rem] text-right font-mono">
+      ${num}
+    </span>
+    <div class="flex-1 text-ink-700 dark:text-sage-200 leading-relaxed">
+      <span class="whitespace-pre-wrap">${text}</span>
+      ${childrenHtml ? `<div class="mt-2 ml-1 border-l border-rice-paper-400/60 dark:border-tea-slate-50/40 pl-4">${childrenHtml}</div>` : ''}
+    </div>
+  </li>`
+  })
+)
+
+/**
+ * Maps a Notion toggle color string to Tailwind CSS classes (Wabi-Sabi style).
+ * Falls back to a neutral style for unknown or default colors.
+ */
+function getToggleColorClasses(color: string | undefined): string {
+  const colorMap: Record<string, string> = {
+    gray_background: 'bg-neutral-100/70 dark:bg-neutral-800/50 border-neutral-200/60 dark:border-neutral-700/50',
+    brown_background: 'bg-amber-50/70 dark:bg-amber-950/30 border-amber-200/50 dark:border-amber-800/40 text-amber-900 dark:text-amber-200',
+    orange_background: 'bg-orange-50/70 dark:bg-orange-950/30 border-orange-200/50 dark:border-orange-800/40 text-orange-900 dark:text-orange-200',
+    yellow_background: 'bg-amber-50/60 dark:bg-amber-900/25 border-amber-200/50 dark:border-amber-700/40 text-amber-900 dark:text-amber-200',
+    green_background: 'bg-matcha-50/80 dark:bg-matcha-900/30 border-matcha-200/60 dark:border-matcha-800/50 text-matcha-900 dark:text-matcha-200',
+    blue_background: 'bg-sky-50/70 dark:bg-sky-950/30 border-sky-200/50 dark:border-sky-800/40 text-sky-900 dark:text-sky-200',
+    purple_background: 'bg-purple-50/70 dark:bg-purple-950/30 border-purple-200/50 dark:border-purple-800/40 text-purple-900 dark:text-purple-200',
+    pink_background: 'bg-rose-50/70 dark:bg-rose-950/30 border-rose-200/50 dark:border-rose-800/40 text-rose-900 dark:text-rose-200',
+    red_background: 'bg-red-50/70 dark:bg-red-950/30 border-red-200/50 dark:border-red-800/40 text-red-900 dark:text-red-200',
+    default: 'bg-rice-paper-100 dark:bg-tea-slate-300 border-rice-paper-400/70 dark:border-tea-slate-50/60',
+  }
+  return (color && colorMap[color]) || colorMap.default
+}
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'toggle'>>('toggle', async (block) => {
+    try {
+      const togglePlainText = (block.toggle?.rich_text || [])
+        .map((t) => t.plain_text || '')
+        .join('')
+        .trim()
+      if (togglePlainText === '[slider]') return ''
+
+      const titleHtml = renderRichText(block.toggle?.rich_text) || 'Toggle'
+      const color = block.toggle?.color || 'default'
+      const dynamicClasses = getToggleColorClasses(color)
+
+      const props = {
+        blockId: block.id,
+        titleHtml,
+        color,
+        dynamicClasses,
+        hasChildren: Boolean(block.has_children),
+      }
+
+      return `<div data-notion-component="NotionToggleBlock" data-props="${escapeHtml(JSON.stringify(props))}"></div>`
+    } catch (err: unknown) {
+      console.error('[toggle] render error:', err)
+      return ''
+    }
+  })
+)
+
+// ── custom_slider renderer ─────────────────────────────────────────────────
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'custom_slider'>>('custom_slider', async (block) => {
+    const images = block.images || []
+    if (images.length === 0) return ''
+
+    const props = { images }
+    return `<div data-notion-component="ImageSlider" data-props="${escapeHtml(JSON.stringify(props))}"></div>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'paragraph'>>('paragraph', async (block) => {
+    const textHtml = renderRichText(block.paragraph?.rich_text)
+    if (!textHtml) return ''
+    return `<p class="mb-4 text-[0.98rem] leading-relaxed text-neutral-700 dark:text-neutral-300">${textHtml}</p>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'quote'>>('quote', async (block) => {
+    const textHtml = renderRichText(block.quote?.rich_text)
+    let childrenHtml = ''
+    if (block.has_children && block.children && block.children.length > 0) {
+      childrenHtml = await renderBlocks(block.children as NotionRenderBlock[])
+    }
+    return `<blockquote class="my-5 border-l-2 border-matcha-500 dark:border-matcha-400 pl-5 pr-4 py-3.5 font-serif italic text-[0.96rem] leading-[1.8] text-ink-700 dark:text-sage-100 bg-rice-paper-200/60 dark:bg-tea-slate-200/50 rounded-r-[6px] border-y border-r border-transparent dark:border-tea-slate-50/30">
+      ${textHtml}
+      ${childrenHtml ? `<div class="mt-3 not-italic font-sans text-[0.88rem] text-ink-500 dark:text-sage-400 font-normal">${childrenHtml}</div>` : ''}
+    </blockquote>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'column_list'>>('column_list', async (block) => {
+    let childrenHtml = ''
+    if ((block.has_children || (block.children && block.children.length > 0)) && block.children && block.children.length > 0) {
+      childrenHtml = await renderBlocks(block.children as NotionRenderBlock[])
+    }
+    return `<div class="flex flex-col md:flex-row gap-4 md:gap-6 my-6 w-full items-start">${childrenHtml}</div>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'column'>>('column', async (block) => {
+    let childrenHtml = ''
+    if ((block.has_children || (block.children && block.children.length > 0)) && block.children && block.children.length > 0) {
+      childrenHtml = await renderBlocks(block.children as NotionRenderBlock[])
+    }
+    return `<div class="flex-1 min-w-0 w-full">${childrenHtml}</div>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'code'>>('code', async (block) => {
+    const codeText = block.code?.rich_text?.map((t) => t.plain_text || '').join('') || ''
+    const language = block.code?.language || ''
+    const captionHtml = block.code?.caption && block.code.caption.length > 0 ? renderRichText(block.code.caption) : ''
+
+    const props = { codeText, language, caption: captionHtml }
+    return `<div data-notion-component="NotionCodeBlock" data-props="${escapeHtml(JSON.stringify(props))}"></div>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'table_row'>>('table_row', async (block) => {
+    const cells = block.table_row?.cells || []
+    const cellsHtml = cells
+      .map((cell) => {
+        const cellText = renderRichText(cell)
+        return `<td class="px-4 py-2.5 text-sm text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700">${cellText}</td>`
+      })
+      .join('')
+    return `<tr class="border-b border-neutral-200 dark:border-neutral-700">${cellsHtml}</tr>`
+  })
+)
+
+renderer.addBlockRenderer(
+  createBlockRenderer<RendererBlock<'table'>>('table', async (block) => {
+    let rowsHtml = ''
+    if (block.has_children && block.children && block.children.length > 0) {
+      rowsHtml = await renderBlocks(block.children as NotionRenderBlock[])
+    }
+    const hasHeader = block.table?.has_column_header || false
+    if (hasHeader && rowsHtml) {
+      rowsHtml = rowsHtml.replace(/^<tr([^>]*)>([\s\S]*?)<\/tr>/, (_match, trAttrs: string, innerTd: string) => {
+        const thInner = innerTd.replace(
+          /<td([^>]*)>([\s\S]*?)<\/td>/g,
+          '<th$1 class="px-4 py-2.5 text-left text-sm font-semibold text-neutral-800 dark:text-neutral-100 bg-neutral-100/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700">$2</th>'
+        )
+        return `<tr${trAttrs} class="bg-neutral-100/80 dark:bg-neutral-800/80 font-semibold">${thInner}</tr>`
+      })
+    }
+    return `<div class="not-prose my-6 overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-700 shadow-zen-sm"><table class="w-full border-collapse text-left min-w-full divide-y divide-neutral-200 dark:divide-neutral-700"><tbody class="divide-y divide-neutral-200 dark:divide-neutral-700 bg-white dark:bg-neutral-900/40">${rowsHtml}</tbody></table></div>`
+  })
+)
+
+async function fetchChildrenList(blockId: string, startCursor?: string): Promise<ListBlockChildrenResponse> {
+  const key = `children-${blockId}-${startCursor || 'first'}`
+  const cached = getCache<ListBlockChildrenResponse>(key)
+  if (cached) return cached
+  const res = await notion.blocks.children.list({ block_id: blockId, start_cursor: startCursor })
+  setCache(key, res)
+  return res
+}
+
+async function fetchDatabase(dbId: string): Promise<NotionDatabaseLike> {
+  const key = `db-${dbId}`
+  const cached = getCache<NotionDatabaseLike>(key)
+  if (cached) return cached
+  const res = (await notion.databases.retrieve({ database_id: dbId })) as unknown as NotionDatabaseLike
+  setCache(key, res)
+  return res
+}
+
+const DS_MAPPING_TTL = 15 * 60 * 1000 // 15 minutes for verified database -> data_source mappings
+const dsInFlight = new Map<string, Promise<string>>()
+const dsInFlightRefresh = new Map<string, Promise<string>>()
+const dsGenerations = new Map<string, number>()
+
+function invalidatePublicDataSourceCache(rawId: string): void {
+  const { id: cleanId } = parsePublicNotionId(rawId)
+  const norm = normalizeNotionId(cleanId)
+  dsGenerations.set(norm, (dsGenerations.get(norm) || 0) + 1)
+  if (globalThis.__notionCache) {
+    globalThis.__notionCache.delete(`ds-map-${norm}`)
+    globalThis.__notionCache.delete(`db-${cleanId}`)
+  }
+  dsInFlight.delete(`ds-map-${norm}`)
+}
+
+async function resolvePublicDataSourceId(rawId: string, forceRefresh = false): Promise<string> {
+  const { id: cleanId, explicitKind } = parsePublicNotionId(rawId)
+  const norm = normalizeNotionId(cleanId)
+  const cacheKey = `ds-map-${norm}`
+
+  if (!forceRefresh) {
+    const cached = getCache<string>(cacheKey, DS_MAPPING_TTL)
+    if (cached) return cached
+    const existingFlight = dsInFlight.get(cacheKey)
+    if (existingFlight) return existingFlight
+  } else {
+    const existingRefresh = dsInFlightRefresh.get(cacheKey)
+    if (existingRefresh) return existingRefresh
+  }
+
+  const flightMap = forceRefresh ? dsInFlightRefresh : dsInFlight
+  const startGen = dsGenerations.get(norm) || 0
+
+  const promise = (async (): Promise<string> => {
+    // Explicit `ds:<id>` skips databases.retrieve() completely (zero 404 SDK warnings)
+    if (explicitKind === 'data_source_id') {
+      if (typeof notion.dataSources?.retrieve !== 'function') return cleanId
+      const dsInfo = (await notion.dataSources.retrieve({
+        data_source_id: cleanId,
+      })) as unknown as NotionDataSourceLike
+      if (!dsInfo?.id) throw new Error(`Notion data_source "${cleanId}" not found`)
+      if ((dsGenerations.get(norm) || 0) === startGen) setCache(cacheKey, dsInfo.id)
+      return dsInfo.id
+    }
+
+    try {
+      const dbInfo = forceRefresh
+        ? ((await notion.databases.retrieve({ database_id: cleanId })) as unknown as NotionDatabaseLike)
+        : await fetchDatabase(cleanId)
+      const dsId = dbInfo?.data_sources?.[0]?.id
+      if (dsId) {
+        if ((dsGenerations.get(norm) || 0) === startGen) setCache(cacheKey, dsId)
+        return dsId
+      }
+      throw new Error(`Notion database "${cleanId}" returned no data_sources`)
+    } catch (err: unknown) {
+      // Only fall back to dataSources.retrieve on explicit 404 object_not_found with untyped ID;
+      // never swallow transient timeouts/429/5xx or cache unverified IDs.
+      if (
+        explicitKind === 'database_id' ||
+        !isNotionNotFoundError(err) ||
+        typeof notion.dataSources?.retrieve !== 'function'
+      ) {
+        throw err
+      }
+      const dsInfo = (await notion.dataSources.retrieve({
+        data_source_id: cleanId,
+      })) as unknown as NotionDataSourceLike
+      if (!dsInfo?.id) {
+        throw err
+      }
+      if ((dsGenerations.get(norm) || 0) === startGen) setCache(cacheKey, dsInfo.id)
+      return dsInfo.id
+    }
+  })().finally(() => {
+    if (flightMap.get(cacheKey) === promise) {
+      flightMap.delete(cacheKey)
+    }
+  })
+
+  flightMap.set(cacheKey, promise)
+  return promise
+}
+
+async function queryDatabase(dbId: string, options: QueryDatabaseOptions = {}): Promise<NotionQueryResultLike> {
+  const cleanId = String(dbId || '').trim()
+  const { __ttl, __isDataSourceId, __databaseId, ...queryOptions } = options
+  const ttl = __ttl || CACHE_TTL
+  const key = `db-query-${cleanId}-${JSON.stringify(queryOptions)}`
+  const cached = getCache<NotionQueryResultLike>(key, ttl)
+  if (cached) return cached
+
+  let res: NotionQueryResultLike
+  if (typeof notion.dataSources?.query === 'function') {
+    res = await executePublicDataSourceQueryWithRecovery<NotionQueryResultLike>({
+      targetId: cleanId,
+      isDataSourceId: Boolean(__isDataSourceId),
+      parentDatabaseId: __databaseId || null,
+      resolveDataSource: resolvePublicDataSourceId,
+      invalidateMapping: invalidatePublicDataSourceCache,
+      runQuery: (dsId) =>
+        notion.dataSources.query({
+          data_source_id: dsId,
+          ...(queryOptions as Record<string, unknown>),
+        } as Parameters<typeof notion.dataSources.query>[0]) as unknown as Promise<NotionQueryResultLike>,
+    })
+  } else if (hasLegacyDatabaseQuery(notion.databases)) {
+    res = await notion.databases.query({ database_id: cleanId, ...queryOptions })
+  } else {
+    throw new Error('Notion client does not support database or data source queries')
+  }
+
+  setCache(key, res)
+  return res
+}
+
+async function fetchPage(pageId: string): Promise<NotionPageLike> {
+  const cacheId = isValidNotionId(pageId) ? normalizeNotionId(pageId) : pageId
+  const key = `page-${cacheId}`
+  const cached = getCache<NotionPageLike>(key)
+  if (cached) return cached
+  const res = (await notion.pages.retrieve({ page_id: pageId })) as unknown as NotionPageLike
+  setCache(key, res)
+  return res
+}
+
+async function searchNotion(
+  options: Parameters<typeof notion.search>[0] = {}
+): Promise<NotionSearchResultLike> {
+  const key = `search-${JSON.stringify(options)}`
+  const cached = getCache<NotionSearchResultLike>(key)
+  if (cached) return cached
+  const res = (await notion.search(options)) as unknown as NotionSearchResultLike
+  setCache(key, res)
+  return res
+}
+
+// ── Cursor pagination helpers ────────────────────────────────────────────────
+const MAX_PAGINATION_PAGES = 100 // safety guard (10,000 records)
+
+async function queryDatabaseAll(
+  dbId: string,
+  options: QueryDatabaseOptions = {}
+): Promise<{ results: NotionPageLike[] }> {
+  const results: NotionPageLike[] = []
+  let cursor: string | undefined = undefined
+  let pages = 0
+  do {
+    const res = await queryDatabase(dbId, {
+      ...options,
+      page_size: 100,
+      ...(cursor ? { start_cursor: cursor } : {}),
+    })
+    results.push(...(res?.results || []))
+    cursor = res?.has_more && res.next_cursor ? res.next_cursor : undefined
+    pages++
+  } while (cursor && pages < MAX_PAGINATION_PAGES)
+  return { results }
+}
+
+async function listAllChildren(blockId: string): Promise<NotionBlockLike[]> {
+  const results: NotionBlockLike[] = []
+  let cursor: string | undefined = undefined
+  let pages = 0
+  do {
+    const res = await fetchChildrenList(blockId, cursor)
+    results.push(...((res?.results || []) as unknown as NotionBlockLike[]))
+    cursor = res?.has_more && res.next_cursor ? res.next_cursor : undefined
+    pages++
+  } while (cursor && pages < MAX_PAGINATION_PAGES)
+  return results
+}
+
+async function searchAll(
+  options: Parameters<typeof notion.search>[0] = {}
+): Promise<{ results: NotionPageLike[] }> {
+  const results: NotionPageLike[] = []
+  let cursor: string | undefined = undefined
+  let pages = 0
+  do {
+    const res = await searchNotion({
+      ...options,
+      page_size: 100,
+      ...(cursor ? { start_cursor: cursor } : {}),
+    })
+    results.push(...(res?.results || []))
+    cursor = res?.has_more && res.next_cursor ? res.next_cursor : undefined
+    pages++
+  } while (cursor && pages < MAX_PAGINATION_PAGES)
+  return { results }
+}
+
+void searchAll
+
+export async function getChildBlocks(
+  blockId: string,
+  locale: string = DEFAULT_LOCALE
+): Promise<NotionRenderBlock[]> {
+  const targetLocale = normalizeLocale(locale)
+  const blocks: NotionBlockLike[] = []
+  let cursor: string | undefined = undefined
+  while (true) {
+    const { results, next_cursor, has_more } = await fetchChildrenList(blockId, cursor)
+    const rawBlocks = results as unknown as NotionBlockLike[]
+
+    const processedBlocks = await Promise.all(
+      rawBlocks.map(async (block): Promise<NotionBlockLike> => {
+        const isLinkedDb =
+          block.type === 'link_to_page' &&
+          block.link_to_page?.type === 'database_id' &&
+          Boolean(block.link_to_page?.database_id)
+        const isLinkedPage =
+          block.type === 'link_to_page' &&
+          block.link_to_page?.type === 'page_id' &&
+          Boolean(block.link_to_page?.page_id)
+
+        if (block.type === 'child_database' || isLinkedDb) {
+          const targetDbId = isLinkedDb && block.link_to_page?.database_id ? block.link_to_page.database_id : block.id
+          try {
+            const dbInfo = await fetchDatabase(targetDbId)
+            const resolvedDsId = dbInfo.data_sources?.[0]?.id || null
+            const queryTargetId = resolvedDsId || targetDbId
+            const dsFlag: QueryDatabaseOptions = resolvedDsId
+              ? { __isDataSourceId: true, __databaseId: targetDbId }
+              : {}
+            const dbTitlePlain = Array.isArray(dbInfo?.title)
+              ? dbInfo.title.map((t) => t.plain_text || '').join('').trim()
+              : ''
+            if (isLinkedDb) {
+              block.type = 'child_database'
+              block.child_database = {
+                title: dbTitlePlain || 'Course Modules',
+              }
+            } else if (!block.child_database?.title && dbTitlePlain) {
+              block.child_database = { title: dbTitlePlain }
+            }
+
+            let dbRes: { results: NotionPageLike[] }
+            try {
+              dbRes = await queryDatabaseAll(queryTargetId, {
+                ...dsFlag,
+                sorts: [{ property: 'Order', direction: 'ascending' }],
+              })
+            } catch {
+              dbRes = await queryDatabaseAll(queryTargetId, dsFlag)
+            }
+
+            const rawRows = dbRes.results || []
+            const publishedRows = rawRows.filter((row) => {
+              const props = row.properties || {}
+              const statusProp = props.Status || props.status || props.State || props.state
+              if (!statusProp) return true
+              const val =
+                statusProp.status?.name ||
+                statusProp.select?.name ||
+                (typeof statusProp.checkbox === 'boolean' ? (statusProp.checkbox ? 'Published' : 'Draft') : '')
+              if (!val) return true
+              const s = val.toLowerCase()
+              return s !== 'draft' && s !== 'archived' && s !== 'hidden'
+            })
+
+            const hasAnyLocaleProp = publishedRows.some((row) =>
+              Boolean(findPropertyByName(row.properties || {}, ['Locale', 'locale']))
+            )
+            const localeFilteredRows = hasAnyLocaleProp
+              ? publishedRows.filter((row) => {
+                  const rowLocaleProp = findPropertyByName(row.properties || {}, ['Locale', 'locale'])
+                  const rowLocale = normalizeLocale(getPropertyPlainText(rowLocaleProp))
+                  return rowLocale === targetLocale
+                })
+              : publishedRows
+
+            block.database_rows = localeFilteredRows.sort((a, b) => {
+              const orderA = a.properties?.Order?.number ?? a.properties?.order?.number ?? 999
+              const orderB = b.properties?.Order?.number ?? b.properties?.order?.number ?? 999
+              return orderA - orderB
+            })
+          } catch (err: unknown) {
+            console.error(`Failed to fetch child_database ${targetDbId}:`, err)
+            if (isLinkedDb) {
+              block.type = 'child_database'
+              block.child_database = { title: 'Database' }
+            }
+            block.database_rows = []
+          }
+        } else if (block.type === 'child_page' || isLinkedPage) {
+          const targetPageId = isLinkedPage && block.link_to_page?.page_id ? block.link_to_page.page_id : block.id
+          try {
+            const pageInfo = await fetchPage(targetPageId)
+            block.page_info = pageInfo
+            if (isLinkedPage) {
+              const extracted = extractPageProperties(pageInfo)
+              block.type = 'child_page'
+              block.id = targetPageId
+              block.child_page = { title: extracted.title || 'Untitled Page' }
+            }
+          } catch (err: unknown) {
+            console.error(`Failed to fetch child_page ${targetPageId}:`, err)
+          }
+        }
+        const hasChildren =
+          Boolean(block.has_children) ||
+          block.type === 'column_list' ||
+          block.type === 'column' ||
+          block.type === 'quote' ||
+          block.type === 'callout'
+
+        if (block.type === 'toggle') {
+          const togglePlainText = (block.toggle?.rich_text || [])
+            .map((t) => t.plain_text || '')
+            .join('')
+            .trim()
+
+          if (togglePlainText === '[slider]') {
+            const childBlocks = (await getChildBlocks(block.id, targetLocale)) as unknown as NotionBlockLike[]
+
+            const images: NotionSliderImage[] = childBlocks
+              .filter((child) => child.type === 'image')
+              .map((child) => {
+                const img = child.image
+                const isNotionHosted = img?.type === 'file' || (!img?.type && Boolean(img?.file?.url))
+                const url =
+                  img?.type === 'file'
+                    ? img.file?.url || ''
+                    : img?.type === 'external'
+                      ? img.external?.url || ''
+                      : img?.file?.url || img?.external?.url || ''
+
+                const caption = (img?.caption || []).map((t) => t.plain_text || '').join('')
+
+                return {
+                  url,
+                  caption,
+                  blockId: isNotionHosted && child.id ? child.id : null,
+                }
+              })
+              .filter((img) => Boolean(img.url))
+
+            block.type = 'custom_slider'
+            block.images = images
+
+            return block
+          }
+        }
+
+        const headingPayload = block.type?.startsWith('heading_') ? block[block.type] : undefined
+        const isToggleHeading = Boolean(
+          headingPayload &&
+            typeof headingPayload === 'object' &&
+            'is_toggleable' in headingPayload &&
+            (headingPayload as { is_toggleable?: boolean }).is_toggleable
+        )
+
+        if (
+          hasChildren &&
+          block.type !== 'toggle' &&
+          !isToggleHeading &&
+          block.type !== 'child_page' &&
+          block.type !== 'child_database'
+        ) {
+          block.children = (await getChildBlocks(block.id, targetLocale)) as unknown as NotionBlockLike[]
+        }
+        return block
+      })
+    )
+
+    blocks.push(...processedBlocks)
+
+    if (!has_more || !next_cursor) break
+    cursor = next_cursor
+  }
+  return blocks as unknown as NotionRenderBlock[]
+}
+
+/**
+ * Renders an array of Notion blocks to HTML, correctly grouping consecutive
+ * list items. Works around the @notion-render/client extension bug where
+ * non-list blocks following a list group are silently dropped.
+ */
+export async function renderBlocks(blocks: NotionRenderBlock[]): Promise<string> {
+  const parts: string[] = []
+  let i = 0
+  while (i < blocks.length) {
+    const block = blocks[i] as unknown as NotionBlockLike
+
+    // Group consecutive bulleted_list_item blocks
+    if (block.type === 'bulleted_list_item') {
+      const group: NotionBlockLike[] = []
+      while (i < blocks.length && (blocks[i] as unknown as NotionBlockLike).type === 'bulleted_list_item') {
+        group.push(blocks[i] as unknown as NotionBlockLike)
+        i++
+      }
+      const itemsHtml = await Promise.all(
+        group.map((b) => renderer.render(b as unknown as NotionRenderClientBlock))
+      )
+      parts.push(`<ul class="pl-2 sm:pl-4 space-y-2 my-5">${itemsHtml.join('')}</ul>`)
+      continue
+    }
+
+    // Group consecutive numbered_list_item blocks
+    if (block.type === 'numbered_list_item') {
+      const group: NotionBlockLike[] = []
+      while (i < blocks.length && (blocks[i] as unknown as NotionBlockLike).type === 'numbered_list_item') {
+        group.push(blocks[i] as unknown as NotionBlockLike)
+        i++
+      }
+      const itemsHtml = await Promise.all(
+        group.map((b, index) => {
+          b.list_index = index + 1
+          return renderer.render(b as unknown as NotionRenderClientBlock)
+        })
+      )
+      parts.push(`<ol class="pl-2 sm:pl-4 space-y-2 my-5">${itemsHtml.join('')}</ol>`)
+      continue
+    }
+
+    // All other blocks rendered individually via the registered renderer
+    parts.push(await renderer.render(block as unknown as NotionRenderClientBlock))
+    i++
+  }
+  return parts.join('')
+}
+
+export const getNotionPageData = cache(async function getNotionPageData(
+  pageId: string,
+  locale: string = DEFAULT_LOCALE
+): Promise<{ html: string; blocks: NotionRenderBlock[] }> {
+  const blocks = await getChildBlocks(pageId, locale)
+  const html = await renderBlocks(blocks)
+  return { html, blocks }
+})
+
+function extractNotionIcon(page: NotionPageLike | null | undefined): NotionIcon {
+  if (!page?.icon) return null
+  const icon = page.icon
+  if (typeof icon === 'string') {
+    return icon.startsWith('http') ? { type: 'external', value: icon } : { type: 'emoji', value: icon }
+  }
+  if (icon.type === 'emoji') {
+    return { type: 'emoji', value: icon.emoji }
+  }
+  if (icon.type === 'file') {
+    return { type: 'file', value: icon.file?.url }
+  }
+  if (icon.type === 'external') {
+    return { type: 'external', value: icon.external?.url }
+  }
+  if (icon.emoji) return { type: 'emoji', value: icon.emoji }
+  if (icon.file?.url) return { type: 'file', value: icon.file.url }
+  if (icon.external?.url) return { type: 'external', value: icon.external.url }
+  return null
+}
+
+function extractParentTitle(props: NotionPropertiesMap | null | undefined): string | null {
+  if (!props || typeof props !== 'object') return null
+
+  const candidates = [
+    'parent name',
+    'parent course name',
+    'parent course',
+    'parent item',
+    'parentname',
+    'parent',
+    'course',
+    'course name',
+  ]
+
+  const normalizeKey = (s: string) => String(s).toLowerCase().replace(/[\s_-]+/g, '')
+  const propEntries = Object.entries(props)
+
+  for (const candidate of candidates) {
+    const targetNorm = normalizeKey(candidate)
+    const matchedEntry = propEntries.find(([k]) => normalizeKey(k) === targetNorm)
+    const p = matchedEntry ? matchedEntry[1] : null
+    if (!p) continue
+
+    // ── Rollup property ──────────────────────────────────────────────────────
+    if (p.type === 'rollup' && p.rollup) {
+      const r = p.rollup
+      if (r.type === 'array' && Array.isArray(r.array)) {
+        for (const item of r.array) {
+          if (item.type === 'title' && item.title && item.title.length > 0) {
+            const text = item.title.map((t) => t.plain_text || '').join('').trim()
+            if (text) return text
+          }
+          if (item.type === 'rich_text' && item.rich_text && item.rich_text.length > 0) {
+            const text = item.rich_text.map((t) => t.plain_text || '').join('').trim()
+            if (text) return text
+          }
+          if (item.type === 'select' && item.select?.name) {
+            return item.select.name.trim()
+          }
+          if (item.type === 'relation' && item.relation && item.relation.length > 0 && item.relation[0].id) {
+            return item.relation[0].id
+          }
+        }
+      }
+      if (r.type === 'title' && r.title && r.title.length > 0) {
+        return r.title.map((t) => t.plain_text || '').join('').trim() || null
+      }
+      if (r.type === 'rich_text' && r.rich_text && r.rich_text.length > 0) {
+        return r.rich_text.map((t) => t.plain_text || '').join('').trim() || null
+      }
+    }
+
+    // ── Plain rich_text, select, formula (string), relation ──────────────────
+    if (p.type === 'rich_text' && p.rich_text && p.rich_text.length > 0) {
+      return p.rich_text.map((t) => t.plain_text || '').join('').trim() || null
+    }
+    if (p.type === 'select' && p.select?.name) return p.select.name
+    if (p.type === 'formula' && p.formula?.type === 'string' && p.formula.string) {
+      return p.formula.string.trim() || null
+    }
+    if (p.type === 'relation' && p.relation && p.relation.length > 0 && p.relation[0].id) {
+      return p.relation[0].id
+    }
+  }
+
+  return null
+}
+
+function findPropertyByName(
+  props: NotionPropertiesMap | null | undefined,
+  candidates: readonly string[]
+): NotionPropertyLike | null {
+  const normalize = (s: string) => String(s).toLowerCase().replace(/[\s_-]+/g, '')
+  const keysByNorm = new Map<string, string>()
+  for (const key of Object.keys(props || {})) {
+    const norm = normalize(key)
+    if (!keysByNorm.has(norm)) keysByNorm.set(norm, key)
+  }
+  for (const candidate of candidates) {
+    const key = keysByNorm.get(normalize(candidate))
+    if (key && props?.[key]) return props[key] ?? null
+  }
+  return null
+}
+
+function extractPageProperties(page: NotionPageLike): NotionArticleSummary {
+  const props = page.properties || {}
+
+  let title = 'Untitled'
+  for (const key of Object.keys(props)) {
+    const prop = props[key]
+    if (prop?.type === 'title' && prop.title && prop.title.length > 0) {
+      title = prop.title.map((t) => t.plain_text || '').join('')
+      break
+    }
+  }
+
+  let slug = ''
+  if (props.Slug?.rich_text) slug = props.Slug.rich_text.map((t) => t.plain_text || '').join('')
+  else if (props.slug?.rich_text) slug = props.slug.rich_text.map((t) => t.plain_text || '').join('')
+  if (!slug) {
+    slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '') || page.id.replace(/-/g, '')
+  }
+
+  let tags: string[] = []
+  const tagProp = props.Tags || props.tags
+  if (tagProp?.multi_select) {
+    tags = tagProp.multi_select.map((item) => item.name || '').filter(Boolean)
+  } else if (tagProp?.select?.name) {
+    tags = [tagProp.select.name]
+  }
+
+  // Category — check dedicated property, fall back to first tag
+  let category = ''
+  const catProp = props.Category || props.category
+  if (catProp?.select?.name) {
+    category = catProp.select.name
+  } else if (catProp?.multi_select?.[0]?.name) {
+    category = catProp.multi_select[0].name
+  } else if (catProp?.status?.name) {
+    category = catProp.status.name
+  } else if (catProp?.rich_text) {
+    category = catProp.rich_text.map((t) => t.plain_text || '').join('')
+  }
+  if (!category && tags.length > 0) {
+    category = tags[0]
+  }
+
+  let summary = ''
+  const sumProp = props.Summary || props.summary
+  if (sumProp?.rich_text) {
+    summary = sumProp.rich_text.map((t) => t.plain_text || '').join('')
+  }
+
+  const cover = page.cover ? page.cover?.external?.url || page.cover?.file?.url || null : null
+  const coverIsNotionHosted = page.cover?.type === 'file'
+  const icon = extractNotionIcon(page)
+  const parentTitle = extractParentTitle(props)
+
+  const orderProp = props.Order || props.order
+  const order = typeof orderProp?.number === 'number' ? orderProp.number : null
+
+  let status = 'Published'
+  const statusProp = props.Status || props.status || props.type
+  if (statusProp?.status?.name) {
+    status = statusProp.status.name
+  } else if (statusProp?.select?.name) {
+    status = statusProp.select.name
+  } else if (typeof statusProp?.checkbox === 'boolean') {
+    status = statusProp.checkbox ? 'Published' : 'Draft'
+  }
+
+  const locale = normalizeLocale(getPropertyPlainText(findPropertyByName(props, ['Locale'])))
+
+  const translationGroupId = getPropertyPlainText(
+    findPropertyByName(props, ['Translation Group ID', 'Translation Group', 'TranslationGroupId'])
+  ).trim()
+
+  return {
+    id: page.id,
+    title,
+    slug,
+    tags,
+    category,
+    summary,
+    cover,
+    coverIsNotionHosted,
+    icon,
+    parentTitle,
+    parent: (page.parent as NotionPageParent | null) || null,
+    order,
+    status,
+    locale,
+    translationGroupId,
+    date: page.last_edited_time || page.created_time,
+  }
+}
+
+const getAllPublishedPosts = cache(async function getAllPublishedPosts(): Promise<NotionArticleSummary[]> {
+  const rootId = (process.env.NOTION_ROOT_PAGE_ID || process.env.NOTION_DATABASE_ID || '').trim()
+  if (!rootId) return []
+
+  let allPosts: NotionArticleSummary[] = []
+
+  // 1. Try querying as a database (all pages, cursor-paginated)
+  try {
+    const dbRes = await queryDatabaseAll(rootId)
+    if (dbRes?.results?.length > 0) {
+      allPosts = dbRes.results.filter((p) => !isPageStatusHidden(p)).map(extractPageProperties)
+    }
+  } catch {
+    // Not queryable as database
+  }
+
+  // 2. Try listing child pages or child databases under root page
+  if (allPosts.length === 0) {
+    try {
+      const results = await listAllChildren(rootId)
+      const dbBlocks = results.filter((b) => b.type === 'child_database')
+      const pageBlocks = results.filter((b) => b.type === 'child_page')
+
+      if (dbBlocks.length > 0) {
+        const dbPostsNested = await Promise.all(
+          dbBlocks.map(async (dbBlock) => {
+            try {
+              const dbRes = await queryDatabaseAll(dbBlock.id)
+              return (dbRes?.results || []).filter((p) => !isPageStatusHidden(p)).map(extractPageProperties)
+            } catch {
+              return []
+            }
+          })
+        )
+        allPosts.push(...dbPostsNested.flat())
+      }
+
+      if (pageBlocks.length > 0) {
+        const childPages = await Promise.all(
+          pageBlocks.map(async (b) => {
+            try {
+              const p = await fetchPage(b.id)
+              if (isPageStatusHidden(p)) return null
+              return extractPageProperties(p)
+            } catch {
+              return null
+            }
+          })
+        )
+        for (const childPage of childPages) {
+          if (childPage) allPosts.push(childPage)
+        }
+      }
+    } catch {
+      // Root page not listable as block
+    }
+  }
+
+  // Filter only Published posts (exclude Draft, Archived, Hidden, and non-Published statuses)
+  const published = allPosts.filter((p) => {
+    if (!p || !p.title || p.title === 'Untitled') return false
+    const s = String(p.status || '').trim().toLowerCase()
+    return s === 'published'
+  })
+
+  // Disambiguate duplicate slugs automatically based on locale
+  const slugCounts = new Map<string, number>()
+  for (const post of published) {
+    if (!post.slug) continue
+    slugCounts.set(post.slug, (slugCounts.get(post.slug) || 0) + 1)
+  }
+
+  for (const post of published) {
+    if (post.slug && (slugCounts.get(post.slug) || 0) > 1) {
+      const loc = post.locale || DEFAULT_LOCALE
+      if (loc !== DEFAULT_LOCALE && !post.slug.endsWith(`-${loc}`)) {
+        post.slug = `${post.slug}-${loc}`
+      }
+    }
+  }
+
+  return published
+})
+
+/**
+ * Returns published posts for a locale.
+ *   getAllPosts('en')  → English articles (homepage)
+ *   getAllPosts('vi')  → Vietnamese articles
+ *   getAllPosts('all') → every published article (routing, sitemap, translations)
+ */
+export const getAllPosts = cache(async function getAllPosts(
+  locale: string = 'all'
+): Promise<NotionArticleSummary[]> {
+  const posts = await getAllPublishedPosts()
+  if (!locale || locale === 'all') return posts
+  const target = normalizeLocale(locale)
+  return posts.filter((p) => (p.locale || DEFAULT_LOCALE) === target)
+})
+
+// ── Translation helpers ─────────────────────────────────────────────────────
+
+function normalizeGroupKey(groupId: string | null | undefined): string {
+  return String(groupId || '').trim().toLowerCase()
+}
+
+function warnOnce(key: string, message: string): void {
+  if (!globalThis.__notionI18nWarnings) globalThis.__notionI18nWarnings = new Set()
+  if (globalThis.__notionI18nWarnings.has(key)) return
+  globalThis.__notionI18nWarnings.add(key)
+  console.warn(message)
+}
+
+function toTranslationMeta(post: NotionArticleSummary): NotionTranslationMeta {
+  return {
+    id: post.id,
+    slug: post.slug || normalizeNotionId(post.id),
+    title: post.title,
+    summary: post.summary || '',
+    icon: post.icon || null,
+    locale: post.locale || DEFAULT_LOCALE,
+    translationGroupId: post.translationGroupId || '',
+    date: post.date || null,
+  }
+}
+
+const getTranslationIndex = cache(async function getTranslationIndex(): Promise<
+  Map<string, Map<string, NotionArticleSummary[]>>
+> {
+  const posts = await getAllPublishedPosts()
+  const groups = new Map<string, Map<string, NotionArticleSummary[]>>()
+  const slugs = new Map<string, NotionArticleSummary[]>()
+
+  for (const post of posts) {
+    if (post.slug) {
+      let slugList = slugs.get(post.slug)
+      if (!slugList) {
+        slugList = []
+        slugs.set(post.slug, slugList)
+      }
+      slugList.push(post)
+    }
+
+    const key = normalizeGroupKey(post.translationGroupId)
+    if (!key) continue
+    let byLocale = groups.get(key)
+    if (!byLocale) {
+      byLocale = new Map<string, NotionArticleSummary[]>()
+      groups.set(key, byLocale)
+    }
+    const locale = post.locale || DEFAULT_LOCALE
+    let localeList = byLocale.get(locale)
+    if (!localeList) {
+      localeList = []
+      byLocale.set(locale, localeList)
+    }
+    localeList.push(post)
+  }
+
+  for (const [key, byLocale] of groups) {
+    for (const [locale, list] of byLocale) {
+      if (list.length > 1) {
+        const details = list.map((p) => `"${p.title}" (slug: ${p.slug}, id: ${p.id})`).join(', ')
+        warnOnce(
+          `dup-${key}-${locale}-${list.map((p) => p.id).sort().join(',')}`,
+          `[i18n] Duplicate translation: Translation Group ID "${list[0].translationGroupId}" has ${list.length} published "${locale}" articles: ${details}. ` +
+            `The language switcher and hreflang links for this group/locale are disabled until only one remains.`
+        )
+      }
+    }
+  }
+
+  for (const [slug, list] of slugs) {
+    if (list.length > 1) {
+      warnOnce(
+        `slug-${slug}-${list.map((p) => p.id).sort().join(',')}`,
+        `[i18n] Slug collision: ${list.length} published articles share the slug "${slug}" (${list.map((p) => `${p.locale}: ${p.id}`).join(', ')}). Give each language version its own Slug.`
+      )
+    }
+  }
+
+  return groups
+})
+
+export const getTranslatedArticle = cache(async function getTranslatedArticle(
+  translationGroupId: string | null | undefined,
+  targetLocale: string | null | undefined
+): Promise<NotionTranslationMeta | null> {
+  const key = normalizeGroupKey(translationGroupId)
+  if (!key || !targetLocale) return null
+  const locale = normalizeLocale(targetLocale)
+
+  const index = await getTranslationIndex()
+  const candidates = index.get(key)?.get(locale) || []
+  if (candidates.length !== 1) return null
+  return toTranslationMeta(candidates[0])
+})
+
+export async function getTranslationMappings(): Promise<TranslationMappingsResult> {
+  const cached = getCache<TranslationMappingsResult>(MAPPINGS_CACHE_KEY, MAPPINGS_CACHE_TTL)
+  if (cached) return cached
+
+  const mappingDbId = (process.env.NOTION_TRANSLATION_MAPPING_DATABASE_ID || DEFAULT_MAPPING_DB_ID).trim()
+
+  const byEnId = new Map<string, TranslationMappingEntry>()
+  const byViId = new Map<string, TranslationMappingEntry>()
+  const all: TranslationMappingEntry[] = []
+
+  if (!mappingDbId) {
+    const empty: TranslationMappingsResult = { byEnId, byViId, all }
+    setCache(MAPPINGS_CACHE_KEY, empty)
+    return empty
+  }
+
+  try {
+    const dbRes = await queryDatabaseAll(mappingDbId, { __ttl: MAPPINGS_CACHE_TTL })
+    const rows = dbRes?.results || []
+
+    for (const page of rows) {
+      const props = page.properties || {}
+
+      let name = 'Untitled'
+      for (const key of Object.keys(props)) {
+        const prop = props[key]
+        if (prop?.type === 'title' && prop.title && prop.title.length > 0) {
+          name = prop.title.map((t) => t.plain_text || '').join('')
+          break
+        }
+      }
+
+      const enProp = findPropertyByName(props, ['EN Page ID', 'EN Page Id', 'English Page ID', 'EN ID', 'EnPageId'])
+      const enPageId = getPropertyPlainText(enProp).trim()
+
+      const viProp = findPropertyByName(props, ['VI Page ID', 'VI Page Id', 'Vietnamese Page ID', 'VI ID', 'ViPageId'])
+      const viPageId = getPropertyPlainText(viProp).trim()
+
+      const statusProp = findPropertyByName(props, ['Status', 'Translation Status', 'State'])
+      let statusVal = 'Draft'
+      if (statusProp?.status?.name) {
+        statusVal = statusProp.status.name
+      } else if (statusProp?.select?.name) {
+        statusVal = statusProp.select.name
+      } else if (statusProp) {
+        statusVal = getPropertyPlainText(statusProp) || 'Draft'
+      }
+
+      const isReady = statusVal.trim().toLowerCase() === 'ready'
+      const normEnId = normalizeNotionId(enPageId)
+      const normViId = normalizeNotionId(viPageId)
+
+      const entry: TranslationMappingEntry = {
+        rowId: page.id,
+        name,
+        enPageId,
+        viPageId,
+        normEnId,
+        normViId,
+        status: statusVal.trim(),
+        isReady,
+      }
+
+      if (normEnId) {
+        byEnId.set(normEnId, entry)
+      }
+      if (normViId) {
+        byViId.set(normViId, entry)
+      }
+      all.push(entry)
+    }
+  } catch (err: unknown) {
+    console.error(`[Translation Mapping] Failed to query mapping database ${mappingDbId}:`, err)
+  }
+
+  const result: TranslationMappingsResult = { byEnId, byViId, all }
+  setCache(MAPPINGS_CACHE_KEY, result)
+  return result
+}
+
+export async function getArticleTranslations(
+  article: Pick<NotionArticleSummary, 'id' | 'locale' | 'translationGroupId' | 'parent'> | null | undefined
+): Promise<ArticleTranslationsMap> {
+  const currentLocale = article?.locale || DEFAULT_LOCALE
+  const result: ArticleTranslationsMap = {}
+  for (const locale of SUPPORTED_LOCALES) {
+    if (locale !== currentLocale) result[locale] = null
+  }
+  if (!article?.id) return result
+
+  let hasGroupTranslation = false
+  if (article.translationGroupId) {
+    const self = await getTranslatedArticle(article.translationGroupId, currentLocale)
+    if (self && normalizeNotionId(self.id) === normalizeNotionId(article.id)) {
+      for (const locale of Object.keys(result)) {
+        const found = await getTranslatedArticle(article.translationGroupId, locale)
+        if (found) {
+          result[locale] = found
+          hasGroupTranslation = true
+        }
+      }
+      if (hasGroupTranslation) return result
+    }
+
+    const parentLike = article.parent as NotionParentLike | null | undefined
+    const parentDbId = parentLike?.database_id || parentLike?.data_source_id
+    if (parentDbId) {
+      try {
+        const dbRes = await queryDatabaseAll(parentDbId)
+        const rows = (dbRes?.results || []).map(extractPageProperties).filter((p) => {
+          if (!p || !p.title || p.title === 'Untitled') return false
+          const s = (p.status || '').toLowerCase()
+          return s !== 'draft' && s !== 'archived' && s !== 'hidden'
+        })
+        const targetGroupKey = normalizeGroupKey(article.translationGroupId)
+        const groupRows = rows.filter((r) => normalizeGroupKey(r.translationGroupId) === targetGroupKey)
+        const selfMatches = groupRows.filter((r) => (r.locale || DEFAULT_LOCALE) === currentLocale)
+        if (selfMatches.length === 1 && normalizeNotionId(selfMatches[0].id) === normalizeNotionId(article.id)) {
+          for (const locale of Object.keys(result)) {
+            const candidates = groupRows.filter((r) => (r.locale || DEFAULT_LOCALE) === locale)
+            if (candidates.length === 1) {
+              result[locale] = toTranslationMeta(candidates[0])
+              hasGroupTranslation = true
+            }
+          }
+          if (hasGroupTranslation) return result
+        }
+      } catch {
+        // Ignore nested database translation lookup errors
+      }
+    }
+  }
+
+  // ── Dynamic Notion Translation Mapping lookup (child pages & manual pairs) ──
+  try {
+    const normId = normalizeNotionId(article.id)
+    const mappings = await getTranslationMappings()
+
+    if (currentLocale === 'en' || mappings.byEnId.has(normId)) {
+      const mapping = mappings.byEnId.get(normId)
+      if (mapping && mapping.isReady && mapping.viPageId) {
+        try {
+          const viPage = await fetchPage(mapping.viPageId)
+          if (viPage && viPage.id) {
+            const viExtracted = extractPageProperties(viPage)
+            result.vi = toTranslationMeta({
+              ...viExtracted,
+              locale: 'vi',
+              slug: viExtracted.slug || normalizeNotionId(viPage.id),
+            })
+          }
+        } catch (fetchErr: unknown) {
+          console.error(`Failed to fetch VI translated page ${mapping.viPageId}:`, fetchErr)
+        }
+      }
+    }
+
+    if (currentLocale === 'vi' || mappings.byViId.has(normId)) {
+      const mapping = mappings.byViId.get(normId)
+      if (mapping && mapping.isReady && mapping.enPageId) {
+        try {
+          const enPage = await fetchPage(mapping.enPageId)
+          if (enPage && enPage.id) {
+            const enExtracted = extractPageProperties(enPage)
+            result.en = toTranslationMeta({
+              ...enExtracted,
+              locale: 'en',
+              slug: enExtracted.slug || normalizeNotionId(enPage.id),
+            })
+          }
+        } catch (fetchErr: unknown) {
+          console.error(`Failed to fetch EN translated page ${mapping.enPageId}:`, fetchErr)
+        }
+      }
+    }
+  } catch (mapErr: unknown) {
+    console.error('Failed to resolve translations from dynamic mapping database:', mapErr)
+  }
+
+  return result
+}
+
+function unescapeHtml(str: string): string {
+  return String(str)
+    .replace(/&#039;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&')
+}
+
+const getLocalizedLinkMap = cache(async function getLocalizedLinkMap(locale: string): Promise<Map<string, string>> {
+  const posts = await getAllPublishedPosts()
+  const map = new Map<string, string>()
+  for (const post of posts) {
+    if (!post.translationGroupId || (post.locale || DEFAULT_LOCALE) === locale) continue
+    const self = await getTranslatedArticle(post.translationGroupId, post.locale)
+    if (!self || normalizeNotionId(self.id) !== normalizeNotionId(post.id)) continue
+    const target = await getTranslatedArticle(post.translationGroupId, locale)
+    if (!target?.slug) continue
+    if (post.slug) map.set(post.slug, target.slug)
+    map.set(normalizeNotionId(post.id), target.slug)
+  }
+
+  try {
+    const mappings = await getTranslationMappings()
+    for (const entry of mappings.all) {
+      if (!entry.isReady) continue
+      if (locale === 'vi' && entry.normEnId && entry.normViId) {
+        const targetSlug = entry.viPageId.replace(/-/g, '')
+        map.set(entry.normEnId, targetSlug)
+      } else if (locale === 'en' && entry.normViId && entry.normEnId) {
+        const targetSlug = entry.enPageId.replace(/-/g, '')
+        map.set(entry.normViId, targetSlug)
+      }
+    }
+  } catch {
+    // Ignore mapping errors
+  }
+
+  return map
+})
+
+export async function localizeInternalLinks(html: string, locale: string): Promise<string> {
+  if (!html || !locale) return html
+  const map = await getLocalizedLinkMap(normalizeLocale(locale))
+  if (map.size === 0) return html
+
+  return html.replace(/href="\/([^"\/?#]+)([^"]*)"/g, (match: string, segment: string, rest: string) => {
+    let key = unescapeHtml(segment)
+    try {
+      key = decodeURIComponent(key)
+    } catch {
+      /* keep raw */
+    }
+    let target = map.get(key)
+    if (!target) {
+      const compact = key.replace(/-/g, '').toLowerCase()
+      if (/^[0-9a-f]{32}$/.test(compact)) target = map.get(compact)
+    }
+    return target ? `href="/${escapeHtml(target)}${rest}"` : match
+  })
+}
+
+export const getPageBySlug = cache(async function getPageBySlug(slug: string): Promise<NotionArticlePage | null> {
+  if (!slug || typeof slug !== 'string') {
+    return null
+  }
+
+  const posts = await getAllPosts('all')
+  const slugIsNotionId = isValidNotionId(slug)
+  const slugNormId = slugIsNotionId ? normalizeNotionId(slug) : ''
+  let post = posts.find(
+    (p) => p.slug === slug || (Boolean(slugNormId) && normalizeNotionId(p.id) === slugNormId)
+  )
+
+  // Fallback 1: Direct Notion page retrieval only when slug is a valid Notion UUID
+  if (!post && slugIsNotionId) {
+    try {
+      if (await isPublicNotionPage(slug)) {
+        const page = await fetchPage(slug)
+        if (page && page.id && !isPageStatusHidden(page)) {
+          post = extractPageProperties(page)
+        }
+      }
+    } catch {
+      // Ignore retrieve error
+    }
+  }
+
+  // Fallback 2: Workspace search for nested public pages/embedded database rows (non-UUID slugs only)
+  if (!post && !slugIsNotionId) {
+    try {
+      const searchQuery = slug.replace(/-/g, ' ')
+      const searchRes = await searchNotion({
+        query: searchQuery,
+        filter: { value: 'page', property: 'object' },
+      })
+
+      const exactMatches: Array<{ page: NotionPageLike; extracted: NotionArticleSummary }> = []
+      const titleMatches: Array<{ page: NotionPageLike; extracted: NotionArticleSummary }> = []
+
+      for (const page of searchRes.results || []) {
+        if (!page?.id || isPageStatusHidden(page)) continue
+        const extracted = extractPageProperties(page)
+        const rawTitle = extracted.title || ''
+        const slugifiedTitle = rawTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '')
+        const rawSlug = extracted.slug || ''
+        const idNoHyphens = page.id.replace(/-/g, '')
+
+        if (rawSlug === slug || slugifiedTitle === slug || idNoHyphens === slug || page.id === slug) {
+          exactMatches.push({ page, extracted })
+        } else if (
+          extracted.title &&
+          extracted.title.toLowerCase().trim() === searchQuery.toLowerCase().trim()
+        ) {
+          titleMatches.push({ page, extracted })
+        }
+      }
+
+      for (const candidate of [...exactMatches, ...titleMatches]) {
+        if (await isPublicNotionPage(candidate.page.id)) {
+          post = candidate.extracted
+          break
+        }
+      }
+    } catch (searchErr: unknown) {
+      console.error(`Failed workspace search fallback for slug ${slug}:`, searchErr)
+    }
+  }
+
+  if (!post || !post.id || !(await isPublicNotionPage(post.id))) {
+    return null
+  }
+
+  try {
+    let locale = post.locale || DEFAULT_LOCALE
+    // Resolve child-page locale from Notion Translation Mapping database
+    try {
+      const mappings = await getTranslationMappings()
+      const normId = normalizeNotionId(post.id)
+      const parentLike = post.parent as NotionParentLike | null | undefined
+      if (mappings.byViId.has(normId)) {
+        locale = 'vi'
+        post.locale = 'vi'
+      } else if (mappings.byEnId.has(normId)) {
+        locale = 'en'
+        post.locale = 'en'
+      } else if (parentLike?.type === 'page_id' && parentLike.page_id) {
+        const parentNormId = normalizeNotionId(parentLike.page_id)
+        if (mappings.byViId.has(parentNormId)) {
+          locale = 'vi'
+          post.locale = 'vi'
+        }
+      }
+    } catch {
+      // Ignore mapping resolution errors
+    }
+
+    const { html: rawHtml, blocks } = await getNotionPageData(post.id, locale)
+    let html = rawHtml
+    try {
+      html = await localizeInternalLinks(rawHtml, locale)
+    } catch (linkErr: unknown) {
+      console.error(`Failed to localize internal links for ${post.id}:`, linkErr)
+    }
+    return {
+      html,
+      blocks,
+      id: post.id,
+      slug: post.slug || '',
+      title: post.title || 'Lesson',
+      summary: post.summary || '',
+      cover: post.cover || null,
+      coverIsNotionHosted: Boolean(post.coverIsNotionHosted),
+      icon: post.icon || null,
+      order: post.order ?? null,
+      parentTitle: post.parentTitle || null,
+      parent: post.parent || null,
+      category: (post.tags && post.tags[0]) || 'Documentation',
+      tags: post.tags || [],
+      status: post.status || 'Published',
+      locale,
+      translationGroupId: post.translationGroupId || '',
+      date: post.date || null,
+    }
+  } catch (err: unknown) {
+    console.error(`Failed to fetch page HTML for id ${post?.id} (slug: ${slug}):`, err)
+    return null
+  }
+})
+
+export const getSiblingPages = cache(async function getSiblingPages(
+  currentPage: Pick<NotionArticleSummary, 'id' | 'slug' | 'parent' | 'locale' | 'parentTitle'> | null | undefined
+): Promise<SiblingPagesResult> {
+  if (!currentPage || !currentPage.id) {
+    return { prevPage: null, nextPage: null }
+  }
+
+  let parent: NotionParentLike | null | undefined = currentPage.parent as NotionParentLike | null | undefined
+  if (!parent) {
+    try {
+      const pageDetails = await fetchPage(currentPage.id)
+      parent = pageDetails?.parent || null
+    } catch (err: unknown) {
+      console.error(`Failed to retrieve parent information for page ${currentPage.id}:`, err)
+      return { prevPage: null, nextPage: null }
+    }
+  }
+
+  if (!parent || !parent.type) {
+    return { prevPage: null, nextPage: null }
+  }
+
+  const normalizeId = (id: string | null | undefined) => (id ? String(id).replace(/-/g, '').toLowerCase() : '')
+  const currentNormId = normalizeId(currentPage.id)
+  const currentLocale = currentPage.locale || DEFAULT_LOCALE
+  const rootId = (process.env.NOTION_ROOT_PAGE_ID || process.env.NOTION_DATABASE_ID || '').trim()
+
+  // Case A: Database item
+  if (parent.type === 'database_id' || parent.type === 'data_source_id') {
+    const parentDbId = parent.database_id || parent.data_source_id
+    const isRootDb = Boolean(rootId) && normalizeId(parentDbId) === normalizeId(rootId)
+
+    if (!isRootDb && parentDbId) {
+      try {
+        const dbRes = await queryDatabaseAll(parentDbId)
+        const rows = (dbRes?.results || [])
+          .map(extractPageProperties)
+          .filter((p) => {
+            if (!p || !p.title || p.title === 'Untitled') return false
+            const s = (p.status || '').toLowerCase()
+            if (s === 'draft' || s === 'archived' || s === 'hidden') return false
+            return (p.locale || DEFAULT_LOCALE) === currentLocale
+          })
+          .sort((a, b) => (a.order ?? 999) - (b.order ?? 999))
+
+        const idx = rows.findIndex((r) => normalizeId(r.id) === currentNormId)
+        if (idx === -1 || rows.length <= 1) return { prevPage: null, nextPage: null }
+        const toNav = (r: NotionArticleSummary | undefined): SiblingNavPage | null =>
+          r ? { id: r.id, title: r.title, slug: r.slug, icon: r.icon || null } : null
+        return {
+          prevPage: idx > 0 ? toNav(rows[idx - 1]) : null,
+          nextPage: idx < rows.length - 1 ? toNav(rows[idx + 1]) : null,
+        }
+      } catch {
+        return { prevPage: null, nextPage: null }
+      }
+    }
+
+    if (currentPage.parentTitle) {
+      const targetParentTitle = currentPage.parentTitle.trim()
+      try {
+        const localePosts = await getAllPosts(currentLocale)
+        const siblings = localePosts
+          .filter((p) => Boolean(p.parentTitle) && p.parentTitle!.trim() === targetParentTitle)
+          .sort((a, b) => (a.order ?? 999) - (b.order ?? 999))
+
+        const idx = siblings.findIndex((r) => normalizeId(r.id) === currentNormId)
+        if (idx === -1 || siblings.length <= 1) return { prevPage: null, nextPage: null }
+        const toNav = (r: NotionArticleSummary | undefined): SiblingNavPage | null =>
+          r ? { id: r.id, title: r.title, slug: r.slug, icon: r.icon || null } : null
+        return {
+          prevPage: idx > 0 ? toNav(siblings[idx - 1]) : null,
+          nextPage: idx < siblings.length - 1 ? toNav(siblings[idx + 1]) : null,
+        }
+      } catch {
+        return { prevPage: null, nextPage: null }
+      }
+    }
+
+    return { prevPage: null, nextPage: null }
+  }
+
+  // Case B: Current page's parent type is 'page_id' or 'workspace' (or 'block_id')
+  const isNestedPage = parent.type === 'page_id' || parent.type === 'workspace' || parent.type === 'block_id'
+  if (!isNestedPage) {
+    return { prevPage: null, nextPage: null }
+  }
+
+  let parentId: string | null = null
+  if (parent.type === 'page_id') {
+    parentId = parent.page_id || null
+  } else if (parent.type === 'block_id') {
+    parentId = parent.block_id || null
+  } else if (parent.type === 'workspace') {
+    parentId = (process.env.NOTION_ROOT_PAGE_ID || process.env.NOTION_DATABASE_ID || '').trim() || null
+  }
+
+  if (!parentId) {
+    return { prevPage: null, nextPage: null }
+  }
+
+  const parentBlocks: NotionBlockLike[] = []
+  try {
+    let cursor: string | undefined = undefined
+    while (true) {
+      const res = await fetchChildrenList(parentId, cursor)
+      if (!res || !res.results) break
+      parentBlocks.push(...(res.results as unknown as NotionBlockLike[]))
+      if (!res.has_more || !res.next_cursor) break
+      cursor = res.next_cursor
+    }
+  } catch (err: unknown) {
+    console.error(`Failed to fetch child blocks for parent ${parentId}:`, err)
+    return { prevPage: null, nextPage: null }
+  }
+
+  const childPageBlocks = parentBlocks.filter((block) => block.type === 'child_page')
+  if (childPageBlocks.length <= 1) {
+    return { prevPage: null, nextPage: null }
+  }
+
+  interface RawChildPageRef {
+    id: string
+    title: string
+  }
+
+  const rawChildPages: RawChildPageRef[] = childPageBlocks.map((block) => ({
+    id: block.id,
+    title: block.child_page?.title || 'Untitled Page',
+  }))
+
+  const allPosts = await getAllPosts('all').catch(() => [] as NotionArticleSummary[])
+  const findPost = (id: string) => allPosts.find((post) => normalizeId(post.id) === normalizeId(id))
+
+  const childPages: RawChildPageRef[] = []
+  const seenIds = new Set<string>()
+  const mappings = await getTranslationMappings().catch(() => null)
+
+  for (const sibling of rawChildPages) {
+    let entry: RawChildPageRef = sibling
+    const isCurrent = normalizeId(sibling.id) === currentNormId
+    const post = findPost(sibling.id)
+    if (!isCurrent && post && (post.locale || DEFAULT_LOCALE) !== currentLocale) {
+      const translated = post.translationGroupId
+        ? await getTranslatedArticle(post.translationGroupId, currentLocale).catch(() => null)
+        : null
+      if (!translated) continue
+      entry = { id: translated.id, title: translated.title }
+    } else if (!isCurrent && mappings) {
+      const sibNorm = normalizeId(sibling.id)
+      if (currentLocale === 'vi' && mappings.byEnId.has(sibNorm)) {
+        const m = mappings.byEnId.get(sibNorm)
+        if (m?.isReady && m.viPageId) {
+          entry = { id: m.viPageId, title: m.name || sibling.title }
+        }
+      } else if (currentLocale === 'en' && mappings.byViId.has(sibNorm)) {
+        const m = mappings.byViId.get(sibNorm)
+        if (m?.isReady && m.enPageId) {
+          entry = { id: m.enPageId, title: m.name || sibling.title }
+        }
+      }
+    }
+    const key = normalizeId(entry.id)
+    if (seenIds.has(key)) continue
+    seenIds.add(key)
+    childPages.push(entry)
+  }
+
+  const currentIndex = childPages.findIndex((page) => normalizeId(page.id) === currentNormId)
+  if (currentIndex === -1) {
+    return { prevPage: null, nextPage: null }
+  }
+
+  const rawPrev = currentIndex > 0 ? childPages[currentIndex - 1] : null
+  const rawNext = currentIndex < childPages.length - 1 ? childPages[currentIndex + 1] : null
+
+  const mapSiblingToNavPage = (sibling: RawChildPageRef | null): SiblingNavPage | null => {
+    if (!sibling) return null
+    const matched = findPost(sibling.id)
+
+    if (matched) {
+      return {
+        id: matched.id || sibling.id,
+        title: matched.title || sibling.title || 'Untitled Page',
+        slug:
+          matched.slug ||
+          (matched.title
+            ? matched.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '')
+            : sibling.id.replace(/-/g, '')),
+        icon: matched.icon || null,
+      }
+    }
+
+    const title = sibling.title || 'Untitled Page'
+    const fallbackSlug =
+      title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '') || sibling.id.replace(/-/g, '')
+    return {
+      id: sibling.id,
+      title,
+      slug: fallbackSlug,
+      icon: null,
+    }
+  }
+
+  return {
+    prevPage: mapSiblingToNavPage(rawPrev),
+    nextPage: mapSiblingToNavPage(rawNext),
+  }
+})
+
+// ── On-Demand Notion Image URL Recovery ──────────────────────────────────────
+
+const NOTION_UUID_REGEX = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i
+const IMAGE_REFRESH_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+const IMAGE_EXPIRY_SAFETY_BUFFER_MS = 5 * 60 * 1000 // never serve URL expiring within 5 minutes
+const PUBLIC_PAGE_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+const MAX_PARENT_TRAVERSAL_DEPTH = 12
+
+export function isValidNotionId(id: unknown): boolean {
+  return typeof id === 'string' && NOTION_UUID_REGEX.test(id.trim())
+}
+
+function getImageRefreshInFlight(): Map<string, Promise<RefreshedImageUrl | null>> {
+  if (!globalThis.__notionImageRefreshInFlight) {
+    globalThis.__notionImageRefreshInFlight = new Map()
+  }
+  return globalThis.__notionImageRefreshInFlight
+}
+
+function isUrlStillFresh(entry: ImageRefreshCacheEntry | null | undefined): entry is ImageRefreshCacheEntry {
+  if (!entry?.url) return false
+  if (Date.now() - entry.timestamp >= IMAGE_REFRESH_CACHE_TTL) return false
+  if (entry.expiryTime) {
+    const expiryMs = Date.parse(entry.expiryTime)
+    if (!Number.isNaN(expiryMs) && expiryMs - Date.now() <= IMAGE_EXPIRY_SAFETY_BUFFER_MS) {
+      return false
+    }
+  }
+  return true
+}
+
+function isPageStatusHidden(page: NotionPageLike | PageObjectResponse | null | undefined): boolean {
+  if (!page) return true
+  const pageLike = page as NotionPageLike
+  if (pageLike.archived || pageLike.in_trash) return true
+  const props = pageLike.properties || {}
+  const statusProp = props.Status || props.status || props.type
+  if (!statusProp) {
+    return false
+  }
+  if (typeof statusProp.checkbox === 'boolean') {
+    return !statusProp.checkbox
+  }
+  const rawStatus = statusProp?.status?.name ?? statusProp?.select?.name ?? ''
+  const normalized = String(rawStatus).trim().toLowerCase()
+  if (!normalized) {
+    return statusProp.type === 'status' || statusProp.type === 'select'
+  }
+  return normalized !== 'published'
+}
+
+async function isPublicNotionPage(
+  pageId: string,
+  visited: Set<string> = new Set(),
+  depth = 0
+): Promise<boolean> {
+  if (!isValidNotionId(pageId) || depth > MAX_PARENT_TRAVERSAL_DEPTH) return false
+  const normId = normalizeNotionId(pageId)
+  if (visited.has(normId)) return false
+  visited.add(normId)
+
+  const cacheKey = `public-page-access-${normId}`
+  const cachedAccess = getCache<boolean>(cacheKey, PUBLIC_PAGE_CACHE_TTL)
+  if (typeof cachedAccess === 'boolean') return cachedAccess
+
+  const rootId = (process.env.NOTION_ROOT_PAGE_ID || process.env.NOTION_DATABASE_ID || '').trim()
+  const rootNormId = rootId ? normalizeNotionId(parsePublicNotionId(rootId).id) : ''
+  if (rootNormId && normId === rootNormId) {
+    setCache(cacheKey, true)
+    return true
+  }
+
+  let posts: NotionArticleSummary[] = []
+  try {
+    posts = await getAllPosts('all')
+  } catch {
+    posts = []
+  }
+
+  const matchedPost = posts.find((p) => Boolean(p?.id) && normalizeNotionId(p.id) === normId)
+  if (matchedPost) {
+    const status = String(matchedPost.status || '').trim().toLowerCase()
+    const allowed = status === 'published'
+    setCache(cacheKey, allowed)
+    return allowed
+  }
+
+  let page: NotionPageLike
+  try {
+    page = await fetchPage(pageId)
+  } catch {
+    return false
+  }
+
+  if (isPageStatusHidden(page)) {
+    setCache(cacheKey, false)
+    return false
+  }
+
+  const parent = page.parent
+  if (!parent) {
+    setCache(cacheKey, false)
+    return false
+  }
+
+  let allowed = false
+  if (parent.type === 'page_id' && parent.page_id) {
+    allowed = await isPublicNotionPage(parent.page_id, visited, depth + 1)
+  } else if (parent.type === 'block_id' && parent.block_id) {
+    allowed = await isBlockInPublicContent({ id: parent.block_id, type: 'unknown', parent: null }, visited, depth + 1)
+  } else if (
+    (parent.type === 'database_id' || parent.type === 'data_source_id') &&
+    (parent.database_id || parent.data_source_id)
+  ) {
+    const parentDbNorm = parent.database_id ? normalizeNotionId(parent.database_id) : ''
+    const parentDsNorm = parent.data_source_id ? normalizeNotionId(parent.data_source_id) : ''
+    if (rootNormId && (parentDbNorm === rootNormId || parentDsNorm === rootNormId)) {
+      allowed = true
+    } else if (parent.database_id) {
+      try {
+        const db = await fetchDatabase(parent.database_id)
+        if (!db || db.archived || db.in_trash) {
+          allowed = false
+        } else if (db.parent?.type === 'page_id' && db.parent.page_id) {
+          allowed = await isPublicNotionPage(db.parent.page_id, visited, depth + 1)
+        } else if (db.parent?.type === 'block_id' && db.parent.block_id) {
+          allowed = await isBlockInPublicContent(
+            { id: db.parent.block_id, type: 'unknown', parent: null },
+            visited,
+            depth + 1
+          )
+        }
+      } catch {
+        allowed = false
+      }
+    }
+  }
+
+  setCache(cacheKey, allowed)
+  return allowed
+}
+
+async function isBlockInPublicContent(
+  block: Pick<NotionBlockLike, 'id' | 'archived' | 'in_trash' | 'parent'> & { type?: string },
+  visited: Set<string> = new Set(),
+  depth = 0
+): Promise<boolean> {
+  if (!block || depth > MAX_PARENT_TRAVERSAL_DEPTH) return false
+
+  let current: (Pick<NotionBlockLike, 'id' | 'archived' | 'in_trash' | 'parent'> & { type?: string }) | null = block
+  for (let step = depth; step <= MAX_PARENT_TRAVERSAL_DEPTH; step++) {
+    if (!current) return false
+    if (current.archived || current.in_trash) return false
+
+    let parent: NotionParentLike | null | undefined = current.parent
+    if (!parent && current.id && isValidNotionId(current.id)) {
+      try {
+        current = (await notion.blocks.retrieve({ block_id: current.id })) as unknown as NotionBlockLike
+        if (!current || current.archived || current.in_trash) return false
+        parent = current.parent
+      } catch {
+        return false
+      }
+    }
+
+    if (!parent) return false
+    if (parent.type === 'page_id' && parent.page_id) {
+      return isPublicNotionPage(parent.page_id, visited, step + 1)
+    }
+    if (parent.type === 'block_id' && parent.block_id) {
+      const parentNorm = normalizeNotionId(parent.block_id)
+      if (visited.has(`block:${parentNorm}`)) return false
+      visited.add(`block:${parentNorm}`)
+      current = { id: parent.block_id, parent: null }
+      continue
+    }
+    return false
+  }
+
+  return false
+}
+
+/**
+ * Retrieves a fresh signed URL for a Notion-hosted image block.
+ * Returns { url, expiryTime } or null when unavailable/inaccessible/non-image.
+ */
+export async function refreshNotionBlockImageUrl(blockId: string): Promise<RefreshedImageUrl | null> {
+  if (!isValidNotionId(blockId)) return null
+  const normId = normalizeNotionId(blockId)
+  const cacheKey = `fresh-image-block-${normId}`
+
+  const cached = getCache<ImageRefreshCacheEntry>(cacheKey, IMAGE_REFRESH_CACHE_TTL)
+  if (isUrlStillFresh(cached)) {
+    return { url: cached.url, expiryTime: cached.expiryTime }
+  }
+
+  const inFlight = getImageRefreshInFlight()
+  const existingFlight = inFlight.get(cacheKey)
+  if (existingFlight) {
+    return existingFlight
+  }
+
+  const promise: Promise<RefreshedImageUrl | null> = (async () => {
+    try {
+      const block = (await notion.blocks.retrieve({ block_id: blockId })) as unknown as NotionBlockLike
+      if (!block || block.archived || block.in_trash) return null
+      if (block.type !== 'image' || block.image?.type !== 'file') return null
+
+      const freshUrl = block.image?.file?.url || ''
+      const expiryTime = block.image?.file?.expiry_time || null
+      if (!freshUrl) return null
+
+      const isPublic = await isBlockInPublicContent(block)
+      if (!isPublic) return null
+
+      const entry: ImageRefreshCacheEntry = { url: freshUrl, expiryTime, timestamp: Date.now() }
+      setCache(cacheKey, entry)
+      return { url: freshUrl, expiryTime }
+    } catch (err: unknown) {
+      const status = getNotionErrorStatusOrCode(err)
+      if (status === 404 || status === 'object_not_found' || status === 400 || status === 'validation_error') {
+        return null
+      }
+      throw err
+    } finally {
+      inFlight.delete(cacheKey)
+    }
+  })()
+
+  inFlight.set(cacheKey, promise)
+  return promise
+}
+
+/**
+ * Retrieves a fresh signed URL for a Notion-hosted page cover image.
+ * Returns { url, expiryTime } or null when unavailable/inaccessible/external.
+ */
+export async function refreshNotionPageCoverUrl(pageId: string): Promise<RefreshedImageUrl | null> {
+  if (!isValidNotionId(pageId)) return null
+  const normId = normalizeNotionId(pageId)
+  const cacheKey = `fresh-cover-page-${normId}`
+
+  const cached = getCache<ImageRefreshCacheEntry>(cacheKey, IMAGE_REFRESH_CACHE_TTL)
+  if (isUrlStillFresh(cached)) {
+    return { url: cached.url, expiryTime: cached.expiryTime }
+  }
+
+  const inFlight = getImageRefreshInFlight()
+  const existingFlight = inFlight.get(cacheKey)
+  if (existingFlight) {
+    return existingFlight
+  }
+
+  const promise: Promise<RefreshedImageUrl | null> = (async () => {
+    try {
+      // Bypass 50-min page cache to get a freshly signed cover URL directly from Notion
+      const page = (await notion.pages.retrieve({ page_id: pageId })) as unknown as NotionPageLike
+      if (!page || isPageStatusHidden(page)) return null
+      if (page.cover?.type !== 'file') return null
+
+      const freshUrl = page.cover?.file?.url || ''
+      const expiryTime = page.cover?.file?.expiry_time || null
+      if (!freshUrl) return null
+
+      const isPublic = await isPublicNotionPage(page.id)
+      if (!isPublic) return null
+
+      const entry: ImageRefreshCacheEntry = { url: freshUrl, expiryTime, timestamp: Date.now() }
+      setCache(cacheKey, entry)
+      return { url: freshUrl, expiryTime }
+    } catch (err: unknown) {
+      const status = getNotionErrorStatusOrCode(err)
+      if (status === 404 || status === 'object_not_found' || status === 400 || status === 'validation_error') {
+        return null
+      }
+      throw err
+    } finally {
+      inFlight.delete(cacheKey)
+    }
+  })()
+
+  inFlight.set(cacheKey, promise)
+  return promise
+}

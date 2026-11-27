@@ -1,0 +1,480 @@
+'use client'
+
+/**
+ * ImageSlider.tsx — Wabi-Sabi image carousel component (v3)
+ * ──────────────────────────────────────────────────────────
+ * Renders a series of images sourced from a Notion [slider] toggle block.
+ */
+
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
+import { refreshNotionImageUrl, invalidateNotionImageUrl } from '../lib/notion-image-recovery'
+import type { NotionSliderImage } from '../lib/notion-types'
+
+export interface ImageSliderProps {
+  images?: NotionSliderImage[]
+}
+
+export default function ImageSlider({ images = [] }: ImageSliderProps) {
+  const [currentIndex, setCurrentIndex] = useState(0)
+  const [zoomed, setZoomed] = useState(false)
+  const [mounted, setMounted] = useState(false)
+  const [resolvedUrls, setResolvedUrls] = useState<Record<number, string>>({})
+  const [failedSlides, setFailedSlides] = useState<Record<number, boolean>>({})
+  const retriedRef = useRef<Set<number>>(new Set())
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    setMounted(true)
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const handleSlideError = useCallback(async (idx: number, img: NotionSliderImage) => {
+    if (img?.blockId && !retriedRef.current.has(idx)) {
+      retriedRef.current.add(idx)
+      const freshUrl = await refreshNotionImageUrl({
+        blockId: img.blockId,
+        failedUrl: img.url || null,
+      })
+      if (!mountedRef.current) return
+      if (freshUrl) {
+        setResolvedUrls((prev) => ({ ...prev, [idx]: freshUrl }))
+        return
+      }
+    } else if (img?.blockId && retriedRef.current.has(idx)) {
+      invalidateNotionImageUrl({ blockId: img.blockId })
+    }
+    setFailedSlides((prev) => ({ ...prev, [idx]: true }))
+  }, [])
+
+  const prev = useCallback(() => {
+    setCurrentIndex((i) => (i === 0 ? images.length - 1 : i - 1))
+  }, [images.length])
+
+  const next = useCallback(() => {
+    setCurrentIndex((i) => (i === images.length - 1 ? 0 : i + 1))
+  }, [images.length])
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setZoomed(false)
+        return
+      }
+      if (e.key === 'ArrowLeft') prev()
+      if (e.key === 'ArrowRight') next()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [prev, next])
+
+  useEffect(() => {
+    document.body.style.overflow = zoomed ? 'hidden' : ''
+    return () => {
+      document.body.style.overflow = ''
+    }
+  }, [zoomed])
+
+  if (!images || images.length === 0) return null
+  const current = images[currentIndex]
+  const currentUrl = resolvedUrls[currentIndex] || current.url
+  const currentFailed = Boolean(failedSlides[currentIndex])
+
+  const lightbox =
+    zoomed &&
+    mounted &&
+    !currentFailed &&
+    createPortal(
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Zoomed image"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 9999,
+          background: 'rgba(0,0,0,0.88)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '1.5rem',
+          backdropFilter: 'blur(4px)',
+          cursor: 'zoom-out',
+          pointerEvents: 'auto',
+        }}
+        onClick={() => setZoomed(false)}
+      >
+        <button
+          type="button"
+          aria-label="Close zoom"
+          onClick={() => setZoomed(false)}
+          style={{
+            position: 'absolute',
+            top: '1rem',
+            right: '1rem',
+            width: '2.25rem',
+            height: '2.25rem',
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(255,255,255,0.12)',
+            border: '1px solid rgba(255,255,255,0.25)',
+            color: 'rgba(255,255,255,0.85)',
+            cursor: 'pointer',
+            transition: 'background 0.2s',
+            zIndex: 10,
+            pointerEvents: 'auto',
+          }}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={currentUrl}
+          alt={current.caption || `Slide ${currentIndex + 1} of ${images.length}`}
+          data-notion-recovery-managed="true"
+          style={{
+            maxWidth: '90vw',
+            maxHeight: '88vh',
+            objectFit: 'contain',
+            borderRadius: '0.75rem',
+            boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
+            cursor: 'default',
+            pointerEvents: 'auto',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        />
+
+        {current.caption && (
+          <p
+            style={{
+              position: 'absolute',
+              bottom: '1.25rem',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              fontStyle: 'italic',
+              fontSize: '0.8rem',
+              color: 'rgba(255,255,255,0.65)',
+              textAlign: 'center',
+              maxWidth: '60ch',
+              padding: '0 1rem',
+              pointerEvents: 'none',
+            }}
+          >
+            {current.caption}
+          </p>
+        )}
+      </div>,
+      document.body
+    )
+
+  return (
+    <>
+      <div
+        className="not-prose my-8 w-full pointer-events-auto"
+        aria-label={`Image slider, ${images.length} image${images.length !== 1 ? 's' : ''}`}
+        role="region"
+      >
+        <div
+          className="relative mx-auto overflow-hidden rounded-xl border border-rice-paper-400/60 dark:border-tea-slate-50/20 bg-rice-paper-200 dark:bg-tea-slate-300 shadow-zen-sm"
+          style={{ maxWidth: '36rem' }}
+        >
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 10,
+              pointerEvents: 'none',
+              borderRadius: 'inherit',
+              opacity: 0.03,
+              mixBlendMode: 'multiply',
+              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E")`,
+              backgroundSize: '200px 200px',
+            }}
+          />
+
+          <div style={{ position: 'relative', width: '100%', aspectRatio: '16/10' }}>
+            {images.map((img, idx) => (
+              <div
+                key={idx}
+                aria-hidden={idx !== currentIndex}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  transition: 'opacity 0.5s ease-in-out',
+                  opacity: idx === currentIndex ? 1 : 0,
+                  pointerEvents: idx === currentIndex ? 'auto' : 'none',
+                }}
+              >
+                {failedSlides[idx] ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-center text-ink-400 dark:text-sage-400 bg-rice-paper-200/70 dark:bg-tea-slate-200/70 px-4">
+                    <svg
+                      className="w-7 h-7 mb-2 opacity-40 text-matcha-600 dark:text-matcha-400"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <rect x="3" y="3" width="18" height="18" rx="2" strokeWidth="1.5" />
+                      <circle cx="8.5" cy="8.5" r="1.5" strokeWidth="1.5" />
+                      <path d="m21 15-5-5L5 21" strokeWidth="1.5" />
+                    </svg>
+                    <span className="text-xs font-mono opacity-70">Image unavailable</span>
+                  </div>
+                ) : (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    src={resolvedUrls[idx] || img.url}
+                    alt={img.caption || `Slide ${idx + 1} of ${images.length}`}
+                    data-notion-image-id={img.blockId || undefined}
+                    data-notion-recovery-managed="true"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      cursor: 'zoom-in',
+                      display: 'block',
+                    }}
+                    loading={idx === 0 ? 'eager' : 'lazy'}
+                    decoding="async"
+                    onError={() => {
+                      void handleSlideError(idx, img)
+                    }}
+                    onClick={() => setZoomed(true)}
+                    title="Click to enlarge"
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+
+          {images.length > 1 && (
+            <button
+              type="button"
+              aria-label="Previous image"
+              onClick={prev}
+              style={{
+                position: 'absolute',
+                left: '0.5rem',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                zIndex: 30,
+                width: '2rem',
+                height: '2rem',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(255,255,255,0.55)',
+                border: '1px solid rgba(255,255,255,0.7)',
+                color: 'rgba(44,42,41,0.75)',
+                backdropFilter: 'blur(4px)',
+                cursor: 'pointer',
+                pointerEvents: 'auto',
+                transition: 'background 0.2s, color 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(122,139,105,0.25)'
+                e.currentTarget.style.color = '#4A6741'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(255,255,255,0.55)'
+                e.currentTarget.style.color = 'rgba(44,42,41,0.75)'
+              }}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </button>
+          )}
+
+          {images.length > 1 && (
+            <button
+              type="button"
+              aria-label="Next image"
+              onClick={next}
+              style={{
+                position: 'absolute',
+                right: '0.5rem',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                zIndex: 30,
+                width: '2rem',
+                height: '2rem',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(255,255,255,0.55)',
+                border: '1px solid rgba(255,255,255,0.7)',
+                color: 'rgba(44,42,41,0.75)',
+                backdropFilter: 'blur(4px)',
+                cursor: 'pointer',
+                pointerEvents: 'auto',
+                transition: 'background 0.2s, color 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(122,139,105,0.25)'
+                e.currentTarget.style.color = '#4A6741'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(255,255,255,0.55)'
+                e.currentTarget.style.color = 'rgba(44,42,41,0.75)'
+              }}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+          )}
+
+          {images.length > 1 && (
+            <div
+              aria-hidden="true"
+              style={{
+                position: 'absolute',
+                top: '0.5rem',
+                left: '0.5rem',
+                zIndex: 30,
+                fontSize: '0.6rem',
+                fontFamily: 'monospace',
+                fontVariantNumeric: 'tabular-nums',
+                color: 'rgba(255,255,255,0.75)',
+                background: 'rgba(0,0,0,0.3)',
+                backdropFilter: 'blur(4px)',
+                padding: '0.15rem 0.4rem',
+                borderRadius: '0.25rem',
+                pointerEvents: 'none',
+              }}
+            >
+              {currentIndex + 1} / {images.length}
+            </div>
+          )}
+
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              bottom: '0.5rem',
+              right: '0.5rem',
+              zIndex: 30,
+              color: 'rgba(255,255,255,0.5)',
+              pointerEvents: 'none',
+            }}
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              <line x1="11" y1="8" x2="11" y2="14" />
+              <line x1="8" y1="11" x2="14" y2="11" />
+            </svg>
+          </div>
+        </div>
+
+        <p
+          style={{
+            marginTop: '0.6rem',
+            textAlign: 'center',
+            fontStyle: 'italic',
+            fontSize: '0.78rem',
+            color: 'var(--ws-text-tertiary, #7A756E)',
+            minHeight: '1.4em',
+            lineHeight: 1.6,
+            padding: '0 1rem',
+            transition: 'opacity 0.3s',
+            pointerEvents: 'none',
+          }}
+        >
+          {current.caption || ''}
+        </p>
+
+        {images.length > 1 && (
+          <div
+            role="tablist"
+            aria-label="Slide indicators"
+            style={{
+              marginTop: '0.6rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.375rem',
+              pointerEvents: 'auto',
+            }}
+          >
+            {images.map((_, idx) => (
+              <button
+                key={idx}
+                type="button"
+                role="tab"
+                aria-selected={idx === currentIndex}
+                aria-label={`Go to slide ${idx + 1}`}
+                onClick={() => setCurrentIndex(idx)}
+                style={{
+                  borderRadius: '9999px',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  pointerEvents: 'auto',
+                  width: idx === currentIndex ? '1rem' : '0.375rem',
+                  height: '0.375rem',
+                  background: idx === currentIndex ? '#059669' : 'rgba(168,162,158,0.5)',
+                  transition: 'width 0.3s ease, background 0.3s ease',
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {lightbox}
+    </>
+  )
+}
