@@ -175,7 +175,7 @@ export interface ReadRawNotionTreeOptions extends NotionOperationOptions {
 
 /**
  * Recursively retrieves the original raw Notion block structure for a page or block.
- * Independent from `lib/notion.js` — never mutates `[slider]` toggles or embedded databases.
+ * Independent from `lib/notion.ts` — never mutates `[slider]` toggles or embedded databases.
  */
 export async function readRawNotionTree(
   arg1: string | Client,

@@ -620,16 +620,7 @@ describe('Notion Database / Data Source ID Resolution & Cache Safety', () => {
   })
 
   it('recovers stale nested public child database data_source_id via parent database_id on 404 object_not_found', async () => {
-    const notionMod = (await import('../../lib/notion-datasource-recovery.js')) as {
-      executePublicDataSourceQueryWithRecovery: (args: {
-        targetId: string
-        isDataSourceId?: boolean
-        parentDatabaseId?: string | null
-        resolveDataSource: (id: string, forceRefresh?: boolean) => Promise<string>
-        invalidateMapping?: (id: string) => void
-        runQuery: (dsId: string) => Promise<{ results: Array<{ id: string }> }>
-      }) => Promise<{ results: Array<{ id: string }> }>
-    }
+    const notionMod = await import('../../lib/notion-datasource-recovery')
 
     const invalidated: string[] = []
     const queried: string[] = []

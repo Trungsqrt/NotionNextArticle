@@ -1,7 +1,7 @@
 /**
  * lib/study/notion-client.ts — Isolated server-side Notion client for Study System
  * ─────────────────────────────────────────────────────────────────────────────────
- * Completely independent from public lib/notion.js:
+ * Completely independent from public lib/notion.ts:
  * - Uses STUDY_NOTION_TOKEN exclusively (never NOTION_TOKEN).
  * - Does not share globalThis.__notionCache with public article rendering.
  * - Enforces request throttling (~3 req/sec), per-request timeouts, exponential

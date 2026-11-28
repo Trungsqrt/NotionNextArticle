@@ -652,7 +652,7 @@ describe('Non-blocking Bookmark Synchronization', () => {
       true
     )
 
-    const mockFetch: typeof fetch = async (input, init) => {
+    const mockFetch: typeof fetch = async (_input, init) => {
       const method = (init?.method || 'GET').toUpperCase()
       if (method === 'GET') {
         return new Response(JSON.stringify({ examId: 'exam-1', questionIds: [] }), {

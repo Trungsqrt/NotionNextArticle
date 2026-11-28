@@ -360,14 +360,13 @@ describe('Study Authz, CSRF, Rate Limiting, Proxy & SEO Isolation', () => {
     assert.ok(apiRes.headers.get('cache-control')?.includes('no-store'))
   })
 
-  it('disallows /study in robots.js while preserving public Knowledge Hub indexing', async () => {
-    const robotsModule = (await import('../../app/robots.js')) as {
-      default: () => { rules: Array<{ allow: string; disallow: string[] }> }
-    }
+  it('disallows /study in robots.ts while preserving public Knowledge Hub indexing', async () => {
+    const robotsModule = await import('../../app/robots')
     const config = robotsModule.default()
     assert.ok(Array.isArray(config.rules))
     for (const rule of config.rules) {
       assert.equal(rule.allow, '/')
+      assert.ok(Array.isArray(rule.disallow))
       assert.ok(rule.disallow.includes('/study'))
       assert.ok(rule.disallow.includes('/study/'))
     }
