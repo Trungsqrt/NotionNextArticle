@@ -6,8 +6,21 @@
  * HMR reloads keep consistent cache keys, TTLs, and single-flight tracking.
  */
 
+import * as React from 'react'
 import type { RefreshedImageUrl } from '../notion-types'
 import './types'
+
+/**
+ * Wraps a function with React's per-request `cache()` in Next.js RSC runtimes,
+ * falling back to the plain function in standalone Node test environments where
+ * React 18's CJS entrypoint does not expose `React.cache`.
+ */
+export function withRequestCache<T extends (...args: never[]) => unknown>(fn: T): T {
+  const reactCache = (
+    React as { cache?: <F extends (...args: never[]) => unknown>(wrapped: F) => F }
+  ).cache
+  return typeof reactCache === 'function' ? reactCache(fn) : fn
+}
 
 export const CACHE_TTL = 50 * 60 * 1000 // 50 minutes to safely avoid Notion's 1-hour S3 expiration
 export const DS_MAPPING_TTL = 15 * 60 * 1000 // 15 minutes for verified database -> data_source mappings

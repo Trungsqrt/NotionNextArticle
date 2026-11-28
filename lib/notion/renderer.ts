@@ -7,12 +7,12 @@
  * HTML rendering (`renderBlocks`), and the cached page-content loader (`getNotionPageData`).
  */
 
-import { cache } from 'react'
 import { NotionRenderer, createBlockRenderer } from '@notion-render/client'
 import type { Block as NotionRenderClientBlock } from '@notion-render/client/dist/types'
 import hljsPlugin from '@notion-render/hljs-plugin'
 import { DEFAULT_LOCALE, normalizeLocale } from '../locales'
 import type { NotionRenderBlock, NotionSliderImage } from '../notion-types'
+import { withRequestCache } from './cache'
 import {
   fetchChildrenList,
   fetchDatabase,
@@ -921,7 +921,7 @@ export async function renderBlocks(blocks: NotionRenderBlock[]): Promise<string>
   return parts.join('')
 }
 
-export const getNotionPageData = cache(async function getNotionPageData(
+export const getNotionPageData = withRequestCache(async function getNotionPageData(
   pageId: string,
   locale: string = DEFAULT_LOCALE
 ): Promise<{ html: string; blocks: NotionRenderBlock[] }> {

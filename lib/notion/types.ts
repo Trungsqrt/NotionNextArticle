@@ -146,6 +146,10 @@ export interface NotionDatabaseLike {
 
 export interface NotionDataSourceLike {
   id?: string
+  archived?: boolean
+  in_trash?: boolean
+  parent?: NotionParentLike | null
+  database_parent?: NotionParentLike | null
 }
 
 export interface NotionQueryResultLike {

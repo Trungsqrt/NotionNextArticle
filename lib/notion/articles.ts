@@ -7,11 +7,11 @@
  * `renderer.ts`, and localizes internal links via `translations.ts`.
  */
 
-import { cache } from 'react'
 import { DEFAULT_LOCALE } from '../locales'
 import { normalizeNotionId } from '../notion-datasource-recovery'
 import type { NotionArticlePage, NotionArticleSummary } from '../notion-types'
 import { isPublicNotionPage } from './access'
+import { withRequestCache } from './cache'
 import { fetchPage, isValidNotionId, searchNotion } from './client'
 import { getAllPosts } from './posts'
 import { extractPageProperties, isPageStatusHidden, slugifyText } from './properties'
@@ -19,7 +19,7 @@ import { getNotionPageData } from './renderer'
 import { getTranslationMappings, localizeInternalLinks } from './translations'
 import type { NotionPageLike, NotionParentLike } from './types'
 
-export const getPageBySlug = cache(async function getPageBySlug(
+export const getPageBySlug = withRequestCache(async function getPageBySlug(
   slug: string
 ): Promise<NotionArticlePage | null> {
   if (!slug || typeof slug !== 'string') {
@@ -32,6 +32,7 @@ export const getPageBySlug = cache(async function getPageBySlug(
   let post = posts.find(
     (p) => p.slug === slug || (Boolean(slugNormId) && normalizeNotionId(p.id) === slugNormId)
   )
+  const matchedInCatalog = Boolean(post)
 
   // Fallback 1: Direct Notion page retrieval only when slug is a valid Notion UUID
   if (!post && slugIsNotionId) {
@@ -128,11 +129,17 @@ export const getPageBySlug = cache(async function getPageBySlug(
     } catch (linkErr: unknown) {
       console.error(`Failed to localize internal links for ${post.id}:`, linkErr)
     }
+    const resolvedSlug = matchedInCatalog
+      ? post.slug || ''
+      : slugIsNotionId
+        ? normalizeNotionId(post.id)
+        : post.slug || ''
+
     return {
       html,
       blocks,
       id: post.id,
-      slug: post.slug || '',
+      slug: resolvedSlug,
       title: post.title || 'Lesson',
       summary: post.summary || '',
       cover: post.cover || null,

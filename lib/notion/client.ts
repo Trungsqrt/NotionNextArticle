@@ -91,6 +91,21 @@ export async function fetchDatabase(dbId: string): Promise<NotionDatabaseLike> {
   return res
 }
 
+export async function fetchDataSource(dataSourceId: string): Promise<NotionDataSourceLike> {
+  const cacheId = isValidNotionId(dataSourceId) ? normalizeNotionId(dataSourceId) : dataSourceId
+  const key = `ds-${cacheId}`
+  const cached = getCache<NotionDataSourceLike>(key)
+  if (cached) return cached
+  if (typeof notion.dataSources?.retrieve !== 'function') {
+    throw new Error('Notion client does not support dataSources.retrieve')
+  }
+  const res = (await notion.dataSources.retrieve({
+    data_source_id: dataSourceId,
+  })) as unknown as NotionDataSourceLike
+  setCache(key, res)
+  return res
+}
+
 // Single-flight deduplication and generation counters prevent stale in-flight
 // data_source resolutions from overwriting newly invalidated cache entries.
 const dsInFlight = new Map<string, Promise<string>>()
@@ -101,7 +116,7 @@ export function invalidatePublicDataSourceCache(rawId: string): void {
   const { id: cleanId } = parsePublicNotionId(rawId)
   const norm = normalizeNotionId(cleanId)
   dsGenerations.set(norm, (dsGenerations.get(norm) || 0) + 1)
-  deleteCacheKeys([`ds-map-${norm}`, `db-${cleanId}`])
+  deleteCacheKeys([`ds-map-${norm}`, `db-${cleanId}`, `ds-${norm}`])
   dsInFlight.delete(`ds-map-${norm}`)
 }
 

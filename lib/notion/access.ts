@@ -12,6 +12,7 @@ import type { NotionArticleSummary } from '../notion-types'
 import { PUBLIC_PAGE_CACHE_TTL, getCache, setCache } from './cache'
 import {
   fetchDatabase,
+  fetchDataSource,
   fetchPage,
   getPublicNotionRootId,
   isValidNotionId,
@@ -22,6 +23,25 @@ import { isPageStatusHidden } from './properties'
 import type { NotionBlockLike, NotionPageLike, NotionParentLike } from './types'
 
 const MAX_PARENT_TRAVERSAL_DEPTH = 12
+
+async function isDatabaseParentPublic(
+  dbParent: NotionParentLike | null | undefined,
+  visited: Set<string>,
+  depth: number
+): Promise<boolean> {
+  if (!dbParent) return false
+  if (dbParent.type === 'page_id' && dbParent.page_id) {
+    return isPublicNotionPage(dbParent.page_id, visited, depth + 1)
+  }
+  if (dbParent.type === 'block_id' && dbParent.block_id) {
+    return isBlockInPublicContent(
+      { id: dbParent.block_id, type: 'unknown', parent: null },
+      visited,
+      depth + 1
+    )
+  }
+  return false
+}
 
 export async function isPublicNotionPage(
   pageId: string,
@@ -38,7 +58,10 @@ export async function isPublicNotionPage(
   if (typeof cachedAccess === 'boolean') return cachedAccess
 
   const rootId = getPublicNotionRootId()
-  const rootNormId = rootId ? normalizeNotionId(parsePublicNotionId(rootId).id) : ''
+  const rootParsed = parsePublicNotionId(rootId)
+  const rootNormId = rootParsed.id ? normalizeNotionId(rootParsed.id) : ''
+  const rootIsExplicitDataSource = rootParsed.explicitKind === 'data_source_id'
+
   if (rootNormId && normId === rootNormId) {
     setCache(cacheKey, true)
     return true
@@ -86,31 +109,93 @@ export async function isPublicNotionPage(
       visited,
       depth + 1
     )
-  } else if (
-    (parent.type === 'database_id' || parent.type === 'data_source_id') &&
-    (parent.database_id || parent.data_source_id)
-  ) {
-    const parentDbNorm = parent.database_id ? normalizeNotionId(parent.database_id) : ''
-    const parentDsNorm = parent.data_source_id ? normalizeNotionId(parent.data_source_id) : ''
-    if (rootNormId && (parentDbNorm === rootNormId || parentDsNorm === rootNormId)) {
+  } else if (parent.type === 'data_source_id' || Boolean(parent.data_source_id)) {
+    if (!parent.data_source_id || !isValidNotionId(parent.data_source_id)) {
+      setCache(cacheKey, false)
+      return false
+    }
+
+    let ds
+    try {
+      ds = await fetchDataSource(parent.data_source_id)
+    } catch {
+      // Fail closed without poisoning the cache on transient retrieval errors
+      return false
+    }
+
+    if (!ds || ds.archived || ds.in_trash) {
+      setCache(cacheKey, false)
+      return false
+    }
+
+    const dsOwnerDbId =
+      ds.parent?.type === 'database_id' && ds.parent.database_id ? ds.parent.database_id : ''
+    const parentDbId = parent.database_id || ''
+
+    // Fail closed if the data source's owning database disagrees with parent.database_id
+    if (
+      dsOwnerDbId &&
+      parentDbId &&
+      normalizeNotionId(dsOwnerDbId) !== normalizeNotionId(parentDbId)
+    ) {
+      setCache(cacheKey, false)
+      return false
+    }
+
+    const ownerDbId = dsOwnerDbId || parentDbId
+    if (!ownerDbId || !isValidNotionId(ownerDbId)) {
+      // Cannot verify owning database is non-archived/non-trashed -> fail closed
+      setCache(cacheKey, false)
+      return false
+    }
+
+    let db
+    try {
+      db = await fetchDatabase(ownerDbId)
+    } catch {
+      return false
+    }
+
+    if (!db || db.archived || db.in_trash) {
+      setCache(cacheKey, false)
+      return false
+    }
+
+    const parentDsNorm = normalizeNotionId(parent.data_source_id)
+    const ownerDbNorm = normalizeNotionId(ownerDbId)
+
+    if (rootNormId && parentDsNorm === rootNormId) {
       allowed = true
-    } else if (parent.database_id) {
-      try {
-        const db = await fetchDatabase(parent.database_id)
-        if (!db || db.archived || db.in_trash) {
-          allowed = false
-        } else if (db.parent?.type === 'page_id' && db.parent.page_id) {
-          allowed = await isPublicNotionPage(db.parent.page_id, visited, depth + 1)
-        } else if (db.parent?.type === 'block_id' && db.parent.block_id) {
-          allowed = await isBlockInPublicContent(
-            { id: db.parent.block_id, type: 'unknown', parent: null },
-            visited,
-            depth + 1
-          )
-        }
-      } catch {
-        allowed = false
-      }
+    } else if (!rootIsExplicitDataSource && rootNormId && ownerDbNorm === rootNormId) {
+      allowed = true
+    } else {
+      allowed = await isDatabaseParentPublic(db.parent || ds.database_parent, visited, depth)
+    }
+  } else if (parent.type === 'database_id' && parent.database_id) {
+    if (!isValidNotionId(parent.database_id)) {
+      setCache(cacheKey, false)
+      return false
+    }
+
+    let db
+    try {
+      db = await fetchDatabase(parent.database_id)
+    } catch {
+      return false
+    }
+
+    if (!db || db.archived || db.in_trash) {
+      setCache(cacheKey, false)
+      return false
+    }
+
+    const parentDbNorm = normalizeNotionId(parent.database_id)
+    // When the configured public root explicitly identifies a specific data source,
+    // a database_id-only parent cannot prove membership in that data source.
+    if (!rootIsExplicitDataSource && rootNormId && parentDbNorm === rootNormId) {
+      allowed = true
+    } else {
+      allowed = await isDatabaseParentPublic(db.parent, visited, depth)
     }
   }
 

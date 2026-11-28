@@ -8,9 +8,9 @@
  * without creating circular dependencies.
  */
 
-import { cache } from 'react'
 import { DEFAULT_LOCALE, normalizeLocale } from '../locales'
 import type { NotionArticleSummary } from '../notion-types'
+import { withRequestCache } from './cache'
 import {
   fetchPage,
   getPublicNotionRootId,
@@ -19,7 +19,7 @@ import {
 } from './client'
 import { extractPageProperties, isPageStatusHidden } from './properties'
 
-export const getAllPublishedPosts = cache(async function getAllPublishedPosts(): Promise<
+export const getAllPublishedPosts = withRequestCache(async function getAllPublishedPosts(): Promise<
   NotionArticleSummary[]
 > {
   const rootId = getPublicNotionRootId()
@@ -113,7 +113,7 @@ export const getAllPublishedPosts = cache(async function getAllPublishedPosts():
  *   getAllPosts('vi')  → Vietnamese articles
  *   getAllPosts('all') → every published article (routing, sitemap, translations)
  */
-export const getAllPosts = cache(async function getAllPosts(
+export const getAllPosts = withRequestCache(async function getAllPosts(
   locale: string = 'all'
 ): Promise<NotionArticleSummary[]> {
   const posts = await getAllPublishedPosts()

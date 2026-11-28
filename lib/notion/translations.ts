@@ -6,7 +6,6 @@
  * and rewrites internal article links in rendered HTML to point at the active locale.
  */
 
-import { cache } from 'react'
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, normalizeLocale } from '../locales'
 import { normalizeNotionId } from '../notion-datasource-recovery'
 import type {
@@ -16,23 +15,26 @@ import type {
   TranslationMappingEntry,
   TranslationMappingsResult,
 } from '../notion-types'
+import { isPublicNotionPage } from './access'
 import {
   MAPPINGS_CACHE_KEY,
   MAPPINGS_CACHE_TTL,
   getCache,
   setCache,
   warnOnce,
+  withRequestCache,
 } from './cache'
-import { fetchPage, queryDatabaseAll } from './client'
+import { fetchPage, isValidNotionId, queryDatabaseAll } from './client'
 import { getAllPublishedPosts } from './posts'
 import {
   escapeHtml,
   extractPageProperties,
   findPropertyByName,
   getPropertyPlainText,
+  isPageStatusHidden,
   unescapeHtml,
 } from './properties'
-import type { NotionParentLike } from './types'
+import type { NotionParentLike, QueryDatabaseOptions } from './types'
 
 const DEFAULT_MAPPING_DB_ID = '415ac39b-0efb-8050-9ab4-ecb760e41cc5'
 
@@ -40,10 +42,43 @@ function normalizeGroupKey(groupId: string | null | undefined): string {
   return String(groupId || '').trim().toLowerCase()
 }
 
-function toTranslationMeta(post: NotionArticleSummary): NotionTranslationMeta {
+/**
+ * Resolves the canonical URL segment for an authorized translation target:
+ * - Reuses the published catalog slug (including `-vi` disambiguation) for
+ *   top-level articles whenever that slug resolves unambiguously to `pageId`.
+ * - Falls back to the compact Notion UUID for authorized nested pages outside
+ *   the published catalog (or rare ambiguous catalog slugs) so `getPageBySlug`
+ *   resolves deterministically via Fallback 1 without relying on workspace search.
+ */
+function resolveCanonicalTranslationSlug(
+  pageId: string,
+  catalogPosts: readonly NotionArticleSummary[]
+): string {
+  const normId = normalizeNotionId(pageId)
+  const catalogPost = catalogPosts.find(
+    (p) => Boolean(p?.id) && normalizeNotionId(p.id) === normId
+  )
+
+  if (catalogPost?.slug) {
+    const matchingBySlug = catalogPosts.filter((p) => p.slug === catalogPost.slug)
+    if (
+      matchingBySlug.length === 1 &&
+      normalizeNotionId(matchingBySlug[0].id) === normId
+    ) {
+      return catalogPost.slug
+    }
+  }
+
+  return normId
+}
+
+function toTranslationMeta(
+  post: NotionArticleSummary,
+  canonicalSlug?: string
+): NotionTranslationMeta {
   return {
     id: post.id,
-    slug: post.slug || normalizeNotionId(post.id),
+    slug: canonicalSlug || post.slug || normalizeNotionId(post.id),
     title: post.title,
     summary: post.summary || '',
     icon: post.icon || null,
@@ -53,7 +88,7 @@ function toTranslationMeta(post: NotionArticleSummary): NotionTranslationMeta {
   }
 }
 
-const getTranslationIndex = cache(async function getTranslationIndex(): Promise<
+const getTranslationIndex = withRequestCache(async function getTranslationIndex(): Promise<
   Map<string, Map<string, NotionArticleSummary[]>>
 > {
   const posts = await getAllPublishedPosts()
@@ -111,7 +146,7 @@ const getTranslationIndex = cache(async function getTranslationIndex(): Promise<
   return groups
 })
 
-export const getTranslatedArticle = cache(async function getTranslatedArticle(
+export const getTranslatedArticle = withRequestCache(async function getTranslatedArticle(
   translationGroupId: string | null | undefined,
   targetLocale: string | null | undefined
 ): Promise<NotionTranslationMeta | null> {
@@ -119,10 +154,14 @@ export const getTranslatedArticle = cache(async function getTranslatedArticle(
   if (!key || !targetLocale) return null
   const locale = normalizeLocale(targetLocale)
 
-  const index = await getTranslationIndex()
+  const [index, catalogPosts] = await Promise.all([
+    getTranslationIndex(),
+    getAllPublishedPosts(),
+  ])
   const candidates = index.get(key)?.get(locale) || []
   if (candidates.length !== 1) return null
-  return toTranslationMeta(candidates[0])
+  const candidate = candidates[0]
+  return toTranslationMeta(candidate, resolveCanonicalTranslationSlug(candidate.id, catalogPosts))
 })
 
 export async function getTranslationMappings(): Promise<TranslationMappingsResult> {
@@ -225,20 +264,23 @@ export async function getArticleTranslations(
     | null
     | undefined
 ): Promise<ArticleTranslationsMap> {
-  const currentLocale = article?.locale || DEFAULT_LOCALE
+  const currentLocale = normalizeLocale(article?.locale || DEFAULT_LOCALE)
   const result: ArticleTranslationsMap = {}
   for (const locale of SUPPORTED_LOCALES) {
     if (locale !== currentLocale) result[locale] = null
   }
   if (!article?.id) return result
 
+  const normId = normalizeNotionId(article.id)
+  const catalogPosts = await getAllPublishedPosts().catch(() => [] as NotionArticleSummary[])
+
   let hasGroupTranslation = false
   if (article.translationGroupId) {
     const self = await getTranslatedArticle(article.translationGroupId, currentLocale)
-    if (self && normalizeNotionId(self.id) === normalizeNotionId(article.id)) {
+    if (self && normalizeNotionId(self.id) === normId) {
       for (const locale of Object.keys(result)) {
         const found = await getTranslatedArticle(article.translationGroupId, locale)
-        if (found) {
+        if (found && normalizeNotionId(found.id) !== normId) {
           result[locale] = found
           hasGroupTranslation = true
         }
@@ -247,15 +289,20 @@ export async function getArticleTranslations(
     }
 
     const parentLike = article.parent as NotionParentLike | null | undefined
-    const parentDbId = parentLike?.database_id || parentLike?.data_source_id
-    if (parentDbId) {
+    const queryTargetId = parentLike?.data_source_id || parentLike?.database_id
+    if (queryTargetId) {
       try {
-        const dbRes = await queryDatabaseAll(parentDbId)
-        const rows = (dbRes?.results || []).map(extractPageProperties).filter((p) => {
-          if (!p || !p.title || p.title === 'Untitled') return false
-          const s = (p.status || '').toLowerCase()
-          return s !== 'draft' && s !== 'archived' && s !== 'hidden'
-        })
+        const queryOpts: QueryDatabaseOptions = parentLike?.data_source_id
+          ? {
+              __isDataSourceId: true,
+              ...(parentLike.database_id ? { __databaseId: parentLike.database_id } : {}),
+            }
+          : {}
+        const dbRes = await queryDatabaseAll(queryTargetId, queryOpts)
+        const rows = (dbRes?.results || [])
+          .filter((rawPage) => Boolean(rawPage?.id) && !isPageStatusHidden(rawPage))
+          .map(extractPageProperties)
+          .filter((p) => Boolean(p && p.title && p.title !== 'Untitled'))
         const targetGroupKey = normalizeGroupKey(article.translationGroupId)
         const groupRows = rows.filter(
           (r) => normalizeGroupKey(r.translationGroupId) === targetGroupKey
@@ -265,13 +312,23 @@ export async function getArticleTranslations(
         )
         if (
           selfMatches.length === 1 &&
-          normalizeNotionId(selfMatches[0].id) === normalizeNotionId(article.id)
+          normalizeNotionId(selfMatches[0].id) === normId
         ) {
           for (const locale of Object.keys(result)) {
-            const candidates = groupRows.filter((r) => (r.locale || DEFAULT_LOCALE) === locale)
+            const candidates = groupRows.filter(
+              (r) =>
+                (r.locale || DEFAULT_LOCALE) === locale &&
+                normalizeNotionId(r.id) !== normId
+            )
             if (candidates.length === 1) {
-              result[locale] = toTranslationMeta(candidates[0])
-              hasGroupTranslation = true
+              const candidate = candidates[0]
+              if (await isPublicNotionPage(candidate.id)) {
+                result[locale] = toTranslationMeta(
+                  candidate,
+                  resolveCanonicalTranslationSlug(candidate.id, catalogPosts)
+                )
+                hasGroupTranslation = true
+              }
             }
           }
           if (hasGroupTranslation) return result
@@ -283,42 +340,59 @@ export async function getArticleTranslations(
   }
 
   // ── Dynamic Notion Translation Mapping lookup (child pages & manual pairs) ──
+  // A Ready mapping never grants public access by itself: each target must pass
+  // `!isPageStatusHidden()` and `isPublicNotionPage()` before being exposed.
   try {
-    const normId = normalizeNotionId(article.id)
     const mappings = await getTranslationMappings()
 
-    if (currentLocale === 'en' || mappings.byEnId.has(normId)) {
+    const resolveAuthorizedMappedTarget = async (
+      targetPageId: string,
+      targetLocale: 'en' | 'vi'
+    ): Promise<NotionTranslationMeta | null> => {
+      if (!targetPageId || !isValidNotionId(targetPageId)) return null
+      const targetNormId = normalizeNotionId(targetPageId)
+      if (!targetNormId || targetNormId === normId) return null
+
+      // Prevent conflicting mappings where getPageBySlug() would resolve targetLocale to 'vi'
+      if (targetLocale === 'en' && mappings.byViId.has(targetNormId)) {
+        return null
+      }
+
+      const targetPage = await fetchPage(targetPageId)
+      if (!targetPage || !targetPage.id || isPageStatusHidden(targetPage)) {
+        return null
+      }
+      if (!(await isPublicNotionPage(targetPage.id))) {
+        return null
+      }
+
+      const targetExtracted = extractPageProperties(targetPage)
+      const canonicalSlug = resolveCanonicalTranslationSlug(targetPage.id, catalogPosts)
+      return toTranslationMeta(
+        {
+          ...targetExtracted,
+          locale: targetLocale,
+        },
+        canonicalSlug
+      )
+    }
+
+    if ('vi' in result) {
       const mapping = mappings.byEnId.get(normId)
       if (mapping && mapping.isReady && mapping.viPageId) {
         try {
-          const viPage = await fetchPage(mapping.viPageId)
-          if (viPage && viPage.id) {
-            const viExtracted = extractPageProperties(viPage)
-            result.vi = toTranslationMeta({
-              ...viExtracted,
-              locale: 'vi',
-              slug: viExtracted.slug || normalizeNotionId(viPage.id),
-            })
-          }
+          result.vi = await resolveAuthorizedMappedTarget(mapping.viPageId, 'vi')
         } catch (fetchErr: unknown) {
           console.error(`Failed to fetch VI translated page ${mapping.viPageId}:`, fetchErr)
         }
       }
     }
 
-    if (currentLocale === 'vi' || mappings.byViId.has(normId)) {
+    if ('en' in result) {
       const mapping = mappings.byViId.get(normId)
       if (mapping && mapping.isReady && mapping.enPageId) {
         try {
-          const enPage = await fetchPage(mapping.enPageId)
-          if (enPage && enPage.id) {
-            const enExtracted = extractPageProperties(enPage)
-            result.en = toTranslationMeta({
-              ...enExtracted,
-              locale: 'en',
-              slug: enExtracted.slug || normalizeNotionId(enPage.id),
-            })
-          }
+          result.en = await resolveAuthorizedMappedTarget(mapping.enPageId, 'en')
         } catch (fetchErr: unknown) {
           console.error(`Failed to fetch EN translated page ${mapping.enPageId}:`, fetchErr)
         }
@@ -331,18 +405,29 @@ export async function getArticleTranslations(
   return result
 }
 
-const getLocalizedLinkMap = cache(async function getLocalizedLinkMap(
+const getLocalizedLinkMap = withRequestCache(async function getLocalizedLinkMap(
   locale: string
 ): Promise<Map<string, string>> {
+  const targetLocale = normalizeLocale(locale)
   const posts = await getAllPublishedPosts()
   const map = new Map<string, string>()
+
+  const catalogByNormId = new Map<string, NotionArticleSummary>()
+  const slugCounts = new Map<string, number>()
   for (const post of posts) {
-    if (!post.translationGroupId || (post.locale || DEFAULT_LOCALE) === locale) continue
+    if (post.id) catalogByNormId.set(normalizeNotionId(post.id), post)
+    if (post.slug) slugCounts.set(post.slug, (slugCounts.get(post.slug) || 0) + 1)
+  }
+
+  for (const post of posts) {
+    if (!post.translationGroupId || (post.locale || DEFAULT_LOCALE) === targetLocale) continue
     const self = await getTranslatedArticle(post.translationGroupId, post.locale)
     if (!self || normalizeNotionId(self.id) !== normalizeNotionId(post.id)) continue
-    const target = await getTranslatedArticle(post.translationGroupId, locale)
-    if (!target?.slug) continue
-    if (post.slug) map.set(post.slug, target.slug)
+    const target = await getTranslatedArticle(post.translationGroupId, targetLocale)
+    if (!target?.slug || normalizeNotionId(target.id) === normalizeNotionId(post.id)) continue
+    if (post.slug && slugCounts.get(post.slug) === 1) {
+      map.set(post.slug, target.slug)
+    }
     map.set(normalizeNotionId(post.id), target.slug)
   }
 
@@ -350,12 +435,27 @@ const getLocalizedLinkMap = cache(async function getLocalizedLinkMap(
     const mappings = await getTranslationMappings()
     for (const entry of mappings.all) {
       if (!entry.isReady) continue
-      if (locale === 'vi' && entry.normEnId && entry.normViId) {
-        const targetSlug = entry.viPageId.replace(/-/g, '')
-        map.set(entry.normEnId, targetSlug)
-      } else if (locale === 'en' && entry.normViId && entry.normEnId) {
-        const targetSlug = entry.enPageId.replace(/-/g, '')
-        map.set(entry.normViId, targetSlug)
+
+      const sourceNormId = targetLocale === 'vi' ? entry.normEnId : entry.normViId
+      const targetPageId = targetLocale === 'vi' ? entry.viPageId : entry.enPageId
+      if (!sourceNormId || !targetPageId || !isValidNotionId(targetPageId)) continue
+
+      const targetNormId = normalizeNotionId(targetPageId)
+      if (!targetNormId || targetNormId === sourceNormId) continue
+      if (targetLocale === 'en' && mappings.byViId.has(targetNormId)) continue
+      if (map.has(sourceNormId)) continue
+
+      // Authorize target before rewriting internal links so Draft/private targets are never exposed
+      const isCatalogPublished = catalogByNormId.has(targetNormId)
+      const isAuthorized = isCatalogPublished || (await isPublicNotionPage(targetPageId))
+      if (!isAuthorized) continue
+
+      const targetSlug = resolveCanonicalTranslationSlug(targetPageId, posts)
+      map.set(sourceNormId, targetSlug)
+
+      const sourcePost = catalogByNormId.get(sourceNormId)
+      if (sourcePost?.slug && slugCounts.get(sourcePost.slug) === 1 && !map.has(sourcePost.slug)) {
+        map.set(sourcePost.slug, targetSlug)
       }
     }
   } catch {
